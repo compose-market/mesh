@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSCameraUsageDescription</key>
+  <string>Compose Desktop needs camera access when an enabled local agent skill requires video input.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Compose Desktop needs microphone access when an enabled local agent skill requires audio input.</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>manowar</string>
+      </array>
+      <key>CFBundleURLName</key>
+      <string>market.compose.desktop</string>
+    </dict>
+  </array>
+</dict>
+</plist>
