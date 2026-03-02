@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentNetworkState,
   AgentPermissionPolicy,
   DesktopPaths,
   DesktopRuntimeState,
@@ -8,6 +9,15 @@ import type {
 } from "./types";
 
 const STORAGE_FALLBACK_KEY = "compose_desktop_state_v1";
+const DEFAULT_LAMBDA_URL = (
+  import.meta.env.VITE_API_URL ||
+  import.meta.env.VITE_LAMBDA_URL ||
+  "https://api.compose.market"
+).replace(/\/+$/, "");
+const DEFAULT_MANOWAR_URL = (
+  import.meta.env.VITE_MANOWAR_URL ||
+  "https://manowar.compose.market"
+).replace(/\/+$/, "");
 
 const defaultPermissions: AgentPermissionPolicy = {
   shell: false,
@@ -24,13 +34,87 @@ const defaultOsPermissions: OsPermissionSnapshot = {
   microphone: "unknown",
 };
 
+const defaultAgentNetworkState: AgentNetworkState = {
+  enabled: false,
+  status: "dormant",
+  peerId: null,
+  listenMultiaddrs: [],
+  peersDiscovered: 0,
+  lastHeartbeatAt: null,
+  lastError: null,
+  updatedAt: 0,
+};
+
+function normalizePermissionPolicy(value: Partial<AgentPermissionPolicy> | null | undefined): AgentPermissionPolicy {
+  return {
+    shell: Boolean(value?.shell ?? defaultPermissions.shell),
+    filesystemRead: Boolean(value?.filesystemRead ?? defaultPermissions.filesystemRead),
+    filesystemWrite: Boolean(value?.filesystemWrite ?? defaultPermissions.filesystemWrite),
+    filesystemEdit: Boolean(value?.filesystemEdit ?? defaultPermissions.filesystemEdit),
+    filesystemDelete: Boolean(value?.filesystemDelete ?? defaultPermissions.filesystemDelete),
+    camera: Boolean(value?.camera ?? defaultPermissions.camera),
+    microphone: Boolean(value?.microphone ?? defaultPermissions.microphone),
+  };
+}
+
+function normalizeNetworkState(value: Partial<AgentNetworkState> | null | undefined): AgentNetworkState {
+  const status = value?.status;
+  const normalizedStatus = (
+    status === "dormant" ||
+    status === "connecting" ||
+    status === "online" ||
+    status === "error"
+  )
+    ? status
+    : defaultAgentNetworkState.status;
+
+  return {
+    enabled: Boolean(value?.enabled ?? defaultAgentNetworkState.enabled),
+    status: normalizedStatus,
+    peerId: typeof value?.peerId === "string" && value.peerId.trim().length > 0 ? value.peerId.trim() : null,
+    listenMultiaddrs: Array.isArray(value?.listenMultiaddrs)
+      ? value.listenMultiaddrs.filter((addr): addr is string => typeof addr === "string" && addr.trim().length > 0)
+      : [],
+    peersDiscovered: Number.isFinite(value?.peersDiscovered) ? Math.max(0, Number(value?.peersDiscovered)) : 0,
+    lastHeartbeatAt: Number.isFinite(value?.lastHeartbeatAt) ? Number(value?.lastHeartbeatAt) : null,
+    lastError: typeof value?.lastError === "string" && value.lastError.trim().length > 0 ? value.lastError : null,
+    updatedAt: Number.isFinite(value?.updatedAt) ? Number(value?.updatedAt) : 0,
+  };
+}
+
+function normalizeInstalledAgent(
+  agent: InstalledAgent | Partial<InstalledAgent>,
+  permissionDefaults: AgentPermissionPolicy,
+): InstalledAgent | null {
+  if (typeof agent.agentWallet !== "string" || agent.agentWallet.trim().length === 0) {
+    return null;
+  }
+  if (!agent.metadata || !agent.lock || !agent.heartbeat || typeof agent.runtimeId !== "string") {
+    return null;
+  }
+
+  const normalizedPermissions = normalizePermissionPolicy(
+    agent.permissions as Partial<AgentPermissionPolicy> | undefined
+      || (agent as { permissionPolicy?: Partial<AgentPermissionPolicy> }).permissionPolicy
+      || permissionDefaults,
+  );
+  const normalizedNetwork = normalizeNetworkState(agent.network as Partial<AgentNetworkState> | undefined);
+
+  return {
+    ...(agent as InstalledAgent),
+    agentWallet: agent.agentWallet.toLowerCase(),
+    permissions: normalizedPermissions,
+    network: normalizedNetwork,
+  };
+}
+
 const defaultState: DesktopRuntimeState = {
   settings: {
-    lambdaUrl: "https://api.compose.market",
-    manowarUrl: "https://manowar.compose.market",
+    lambdaUrl: DEFAULT_LAMBDA_URL,
+    manowarUrl: DEFAULT_MANOWAR_URL,
   },
   identity: null,
-  permissions: { ...defaultPermissions },
+  permissionDefaults: { ...defaultPermissions },
   osPermissions: { ...defaultOsPermissions },
   installedAgents: [],
   installedSkills: [],
@@ -44,7 +128,7 @@ function cloneDefaultState(): DesktopRuntimeState {
   return {
     settings: { ...defaultState.settings },
     identity: null,
-    permissions: { ...defaultPermissions },
+    permissionDefaults: { ...defaultPermissions },
     osPermissions: { ...defaultOsPermissions },
     installedAgents: [],
     installedSkills: [],
@@ -55,26 +139,29 @@ function normalizeState(state: Partial<DesktopRuntimeState> | null | undefined):
   const base = cloneDefaultState();
   if (!state) return base;
 
+  const migratedPermissions = normalizePermissionPolicy(
+    state.permissionDefaults ||
+    (state as { permissions?: Partial<AgentPermissionPolicy> }).permissions ||
+    base.permissionDefaults,
+  );
+  const normalizedAgents = Array.isArray(state.installedAgents)
+    ? state.installedAgents
+      .map((agent) => normalizeInstalledAgent(agent, migratedPermissions))
+      .filter((agent): agent is InstalledAgent => agent !== null)
+    : [];
+
   return {
     settings: {
       lambdaUrl: state.settings?.lambdaUrl || base.settings.lambdaUrl,
       manowarUrl: state.settings?.manowarUrl || base.settings.manowarUrl,
     },
     identity: state.identity || null,
-    permissions: {
-      shell: Boolean(state.permissions?.shell ?? base.permissions.shell),
-      filesystemRead: Boolean(state.permissions?.filesystemRead ?? base.permissions.filesystemRead),
-      filesystemWrite: Boolean(state.permissions?.filesystemWrite ?? base.permissions.filesystemWrite),
-      filesystemEdit: Boolean(state.permissions?.filesystemEdit ?? base.permissions.filesystemEdit),
-      filesystemDelete: Boolean(state.permissions?.filesystemDelete ?? base.permissions.filesystemDelete),
-      camera: Boolean(state.permissions?.camera ?? base.permissions.camera),
-      microphone: Boolean(state.permissions?.microphone ?? base.permissions.microphone),
-    },
+    permissionDefaults: migratedPermissions,
     osPermissions: {
       camera: state.osPermissions?.camera || base.osPermissions.camera,
       microphone: state.osPermissions?.microphone || base.osPermissions.microphone,
     },
-    installedAgents: Array.isArray(state.installedAgents) ? state.installedAgents : [],
+    installedAgents: normalizedAgents,
     installedSkills: Array.isArray(state.installedSkills) ? state.installedSkills : [],
   };
 }
@@ -230,4 +317,15 @@ export async function ensureAgentWorkspace(agent: InstalledAgent): Promise<void>
 
 export async function ensureSkillsRoot(): Promise<void> {
   await ensureManagedDir(getGlobalSkillsRelativePath());
+}
+
+export function getDefaultPermissionPolicy(): AgentPermissionPolicy {
+  return { ...defaultPermissions };
+}
+
+export function getDefaultAgentNetworkState(): AgentNetworkState {
+  return {
+    ...defaultAgentNetworkState,
+    listenMultiaddrs: [],
+  };
 }

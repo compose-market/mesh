@@ -3,10 +3,10 @@ import { AlertTriangle, Check, Link2, RefreshCw, Shield } from "lucide-react";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { AgentManager } from "./components/AgentManager";
 import { DeepLinkHandler } from "./components/DeepLinkHandler";
-import { SessionStatus } from "./components/SessionStatus";
+import { SessionIndicator } from "./components/session";
 import { SkillsManager } from "./components/SkillsManager";
 import { SkillsMarketplace } from "./components/SkillsMarketplace";
-import { callAgent } from "./lib/api";
+import { callAgent, getActiveSessionStatus } from "./lib/api";
 import { heartbeatService } from "./lib/heartbeat";
 import { queryMediaPermission, requestMediaPermission } from "./lib/permissions";
 import {
@@ -29,6 +29,17 @@ const APP_VERSION = "1.0.0";
 const WEB_APP_URL = "https://compose.market";
 const CONNECT_DESKTOP_PATH = "/connect-desktop";
 type Tab = "agents" | "skills" | "marketplace" | "settings";
+
+const defaultSessionState: SessionState = {
+  active: false,
+  expiresAt: null,
+  budgetLimit: null,
+  budgetUsed: null,
+  budgetRemaining: null,
+  sessionId: null,
+  duration: null,
+  chainId: null,
+};
 
 function toIdentityContext(context: RedeemedDesktopContext): DesktopIdentityContext | null {
   if (!context.hasSession) {
@@ -62,24 +73,27 @@ function toIdentityContext(context: RedeemedDesktopContext): DesktopIdentityCont
 
 function sessionFromIdentity(identity: DesktopIdentityContext | null): SessionState {
   if (!identity) {
-    return {
-      active: false,
-      expiresAt: null,
-      budgetRemaining: null,
-      sessionId: null,
-      duration: null,
-    };
+    return { ...defaultSessionState };
   }
 
   const now = Date.now();
-  const active = identity.expiresAt > now;
+  const active = identity.expiresAt > now && (() => {
+    try {
+      return BigInt(identity.budget || "0") > 0n;
+    } catch {
+      return false;
+    }
+  })();
   return {
     active,
     expiresAt: identity.expiresAt,
+    budgetLimit: null,
+    budgetUsed: null,
     budgetRemaining: identity.budget,
     sessionId: identity.sessionId,
     duration: identity.duration,
-    reason: active ? undefined : "session-expired",
+    chainId: identity.chainId,
+    reason: active ? undefined : "session-inactive",
   };
 }
 
@@ -95,13 +109,7 @@ function getOrCreateDeviceId(): string {
 export default function App() {
   const [state, setState] = useState<DesktopRuntimeState | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("agents");
-  const [session, setSession] = useState<SessionState>({
-    active: false,
-    expiresAt: null,
-    budgetRemaining: null,
-    sessionId: null,
-    duration: null,
-  });
+  const [session, setSession] = useState<SessionState>({ ...defaultSessionState });
   const [activeAgentWallet, setActiveAgentWallet] = useState<string | null>(null);
   const [paths, setPaths] = useState<Awaited<ReturnType<typeof getDesktopPaths>>>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -109,6 +117,7 @@ export default function App() {
   const [connectModalOpen, setConnectModalOpen] = useState(false);
 
   const wallet = state?.identity?.userAddress || null;
+  const lambdaUrl = state?.settings.lambdaUrl || "https://api.compose.market";
 
   const showNotification = useCallback((type: "success" | "error", message: string) => {
     setNotification({ type, message });
@@ -195,26 +204,143 @@ export default function App() {
   }, [activeAgentWallet, persistState, showNotification, state]);
 
   const handleSessionUpdate = useCallback((active: boolean, expiresAt: number | null, budget: string | null, sessionId?: string, duration?: number) => {
-    setSession({
+    setSession((prev) => ({
+      ...prev,
       active,
       expiresAt,
       budgetRemaining: budget,
       sessionId: sessionId || null,
       duration: duration ?? null,
-      reason: active ? undefined : "session-expired",
-    });
+      reason: active ? undefined : "session-inactive",
+    }));
 
     if (!state || !state.identity) return;
-    const identity = {
+    const nextIdentity = {
       ...state.identity,
-      expiresAt: expiresAt ?? state.identity.expiresAt,
-      budget: budget ?? state.identity.budget,
-      sessionId: sessionId || state.identity.sessionId,
-      duration: duration ?? state.identity.duration,
+      expiresAt: expiresAt ?? 0,
+      budget: budget ?? "0",
+      sessionId: sessionId || "",
+      composeKeyId: sessionId || "",
+      duration: duration ?? 0,
+      composeKeyToken: !active
+        ? ""
+        : sessionId && sessionId !== state.identity.composeKeyId
+          ? ""
+          : state.identity.composeKeyToken,
     };
-    const next = { ...state, identity };
-    void persistState(next);
+    void persistState({ ...state, identity: nextIdentity });
   }, [persistState, state]);
+
+  const refreshSessionFromBackend = useCallback(async () => {
+    if (!state?.identity?.userAddress) {
+      return;
+    }
+
+    const response = await getActiveSessionStatus({
+      lambdaUrl,
+      userAddress: state.identity.userAddress,
+      chainId: state.identity.chainId,
+    });
+
+    if (!response || !response.hasSession || !response.keyId || !response.expiresAt) {
+      setSession((prev) => ({
+        ...prev,
+        active: false,
+        expiresAt: null,
+        budgetLimit: null,
+        budgetUsed: null,
+        budgetRemaining: "0",
+        sessionId: null,
+        duration: null,
+        chainId: state.identity?.chainId || null,
+        reason: "session-inactive",
+      }));
+
+      if (state.identity.composeKeyId || state.identity.composeKeyToken || state.identity.sessionId || state.identity.expiresAt > 0) {
+        const nextIdentity = {
+          ...state.identity,
+          composeKeyId: "",
+          composeKeyToken: "",
+          sessionId: "",
+          budget: "0",
+          expiresAt: 0,
+          duration: 0,
+        };
+        await persistState({ ...state, identity: nextIdentity });
+      }
+      return;
+    }
+
+    const budgetLimit = response.budgetLimit || "0";
+    const budgetUsed = response.budgetUsed || "0";
+    const budgetRemaining = response.budgetRemaining || "0";
+    const chainId = response.chainId || state.identity.chainId;
+    const duration = Math.max(0, response.expiresAt - Date.now());
+    const active = response.expiresAt > Date.now() && BigInt(budgetRemaining) > 0n;
+
+    setSession({
+      active,
+      expiresAt: response.expiresAt,
+      budgetLimit,
+      budgetUsed,
+      budgetRemaining,
+      sessionId: response.keyId,
+      duration,
+      chainId,
+      reason: active ? undefined : "session-inactive",
+    });
+
+    const nextIdentity = {
+      ...state.identity,
+      composeKeyId: response.keyId,
+      composeKeyToken: response.token || state.identity.composeKeyToken,
+      sessionId: response.keyId,
+      budget: budgetRemaining,
+      duration,
+      expiresAt: response.expiresAt,
+      chainId,
+    };
+    const identityChanged = (
+      nextIdentity.composeKeyId !== state.identity.composeKeyId ||
+      nextIdentity.composeKeyToken !== state.identity.composeKeyToken ||
+      nextIdentity.sessionId !== state.identity.sessionId ||
+      nextIdentity.budget !== state.identity.budget ||
+      nextIdentity.duration !== state.identity.duration ||
+      nextIdentity.expiresAt !== state.identity.expiresAt ||
+      nextIdentity.chainId !== state.identity.chainId
+    );
+    if (identityChanged) {
+      await persistState({ ...state, identity: nextIdentity });
+    }
+  }, [lambdaUrl, persistState, state]);
+
+  useEffect(() => {
+    if (!state?.identity?.userAddress) {
+      return;
+    }
+
+    void refreshSessionFromBackend();
+
+    const sync = () => {
+      void refreshSessionFromBackend();
+    };
+
+    const intervalId = window.setInterval(sync, 15_000);
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        sync();
+      }
+    };
+
+    window.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", sync);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", sync);
+    };
+  }, [refreshSessionFromBackend, state?.identity?.chainId, state?.identity?.userAddress]);
 
   const handleContextRedeemed = useCallback((context: RedeemedDesktopContext) => {
     if (!state) return;
@@ -222,13 +348,18 @@ export default function App() {
     const next = { ...state, identity };
     void persistState(next);
     setSession(sessionFromIdentity(identity));
+    if (identity) {
+      window.setTimeout(() => {
+        void refreshSessionFromBackend();
+      }, 0);
+    }
     setConnectModalOpen(false);
     if (context.hasSession) {
       showNotification("success", "Desktop app connected with active session");
     } else {
       showNotification("success", "Desktop app connected. Create a session to get started.");
     }
-  }, [persistState, showNotification, state]);
+  }, [persistState, refreshSessionFromBackend, showNotification, state]);
 
   const openConnectModal = useCallback(() => {
     setConnectModalOpen(true);
@@ -239,7 +370,6 @@ export default function App() {
   }, []);
 
   const stateReady = state !== null;
-  const lambdaUrl = state?.settings.lambdaUrl || "https://api.compose.market";
 
   return (
     <div className="app">
@@ -264,6 +394,15 @@ export default function App() {
               <span className="subtitle">Local Agent Runtime</span>
             </div>
             <div className="header-right">
+              {state.identity ? (
+                <SessionIndicator
+                  lambdaUrl={lambdaUrl}
+                  identity={state.identity}
+                  session={session}
+                  onRefreshSession={refreshSessionFromBackend}
+                  onNotify={showNotification}
+                />
+              ) : null}
               <button className="secondary connect-btn" onClick={openConnectModal}>
                 <Link2 size={14} />
                 {wallet ? "Reconnect" : "Connect"}
@@ -284,8 +423,6 @@ export default function App() {
               {notification.message}
             </div>
           ) : null}
-
-          {wallet ? <SessionStatus wallet={wallet} session={session} /> : null}
 
           <nav className="nav">
             <button className={`nav-btn ${activeTab === "agents" ? "active" : ""}`} onClick={() => setActiveTab("agents")}>Agents</button>
@@ -456,7 +593,7 @@ function SettingsPanel({
       <div className="settings-section">
         <h3>API</h3>
         <div className="form-group">
-          <label>Lambda URL</label>
+          <label>API URL</label>
           <input type="text" value={lambdaUrl} onChange={(event) => setLambdaUrl(event.target.value)} />
         </div>
         <div className="form-group">

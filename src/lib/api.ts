@@ -25,6 +25,13 @@ const GITHUB_HEADERS = {
   "User-Agent": "compose-desktop/1.0",
 };
 
+export const SESSION_HEADERS = {
+  userAddress: "x-session-user-address",
+  chainId: "x-chain-id",
+  active: "x-session-active",
+  budgetRemaining: "x-session-budget-remaining",
+} as const;
+
 const EMPTY_REQUIREMENTS: SkillRequirements = {
   bins: [],
   env: [],
@@ -38,6 +45,27 @@ const skillDetailCache = new Map<string, { name: string | null; description: str
 
 function normalizeBase(url: string): string {
   return url.replace(/\/+$/, "");
+}
+
+function withSessionHeaders(input: {
+  userAddress: string;
+  chainId?: number;
+  active?: boolean;
+  budgetRemaining?: string;
+}): Record<string, string> {
+  const headers: Record<string, string> = {
+    [SESSION_HEADERS.userAddress]: input.userAddress,
+  };
+  if (typeof input.chainId === "number") {
+    headers[SESSION_HEADERS.chainId] = String(input.chainId);
+  }
+  if (input.active) {
+    headers[SESSION_HEADERS.active] = "true";
+  }
+  if (input.budgetRemaining) {
+    headers[SESSION_HEADERS.budgetRemaining] = input.budgetRemaining;
+  }
+  return headers;
 }
 
 function cloneRequirements(requirements: SkillRequirements): SkillRequirements {
@@ -120,10 +148,10 @@ export async function fetchSessionInfo(params: {
   try {
     return await requestJson(`${normalizeBase(params.lambdaUrl)}/api/session`, {
       method: "GET",
-      headers: {
-        "x-session-user-address": params.userAddress,
-        "x-chain-id": String(params.chainId),
-      },
+      headers: withSessionHeaders({
+        userAddress: params.userAddress,
+        chainId: params.chainId,
+      }),
     });
   } catch {
     return null;
@@ -167,8 +195,10 @@ export async function registerDesktopDeployment(params: {
       method: "POST",
       headers: {
         Authorization: `Bearer ${params.identity.composeKeyToken}`,
-        "x-session-user-address": params.identity.userAddress,
-        "x-chain-id": String(params.identity.chainId),
+        ...withSessionHeaders({
+          userAddress: params.identity.userAddress,
+          chainId: params.identity.chainId,
+        }),
       },
       body: JSON.stringify({
         agentWallet: params.agentWallet,
@@ -206,10 +236,12 @@ export async function callAgent(params: {
       method: "POST",
       headers: {
         Authorization: `Bearer ${params.identity.composeKeyToken}`,
-        "x-session-user-address": params.identity.userAddress,
-        "x-chain-id": String(params.identity.chainId),
-        "x-session-active": "true",
-        "x-session-budget-remaining": params.identity.budget,
+        ...withSessionHeaders({
+          userAddress: params.identity.userAddress,
+          chainId: params.identity.chainId,
+          active: true,
+          budgetRemaining: params.identity.budget,
+        }),
       },
       body: JSON.stringify({
         message: params.message,
@@ -611,15 +643,17 @@ export async function createDesktopLinkToken(params: {
     method: "POST",
     headers: {
       Authorization: `Bearer ${params.composeKeyToken}`,
-      "x-session-user-address": params.userAddress,
-      "x-chain-id": String(params.chainId),
+      ...withSessionHeaders({
+        userAddress: params.userAddress,
+        chainId: params.chainId,
+      }),
     },
     body: JSON.stringify(params.payload),
   });
 }
 
 export interface CreateSessionRequest {
-  budgetLimit: number;
+  budgetLimit: number | string;
   expiresAt: number;
   name?: string;
   chainId?: number;
@@ -628,12 +662,61 @@ export interface CreateSessionRequest {
 export interface CreateSessionResponse {
   keyId: string;
   token: string;
-  budgetLimit: number;
-  budgetUsed: number;
-  budgetRemaining: number;
+  budgetLimit: string;
+  budgetUsed: string;
+  budgetRemaining: string;
   expiresAt: number;
   createdAt: number;
   name?: string;
+  chainId?: number;
+}
+
+export interface ComposeKeyRecord {
+  keyId: string;
+  budgetLimit: string;
+  budgetUsed: string;
+  budgetRemaining: string;
+  createdAt: number;
+  expiresAt: number;
+  revokedAt?: number;
+  name?: string;
+  lastUsedAt?: number;
+  chainId?: number;
+}
+
+export interface ActiveSessionStatusResponse {
+  hasSession: boolean;
+  keyId?: string;
+  token?: string;
+  budgetLimit?: string;
+  budgetUsed?: string;
+  budgetLocked?: string;
+  budgetRemaining?: string;
+  expiresAt?: number;
+  chainId?: number;
+  name?: string;
+  status?: {
+    isActive: boolean;
+    isExpired: boolean;
+    expiresInSeconds: number;
+    budgetPercentRemaining: number;
+    warnings: {
+      budgetDepleted: boolean;
+      budgetLow: boolean;
+      expiringSoon: boolean;
+      expired: boolean;
+    };
+  };
+}
+
+function normalizeBigintString(value: unknown, fallback = "0"): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(Math.trunc(value));
+  }
+  return fallback;
 }
 
 export async function createSession(params: {
@@ -641,57 +724,132 @@ export async function createSession(params: {
   userAddress: string;
   payload: CreateSessionRequest;
 }): Promise<CreateSessionResponse> {
-  const response = await requestJson<{ keyId: string; token: string; budgetLimit: number; budgetUsed: number; expiresAt: number; createdAt: number; name?: string }>(
+  const response = await requestJson<{
+    keyId: string;
+    token: string;
+    budgetLimit: number | string;
+    budgetUsed?: number | string;
+    budgetRemaining?: number | string;
+    expiresAt: number;
+    createdAt?: number;
+    name?: string;
+    chainId?: number;
+  }>(
     `${normalizeBase(params.lambdaUrl)}/api/keys`,
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        "x-session-user-address": params.userAddress,
-        "x-session-active": "true",
+        ...withSessionHeaders({
+          userAddress: params.userAddress,
+          active: true,
+        }),
       },
       body: JSON.stringify(params.payload),
     },
   );
 
+  const budgetLimit = normalizeBigintString(response.budgetLimit);
+  const budgetUsed = normalizeBigintString(response.budgetUsed, "0");
+  const budgetRemaining = response.budgetRemaining !== undefined
+    ? normalizeBigintString(response.budgetRemaining)
+    : (BigInt(budgetLimit) - BigInt(budgetUsed)).toString();
+
   return {
-    ...response,
-    budgetRemaining: response.budgetLimit - (response.budgetUsed || 0),
+    keyId: response.keyId,
+    token: response.token,
+    budgetLimit,
+    budgetUsed,
+    budgetRemaining,
+    expiresAt: response.expiresAt,
+    createdAt: response.createdAt ?? Date.now(),
+    name: response.name,
+    chainId: response.chainId,
   };
 }
 
-export async function getSessionStatus(params: {
+export async function listComposeKeys(params: {
+  lambdaUrl: string;
+  userAddress: string;
+}): Promise<ComposeKeyRecord[]> {
+  const response = await requestJson<{
+    keys?: Array<{
+      keyId: string;
+      budgetLimit: number | string;
+      budgetUsed: number | string;
+      budgetRemaining?: number | string;
+      createdAt: number;
+      expiresAt: number;
+      revokedAt?: number;
+      name?: string;
+      lastUsedAt?: number;
+      chainId?: number;
+    }>;
+  }>(
+    `${normalizeBase(params.lambdaUrl)}/api/keys`,
+    {
+      method: "GET",
+      headers: withSessionHeaders({
+        userAddress: params.userAddress,
+      }),
+    },
+  );
+
+  return (response.keys || []).map((item) => {
+    const budgetLimit = normalizeBigintString(item.budgetLimit);
+    const budgetUsed = normalizeBigintString(item.budgetUsed);
+    const budgetRemaining = item.budgetRemaining !== undefined
+      ? normalizeBigintString(item.budgetRemaining)
+      : (BigInt(budgetLimit) - BigInt(budgetUsed)).toString();
+    return {
+      keyId: item.keyId,
+      budgetLimit,
+      budgetUsed,
+      budgetRemaining,
+      createdAt: item.createdAt,
+      expiresAt: item.expiresAt,
+      revokedAt: item.revokedAt,
+      name: item.name,
+      lastUsedAt: item.lastUsedAt,
+      chainId: item.chainId,
+    };
+  });
+}
+
+export async function revokeComposeKey(params: {
+  lambdaUrl: string;
+  userAddress: string;
+  keyId: string;
+}): Promise<boolean> {
+  try {
+    await requestJson(
+      `${normalizeBase(params.lambdaUrl)}/api/keys/${params.keyId}`,
+      {
+        method: "DELETE",
+        headers: withSessionHeaders({
+          userAddress: params.userAddress,
+        }),
+      },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getActiveSessionStatus(params: {
   lambdaUrl: string;
   userAddress: string;
   chainId: number;
-}): Promise<{
-  hasSession: boolean;
-  keyId?: string;
-  token?: string;
-  budgetLimit?: number;
-  budgetUsed?: number;
-  budgetRemaining?: number;
-  expiresAt?: number;
-  chainId?: number;
-} | null> {
+}): Promise<ActiveSessionStatusResponse | null> {
   try {
-    const response = await requestJson<{
-      hasSession: boolean;
-      keyId?: string;
-      token?: string;
-      budgetLimit?: string;
-      budgetUsed?: string;
-      budgetRemaining?: string;
-      expiresAt?: number;
-      chainId?: number;
-    }>(
+    const response = await requestJson<ActiveSessionStatusResponse>(
       `${normalizeBase(params.lambdaUrl)}/api/session`,
       {
         method: "GET",
-        headers: {
-          "x-session-user-address": params.userAddress,
-          "x-chain-id": String(params.chainId),
-        },
+        headers: withSessionHeaders({
+          userAddress: params.userAddress,
+          chainId: params.chainId,
+        }),
       },
     );
 
@@ -703,13 +861,18 @@ export async function getSessionStatus(params: {
       hasSession: true,
       keyId: response.keyId,
       token: response.token,
-      budgetLimit: response.budgetLimit ? parseInt(response.budgetLimit, 10) : undefined,
-      budgetUsed: response.budgetUsed ? parseInt(response.budgetUsed, 10) : undefined,
-      budgetRemaining: response.budgetRemaining ? parseInt(response.budgetRemaining, 10) : undefined,
+      budgetLimit: response.budgetLimit,
+      budgetUsed: response.budgetUsed,
+      budgetLocked: response.budgetLocked,
+      budgetRemaining: response.budgetRemaining,
       expiresAt: response.expiresAt,
       chainId: response.chainId,
+      name: response.name,
+      status: response.status,
     };
   } catch {
     return null;
   }
 }
+
+export const getSessionStatus = getActiveSessionStatus;

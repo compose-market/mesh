@@ -1,9 +1,12 @@
 export interface SessionState {
   active: boolean;
   expiresAt: number | null;
+  budgetLimit: string | null;
+  budgetUsed: string | null;
   budgetRemaining: string | null;
   sessionId: string | null;
   duration: number | null;
+  chainId: number | null;
   reason?: string;
 }
 
@@ -48,6 +51,8 @@ export interface InstalledAgent {
   running: boolean;
   runtimeId: string;
   heartbeat: AgentHeartbeatState;
+  permissions: AgentPermissionPolicy;
+  network: AgentNetworkState;
 }
 
 export interface DesktopIdentityContext {
@@ -78,6 +83,19 @@ export interface AgentPermissionPolicy {
   microphone: boolean;
 }
 
+export type AgentNetworkStatus = "dormant" | "connecting" | "online" | "error";
+
+export interface AgentNetworkState {
+  enabled: boolean;
+  status: AgentNetworkStatus;
+  peerId: string | null;
+  listenMultiaddrs: string[];
+  peersDiscovered: number;
+  lastHeartbeatAt: number | null;
+  lastError: string | null;
+  updatedAt: number;
+}
+
 export type OsPermissionStatus = "unknown" | "granted" | "denied" | "unsupported";
 
 export interface OsPermissionSnapshot {
@@ -88,7 +106,7 @@ export interface OsPermissionSnapshot {
 export interface DesktopRuntimeState {
   settings: DesktopSettings;
   identity: DesktopIdentityContext | null;
-  permissions: AgentPermissionPolicy;
+  permissionDefaults: AgentPermissionPolicy;
   osPermissions: OsPermissionSnapshot;
   installedAgents: InstalledAgent[];
   installedSkills: InstalledSkill[];

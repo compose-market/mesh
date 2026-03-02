@@ -8,14 +8,14 @@
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
     "preview": "vite preview --port 1421",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:dev": "node scripts/tauri-cli.mjs dev",
+    "tauri:build": "node scripts/tauri-cli.mjs build"
   },
   "dependencies": {
-    "@compose-market/theme": "0.0.1",
+    "@compose-market/theme": "0.0.3",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-deep-link": "^2.4.7",
-    "@tauri-apps/plugin-shell": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.3.5",
     "lucide-react": "^0.575.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.0",
-    "@types/node": "^25.3.2",
+    "@types/node": "^25.3.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
