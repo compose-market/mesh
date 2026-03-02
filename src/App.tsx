@@ -8,6 +8,7 @@ import { SkillsManager } from "./components/SkillsManager";
 import { SkillsMarketplace } from "./components/SkillsMarketplace";
 import { callAgent, getActiveSessionStatus } from "./lib/api";
 import { heartbeatService } from "./lib/heartbeat";
+import { desktopMeshService, type MeshRuntimeStatus } from "./lib/network";
 import { queryMediaPermission, requestMediaPermission } from "./lib/permissions";
 import {
   ensureSkillsRoot,
@@ -106,6 +107,79 @@ function getOrCreateDeviceId(): string {
   return created;
 }
 
+function mergeMeshStatusIntoState(
+  current: DesktopRuntimeState,
+  status: MeshRuntimeStatus,
+  deviceId: string,
+): DesktopRuntimeState {
+  const targetWallet = status.agentWallet?.toLowerCase() || null;
+  const nextAgents = current.installedAgents.map((agent) => {
+    if (!agent.network.enabled) {
+      if (
+        agent.network.status !== "dormant" ||
+        agent.network.peerId !== null ||
+        agent.network.listenMultiaddrs.length > 0 ||
+        agent.network.peersDiscovered !== 0 ||
+        agent.network.lastError !== null ||
+        agent.network.lastHeartbeatAt !== null
+      ) {
+        return {
+          ...agent,
+          network: {
+            ...agent.network,
+            status: "dormant" as const,
+            peerId: null,
+            listenMultiaddrs: [],
+            peersDiscovered: 0,
+            lastError: null,
+            lastHeartbeatAt: null,
+            updatedAt: Date.now(),
+          },
+        };
+      }
+      return agent;
+    }
+
+    if (!targetWallet || targetWallet !== agent.agentWallet || status.deviceId !== deviceId) {
+      if (agent.network.status === "dormant" && !agent.network.lastError) {
+        return agent;
+      }
+      return {
+        ...agent,
+        network: {
+          ...agent.network,
+          status: "dormant" as const,
+          peerId: null,
+          listenMultiaddrs: [],
+          peersDiscovered: 0,
+          lastError: null,
+          lastHeartbeatAt: null,
+          updatedAt: Date.now(),
+        },
+      };
+    }
+
+    return {
+      ...agent,
+      network: {
+        ...agent.network,
+        status: status.status,
+        peerId: status.peerId,
+        listenMultiaddrs: [...status.listenMultiaddrs],
+        peersDiscovered: status.peersDiscovered,
+        lastHeartbeatAt: status.lastHeartbeatAt,
+        lastError: status.lastError,
+        updatedAt: status.updatedAt,
+      },
+    };
+  });
+
+  return {
+    ...current,
+    installedAgents: nextAgents,
+  };
+}
+
 export default function App() {
   const [state, setState] = useState<DesktopRuntimeState | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("agents");
@@ -202,6 +276,53 @@ export default function App() {
 
     return () => heartbeatService.stop();
   }, [activeAgentWallet, persistState, showNotification, state]);
+
+  useEffect(() => {
+    desktopMeshService.configure((status) => {
+      setState((current) => {
+        if (!current) {
+          return current;
+        }
+        return mergeMeshStatusIntoState(current, status, deviceId);
+      });
+    });
+
+    return () => {
+      desktopMeshService.configure(null);
+      void desktopMeshService.setDesiredState(null);
+    };
+  }, [deviceId]);
+
+  const runningNetworkAgent = state?.installedAgents.find((agent) => agent.running && agent.network.enabled) || null;
+
+  useEffect(() => {
+    if (
+      !state?.identity ||
+      !runningNetworkAgent ||
+      !session.active ||
+      !state.identity.composeKeyToken ||
+      !state.identity.sessionId
+    ) {
+      void desktopMeshService.setDesiredState(null);
+      return;
+    }
+
+    void desktopMeshService.setDesiredState({
+      enabled: true,
+      lambdaUrl: state.settings.lambdaUrl,
+      identity: state.identity,
+      agentWallet: runningNetworkAgent.agentWallet,
+      deviceId,
+    });
+  }, [
+    deviceId,
+    runningNetworkAgent?.agentWallet,
+    runningNetworkAgent?.running,
+    runningNetworkAgent?.network.enabled,
+    session.active,
+    state?.identity,
+    state?.settings.lambdaUrl,
+  ]);
 
   const handleSessionUpdate = useCallback((active: boolean, expiresAt: number | null, budget: string | null, sessionId?: string, duration?: number) => {
     setSession((prev) => ({
@@ -506,6 +627,47 @@ function SettingsPanel({
   const [lambdaUrl, setLambdaUrl] = useState(state.settings.lambdaUrl);
   const [manowarUrl, setManowarUrl] = useState(state.settings.manowarUrl);
   const [permissionBusy, setPermissionBusy] = useState<null | keyof AgentPermissionPolicy>(null);
+  const [permissionTarget, setPermissionTarget] = useState<string>("default");
+
+  useEffect(() => {
+    if (permissionTarget === "default") {
+      return;
+    }
+    const stillExists = state.installedAgents.some((agent) => agent.agentWallet === permissionTarget);
+    if (!stillExists) {
+      setPermissionTarget("default");
+    }
+  }, [permissionTarget, state.installedAgents]);
+
+  const selectedAgent = permissionTarget === "default"
+    ? null
+    : state.installedAgents.find((agent) => agent.agentWallet === permissionTarget) || null;
+  const activePermissions = selectedAgent?.permissions || state.permissionDefaults;
+
+  const updatePermissionState = async (
+    nextPermissions: AgentPermissionPolicy,
+    nextOsPermissions: DesktopRuntimeState["osPermissions"],
+  ) => {
+    if (selectedAgent) {
+      const nextAgents = state.installedAgents.map((agent) => (
+        agent.agentWallet === selectedAgent.agentWallet
+          ? { ...agent, permissions: nextPermissions }
+          : agent
+      ));
+      await onStateChange({
+        ...state,
+        installedAgents: nextAgents,
+        osPermissions: nextOsPermissions,
+      });
+      return;
+    }
+
+    await onStateChange({
+      ...state,
+      permissionDefaults: nextPermissions,
+      osPermissions: nextOsPermissions,
+    });
+  };
 
   const save = async () => {
     const next: DesktopRuntimeState = {
@@ -527,17 +689,14 @@ function SettingsPanel({
         queryMediaPermission("microphone"),
       ]);
 
-      await onStateChange({
-        ...state,
-        permissions: {
-          ...state.permissions,
-          camera: camera === "granted" ? state.permissions.camera : false,
-          microphone: microphone === "granted" ? state.permissions.microphone : false,
-        },
-        osPermissions: {
-          camera,
-          microphone,
-        },
+      const nextPermissions: AgentPermissionPolicy = {
+        ...activePermissions,
+        camera: camera === "granted" ? activePermissions.camera : false,
+        microphone: microphone === "granted" ? activePermissions.microphone : false,
+      };
+      await updatePermissionState(nextPermissions, {
+        camera,
+        microphone,
       });
       onNotify("success", "macOS permission status refreshed");
     } finally {
@@ -550,8 +709,8 @@ function SettingsPanel({
     setPermissionBusy(key);
 
     try {
-      const nextEnabled = !state.permissions[key];
-      let nextPermissions = { ...state.permissions, [key]: nextEnabled };
+      const nextEnabled = !activePermissions[key];
+      let nextPermissions: AgentPermissionPolicy = { ...activePermissions, [key]: nextEnabled };
       let nextOsPermissions = { ...state.osPermissions };
 
       if (key === "camera" && nextEnabled) {
@@ -576,11 +735,7 @@ function SettingsPanel({
         }
       }
 
-      await onStateChange({
-        ...state,
-        permissions: nextPermissions,
-        osPermissions: nextOsPermissions,
-      });
+      await updatePermissionState(nextPermissions, nextOsPermissions);
     } finally {
       setPermissionBusy(null);
     }
@@ -616,12 +771,26 @@ function SettingsPanel({
 
       <div className="settings-section">
         <h3>Agent Permissions</h3>
-        <p className="settings-hint">Controls local capabilities for desktop agents. MCP tools from agentCard remain immutable.</p>
+        <p className="settings-hint">Permissions are scoped per-agent. Defaults apply to newly deployed agents.</p>
+        <div className="form-group">
+          <label>Permission Target</label>
+          <select
+            value={permissionTarget}
+            onChange={(event) => setPermissionTarget(event.target.value)}
+          >
+            <option value="default">Defaults (new agents)</option>
+            {state.installedAgents.map((agent) => (
+              <option key={agent.agentWallet} value={agent.agentWallet}>
+                {agent.metadata.name} ({agent.agentWallet.slice(0, 6)}...{agent.agentWallet.slice(-4)})
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="permissions-grid">
           <PermissionToggle
             label="Shell Execution"
             description="Allow local command execution for local skills."
-            enabled={state.permissions.shell}
+            enabled={activePermissions.shell}
             busy={permissionBusy === "shell"}
             onToggle={() => {
               void togglePermission("shell");
@@ -630,7 +799,7 @@ function SettingsPanel({
           <PermissionToggle
             label="Filesystem Read"
             description="Allow agents to read local files in managed workspace."
-            enabled={state.permissions.filesystemRead}
+            enabled={activePermissions.filesystemRead}
             busy={permissionBusy === "filesystemRead"}
             onToggle={() => {
               void togglePermission("filesystemRead");
@@ -639,7 +808,7 @@ function SettingsPanel({
           <PermissionToggle
             label="Filesystem Write"
             description="Allow creating new files and folders for skills/runtime."
-            enabled={state.permissions.filesystemWrite}
+            enabled={activePermissions.filesystemWrite}
             busy={permissionBusy === "filesystemWrite"}
             onToggle={() => {
               void togglePermission("filesystemWrite");
@@ -648,7 +817,7 @@ function SettingsPanel({
           <PermissionToggle
             label="Filesystem Edit"
             description="Allow modifying existing files in managed workspace."
-            enabled={state.permissions.filesystemEdit}
+            enabled={activePermissions.filesystemEdit}
             busy={permissionBusy === "filesystemEdit"}
             onToggle={() => {
               void togglePermission("filesystemEdit");
@@ -657,7 +826,7 @@ function SettingsPanel({
           <PermissionToggle
             label="Filesystem Delete"
             description="Allow deleting local files and installed skills."
-            enabled={state.permissions.filesystemDelete}
+            enabled={activePermissions.filesystemDelete}
             busy={permissionBusy === "filesystemDelete"}
             onToggle={() => {
               void togglePermission("filesystemDelete");
@@ -666,7 +835,7 @@ function SettingsPanel({
           <PermissionToggle
             label="Camera"
             description={`macOS status: ${permissionStatusText(state.osPermissions.camera)}`}
-            enabled={state.permissions.camera}
+            enabled={activePermissions.camera}
             busy={permissionBusy === "camera"}
             onToggle={() => {
               void togglePermission("camera");
@@ -675,7 +844,7 @@ function SettingsPanel({
           <PermissionToggle
             label="Microphone"
             description={`macOS status: ${permissionStatusText(state.osPermissions.microphone)}`}
-            enabled={state.permissions.microphone}
+            enabled={activePermissions.microphone}
             busy={permissionBusy === "microphone"}
             onToggle={() => {
               void togglePermission("microphone");

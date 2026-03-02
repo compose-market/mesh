@@ -213,6 +213,125 @@ export async function registerDesktopDeployment(params: {
   );
 }
 
+export interface DesktopNetworkTokenResponse {
+  success: boolean;
+  token: string;
+  expiresAt: number;
+  chainId: number;
+  agentWallet: string;
+  sessionId: string;
+}
+
+export interface DesktopNetworkBootstrapResponse {
+  success: boolean;
+  bootstrap: {
+    bootstrapMultiaddrs: string[];
+    relayMultiaddrs: string[];
+    gossipTopic: string;
+    heartbeatMs: number;
+    presenceTtlSeconds: number;
+  };
+  identity: {
+    userAddress: string;
+    agentWallet: string;
+    sessionId: string;
+    composeKeyId: string;
+    chainId: number;
+    deviceId: string;
+    tokenExpiresAt: number;
+  };
+  serverTime: number;
+}
+
+export interface DesktopNetworkPresencePayload {
+  peerId: string;
+  announceMultiaddrs: string[];
+  capabilitiesHash?: string;
+  configCid?: string;
+  metadata?: Record<string, string>;
+  ttlSeconds?: number;
+}
+
+export interface DesktopNetworkPresenceResponse {
+  success: boolean;
+  presence: {
+    chainId: number;
+    agentWallet: string;
+    deviceId: string;
+    peerId: string;
+    announceMultiaddrs: string[];
+    capabilitiesHash: string | null;
+    configCid: string | null;
+    metadata: Record<string, string>;
+    lastSeenAt: number;
+    expiresAt: number;
+  };
+}
+
+export async function createDesktopNetworkToken(params: {
+  lambdaUrl: string;
+  identity: DesktopIdentityContext;
+  agentWallet: string;
+  deviceId: string;
+  chainId?: number;
+}): Promise<DesktopNetworkTokenResponse> {
+  return requestJson(`${normalizeBase(params.lambdaUrl)}/api/desktop/network/token`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${params.identity.composeKeyToken}`,
+      ...withSessionHeaders({
+        userAddress: params.identity.userAddress,
+        chainId: params.chainId || params.identity.chainId,
+      }),
+    },
+    body: JSON.stringify({
+      agentWallet: params.agentWallet,
+      userAddress: params.identity.userAddress,
+      sessionId: params.identity.sessionId,
+      deviceId: params.deviceId,
+      chainId: params.chainId || params.identity.chainId,
+    }),
+  });
+}
+
+export async function fetchDesktopNetworkBootstrap(params: {
+  lambdaUrl: string;
+  networkToken: string;
+}): Promise<DesktopNetworkBootstrapResponse> {
+  return requestJson(`${normalizeBase(params.lambdaUrl)}/api/desktop/network/bootstrap`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${params.networkToken}`,
+    },
+  });
+}
+
+export async function upsertDesktopNetworkPresence(params: {
+  lambdaUrl: string;
+  networkToken: string;
+  payload: DesktopNetworkPresencePayload;
+}): Promise<DesktopNetworkPresenceResponse> {
+  return requestJson(`${normalizeBase(params.lambdaUrl)}/api/desktop/network/presence`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${params.networkToken}`,
+    },
+    body: JSON.stringify(params.payload),
+  });
+}
+
+export async function deleteDesktopNetworkPresence(params: {
+  lambdaUrl: string;
+  networkToken: string;
+}): Promise<{ success: boolean; removed: boolean }> {
+  return requestJson(`${normalizeBase(params.lambdaUrl)}/api/desktop/network/presence`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${params.networkToken}`,
+    },
+  });
+}
+
 export async function fetchAgentMetadata(params: {
   manowarUrl: string;
   agentWallet: string;
