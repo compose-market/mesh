@@ -25,7 +25,7 @@ export function SkillsManager({ state, onStateChange }: SkillsManagerProps) {
   };
 
   const removeSkill = async (skillId: string) => {
-    if (!state.permissions.filesystemDelete) {
+    if (!state.permissionDefaults.filesystemDelete) {
       setError("Enable Filesystem Delete permission in Settings to uninstall skills.");
       return;
     }

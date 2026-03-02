@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Eye, Loader2, Play, ShieldCheck, Square, Trash2 } from "lucide-react";
+import { Eye, Globe, Loader2, Play, ShieldCheck, Square, Trash2 } from "lucide-react";
 import {
   fetchAgentMetadata,
   registerDesktopDeployment,
@@ -102,7 +102,7 @@ export function AgentManager({
       setError("Deep-link context required before deployment.");
       return;
     }
-    if (!state.permissions.filesystemWrite || !state.permissions.filesystemEdit) {
+    if (!state.permissionDefaults.filesystemWrite || !state.permissionDefaults.filesystemEdit) {
       setError("Enable Filesystem Write and Filesystem Edit in Settings before deploying local agents.");
       return;
     }
@@ -148,6 +148,19 @@ export function AgentManager({
           lastRunAt: null,
           lastResult: null,
         },
+        permissions: {
+          ...state.permissionDefaults,
+        },
+        network: {
+          enabled: false,
+          status: "dormant",
+          peerId: null,
+          listenMultiaddrs: [],
+          peersDiscovered: 0,
+          lastHeartbeatAt: null,
+          lastError: null,
+          updatedAt: 0,
+        },
       };
 
       await ensureAgentWorkspace(installed);
@@ -180,7 +193,7 @@ export function AgentManager({
     if (!target) return;
 
     if (!target.running && !session.active) {
-      setError("Session is inactive. Start a session on web and relaunch desktop.");
+      setError("Session is inactive. Start a session from the Desktop header and try again.");
       return;
     }
 
@@ -210,13 +223,42 @@ export function AgentManager({
   };
 
   const removeAgent = async (agentWallet: string) => {
-    if (!state.permissions.filesystemDelete) {
+    const target = state.installedAgents.find((agent) => agent.agentWallet === agentWallet);
+    if (!target) {
+      return;
+    }
+    if (!target.permissions.filesystemDelete) {
       setError("Enable Filesystem Delete in Settings before removing local deployments.");
       return;
     }
     const nextAgents = state.installedAgents.filter((agent) => agent.agentWallet !== agentWallet);
     await onStateChange({ ...state, installedAgents: nextAgents });
     onActivateAgent(null);
+  };
+
+  const toggleAgentNetwork = async (agentWallet: string) => {
+    const target = state.installedAgents.find((agent) => agent.agentWallet === agentWallet);
+    if (!target) {
+      return;
+    }
+
+    const nextEnabled = !target.network.enabled;
+    const nextAgents = state.installedAgents.map((agent) => {
+      if (agent.agentWallet !== agentWallet) {
+        return agent;
+      }
+      return {
+        ...agent,
+        network: {
+          ...agent.network,
+          enabled: nextEnabled,
+          status: nextEnabled ? agent.network.status : "dormant",
+          lastError: nextEnabled ? agent.network.lastError : null,
+          updatedAt: Date.now(),
+        },
+      };
+    });
+    await onStateChange({ ...state, installedAgents: nextAgents });
   };
 
   return (
@@ -266,6 +308,10 @@ export function AgentManager({
                   </div>
                   <div className="agent-meta">
                     <span><ShieldCheck size={12} /> Immutable lock active</span>
+                    <span>
+                      <Globe size={12} />
+                      Mesh: {agent.network.enabled ? agent.network.status : "disabled"}
+                    </span>
                   </div>
                 </div>
 
@@ -292,6 +338,16 @@ export function AgentManager({
                     title="View lock details"
                   >
                     <Eye size={18} />
+                  </button>
+                  <button
+                    className={`icon-btn ${agent.network.enabled ? "running" : ""}`}
+                    onClick={() => {
+                      void toggleAgentNetwork(agent.agentWallet);
+                    }}
+                    disabled={loading !== null}
+                    title={agent.network.enabled ? "Disable mesh networking" : "Enable mesh networking (--network)"}
+                  >
+                    <Globe size={18} />
                   </button>
                   <button
                     className="icon-btn danger"

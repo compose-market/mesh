@@ -53,7 +53,7 @@ export function SkillsMarketplace({ state, onStateChange }: SkillsMarketplacePro
   }, [loadSkills]);
 
   const handleInstall = async (skill: Skill) => {
-    if (!state.permissions.filesystemWrite) {
+    if (!state.permissionDefaults.filesystemWrite) {
       showNotification("error", "Enable Filesystem Write permission in Settings to install skills.");
       return;
     }
@@ -164,7 +164,7 @@ export function SkillsMarketplace({ state, onStateChange }: SkillsMarketplacePro
                 </button>
                 <button
                   className={`action-btn primary ${installed ? "installed-btn" : ""}`}
-                  disabled={installed || isInstalling || !state.permissions.filesystemWrite}
+                  disabled={installed || isInstalling || !state.permissionDefaults.filesystemWrite}
                   onClick={() => {
                     void handleInstall(skill);
                   }}
