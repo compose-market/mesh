@@ -17,9 +17,11 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_cbor = "0.11"
 futures = "0.3"
-libp2p = { version = "0.54", features = ["tokio", "tcp", "dns", "noise", "yamux", "identify", "ping", "gossipsub", "macros"] }
+libp2p = { version = "0.54", features = ["tokio", "tcp", "dns", "noise", "yamux", "identify", "ping", "gossipsub", "kad", "relay", "dcutr", "autonat", "rendezvous", "macros"] }
 tokio = { version = "1", features = ["sync", "time", "macros"] }
+void = "1.0"
 
 [features]
 default = ["custom-protocol"]
