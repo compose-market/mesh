@@ -1,23 +1,29 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  createDesktopNetworkToken,
-  deleteDesktopNetworkPresence,
-  fetchDesktopNetworkBootstrap,
-  upsertDesktopNetworkPresence,
-  type DesktopNetworkBootstrapResponse,
-} from "./api";
+import { resolveMeshBootstrap, resolveLocalMeshBootstrap, type MeshBootstrapResolution } from "./mesh-bootstrap";
 import type { DesktopIdentityContext } from "./types";
 
 interface MeshJoinRequest {
   userAddress: string;
   agentWallet: string;
-  sessionId: string;
-  composeKeyId: string;
   deviceId: string;
   chainId: number;
   gossipTopic: string;
+  announceTopic: string;
+  kadProtocol: string;
+  heartbeatMs: number;
+  capabilities: string[];
   bootstrapMultiaddrs: string[];
   relayMultiaddrs: string[];
+}
+
+interface MeshBootstrapConfig {
+  bootstrapMultiaddrs: string[];
+  relayMultiaddrs: string[];
+  gossipTopic: string;
+  announceTopic: string;
+  kadProtocol: string;
+  heartbeatMs: number;
+  source: "dns" | "local";
 }
 
 export interface MeshRuntimeStatus {
@@ -25,8 +31,6 @@ export interface MeshRuntimeStatus {
   status: "dormant" | "connecting" | "online" | "error";
   userAddress: string | null;
   agentWallet: string | null;
-  sessionId: string | null;
-  composeKeyId: string | null;
   deviceId: string | null;
   peerId: string | null;
   listenMultiaddrs: string[];
@@ -38,7 +42,6 @@ export interface MeshRuntimeStatus {
 
 export interface MeshDesiredState {
   enabled: boolean;
-  lambdaUrl: string;
   identity: DesktopIdentityContext;
   agentWallet: string;
   deviceId: string;
@@ -54,8 +57,6 @@ function dormantStatus(): MeshRuntimeStatus {
     status: "dormant",
     userAddress: null,
     agentWallet: null,
-    sessionId: null,
-    composeKeyId: null,
     deviceId: null,
     peerId: null,
     listenMultiaddrs: [],
@@ -89,13 +90,25 @@ async function stopMeshRuntime(): Promise<MeshRuntimeStatus> {
   return invoke<MeshRuntimeStatus>("desktop_network_leave");
 }
 
+function normalizeBootstrap(resolution: MeshBootstrapResolution): MeshBootstrapConfig {
+  return {
+    bootstrapMultiaddrs: [...resolution.bootstrapMultiaddrs],
+    relayMultiaddrs: [...resolution.relayMultiaddrs],
+    gossipTopic: resolution.gossipTopic,
+    announceTopic: resolution.announceTopic,
+    kadProtocol: resolution.kadProtocol,
+    heartbeatMs: resolution.heartbeatMs,
+    source: resolution.source,
+  };
+}
+
 class DesktopMeshService {
   private desired: MeshDesiredState | null = null;
   private syncTimer: number | null = null;
   private syncInFlight = false;
-  private token: string | null = null;
-  private tokenExpiresAt = 0;
-  private bootstrap: DesktopNetworkBootstrapResponse | null = null;
+  private bootstrap: MeshBootstrapConfig | null = null;
+  private bootstrapResolvedAt = 0;
+  private lastJoinFingerprint: string | null = null;
   private lastStatus: MeshRuntimeStatus = dormantStatus();
   private onStatus: ((status: MeshRuntimeStatus) => void) | null = null;
 
@@ -105,11 +118,24 @@ class DesktopMeshService {
     }
     return [
       state.identity.userAddress.toLowerCase(),
-      state.identity.composeKeyId,
-      state.identity.sessionId,
+      String(state.identity.chainId),
       state.agentWallet.toLowerCase(),
       state.deviceId,
-      state.lambdaUrl,
+    ].join("|");
+  }
+
+  private buildJoinFingerprint(state: MeshDesiredState, bootstrap: MeshBootstrapConfig): string {
+    return [
+      state.identity.userAddress.toLowerCase(),
+      state.agentWallet.toLowerCase(),
+      state.deviceId,
+      String(state.identity.chainId),
+      bootstrap.gossipTopic,
+      bootstrap.announceTopic,
+      bootstrap.kadProtocol,
+      String(bootstrap.heartbeatMs),
+      bootstrap.bootstrapMultiaddrs.join(","),
+      bootstrap.relayMultiaddrs.join(","),
     ].join("|");
   }
 
@@ -182,55 +208,27 @@ class DesktopMeshService {
     }
   }
 
-  private invalidateToken(): void {
-    this.token = null;
-    this.tokenExpiresAt = 0;
-    this.bootstrap = null;
-  }
-
-  private async ensureTokenAndBootstrap(): Promise<void> {
-    if (!this.desired) {
-      throw new Error("mesh desired state not configured");
-    }
-
+  private async ensureBootstrap(): Promise<void> {
     const now = Date.now();
-    const tokenStillValid = this.token && this.tokenExpiresAt > now + 10_000;
-    if (tokenStillValid && this.bootstrap) {
+    if (this.bootstrap && (now - this.bootstrapResolvedAt) < 120_000) {
       return;
     }
 
-    const tokenResponse = await createDesktopNetworkToken({
-      lambdaUrl: this.desired.lambdaUrl,
-      identity: this.desired.identity,
-      agentWallet: this.desired.agentWallet,
-      deviceId: this.desired.deviceId,
-      chainId: this.desired.identity.chainId,
-    });
-    this.token = tokenResponse.token;
-    this.tokenExpiresAt = tokenResponse.expiresAt;
-    this.bootstrap = await fetchDesktopNetworkBootstrap({
-      lambdaUrl: this.desired.lambdaUrl,
-      networkToken: this.token,
-    });
+    try {
+      const resolved = await resolveMeshBootstrap();
+      this.bootstrap = normalizeBootstrap(resolved);
+    } catch {
+      this.bootstrap = normalizeBootstrap(resolveLocalMeshBootstrap());
+    }
+    this.bootstrapResolvedAt = now;
   }
 
   private async stopAndCleanup(): Promise<void> {
     if (!isTauriRuntime()) {
-      this.invalidateToken();
+      this.bootstrap = null;
+      this.bootstrapResolvedAt = 0;
+      this.lastJoinFingerprint = null;
       return;
-    }
-
-    const token = this.token;
-    const desired = this.desired;
-    try {
-      if (token && desired) {
-        await deleteDesktopNetworkPresence({
-          lambdaUrl: desired.lambdaUrl,
-          networkToken: token,
-        });
-      }
-    } catch {
-      // Ignore cleanup failures during shutdown.
     }
 
     try {
@@ -243,7 +241,9 @@ class DesktopMeshService {
         lastError: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      this.invalidateToken();
+      this.bootstrap = null;
+      this.bootstrapResolvedAt = 0;
+      this.lastJoinFingerprint = null;
     }
   }
 
@@ -254,16 +254,18 @@ class DesktopMeshService {
 
     this.syncInFlight = true;
     try {
-      await this.ensureTokenAndBootstrap();
-      if (!this.desired || !this.bootstrap || !this.token) {
+      await this.ensureBootstrap();
+      if (!this.desired || !this.bootstrap) {
         return;
       }
 
       const runtimeStatus = await getMeshStatusFromRuntime();
+      const joinFingerprint = this.buildJoinFingerprint(this.desired, this.bootstrap);
       const mustRestart = (
         !runtimeStatus.running ||
         runtimeStatus.agentWallet !== this.desired.agentWallet.toLowerCase() ||
-        runtimeStatus.deviceId !== this.desired.deviceId
+        runtimeStatus.deviceId !== this.desired.deviceId ||
+        this.lastJoinFingerprint !== joinFingerprint
       );
 
       let activeStatus = runtimeStatus;
@@ -271,31 +273,18 @@ class DesktopMeshService {
         const request: MeshJoinRequest = {
           userAddress: this.desired.identity.userAddress,
           agentWallet: this.desired.agentWallet,
-          sessionId: this.desired.identity.sessionId,
-          composeKeyId: this.desired.identity.composeKeyId,
           deviceId: this.desired.deviceId,
           chainId: this.desired.identity.chainId,
-          gossipTopic: this.bootstrap.bootstrap.gossipTopic,
-          bootstrapMultiaddrs: this.bootstrap.bootstrap.bootstrapMultiaddrs,
-          relayMultiaddrs: this.bootstrap.bootstrap.relayMultiaddrs,
+          gossipTopic: this.bootstrap.gossipTopic,
+          announceTopic: this.bootstrap.announceTopic,
+          kadProtocol: this.bootstrap.kadProtocol,
+          heartbeatMs: this.bootstrap.heartbeatMs,
+          capabilities: [`agent-${this.desired.agentWallet.toLowerCase().replace(/^0x/, "")}`],
+          bootstrapMultiaddrs: this.bootstrap.bootstrapMultiaddrs,
+          relayMultiaddrs: this.bootstrap.relayMultiaddrs,
         };
         activeStatus = await startMeshRuntime(request);
-      }
-
-      if (activeStatus.running && activeStatus.peerId) {
-        await upsertDesktopNetworkPresence({
-          lambdaUrl: this.desired.lambdaUrl,
-          networkToken: this.token,
-          payload: {
-            peerId: activeStatus.peerId,
-            announceMultiaddrs: activeStatus.listenMultiaddrs,
-            metadata: {
-              runtime: "compose-desktop-tauri",
-              mode: "dormant-enabled",
-            },
-            ttlSeconds: this.bootstrap.bootstrap.presenceTtlSeconds,
-          },
-        });
+        this.lastJoinFingerprint = joinFingerprint;
       }
 
       this.publishStatus({
@@ -310,9 +299,7 @@ class DesktopMeshService {
         lastError: message,
         updatedAt: Date.now(),
       });
-      if (message.toLowerCase().includes("token")) {
-        this.invalidateToken();
-      }
+      this.lastJoinFingerprint = null;
     } finally {
       this.syncInFlight = false;
     }

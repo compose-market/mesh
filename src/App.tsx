@@ -298,10 +298,7 @@ export default function App() {
   useEffect(() => {
     if (
       !state?.identity ||
-      !runningNetworkAgent ||
-      !session.active ||
-      !state.identity.composeKeyToken ||
-      !state.identity.sessionId
+      !runningNetworkAgent
     ) {
       void desktopMeshService.setDesiredState(null);
       return;
@@ -309,7 +306,6 @@ export default function App() {
 
     void desktopMeshService.setDesiredState({
       enabled: true,
-      lambdaUrl: state.settings.lambdaUrl,
       identity: state.identity,
       agentWallet: runningNetworkAgent.agentWallet,
       deviceId,
@@ -319,9 +315,7 @@ export default function App() {
     runningNetworkAgent?.agentWallet,
     runningNetworkAgent?.running,
     runningNetworkAgent?.network.enabled,
-    session.active,
     state?.identity,
-    state?.settings.lambdaUrl,
   ]);
 
   const handleSessionUpdate = useCallback((active: boolean, expiresAt: number | null, budget: string | null, sessionId?: string, duration?: number) => {
