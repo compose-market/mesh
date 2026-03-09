@@ -9,6 +9,7 @@ import {
 } from "./storage";
 import type {
   AgentMetadata,
+  BackpackConnectionInfo,
   CreateLinkTokenRequest,
   DesktopIdentityContext,
   InstalledSkill,
@@ -134,7 +135,7 @@ function walletPath(wallet: string): string {
 }
 
 export async function fetchSessionInfo(params: {
-  lambdaUrl: string;
+  apiUrl: string;
   userAddress: string;
   chainId: number;
 }): Promise<{
@@ -146,7 +147,7 @@ export async function fetchSessionInfo(params: {
   chainId: number;
 } | null> {
   try {
-    return await requestJson(`${normalizeBase(params.lambdaUrl)}/api/session`, {
+    return await requestJson(`${normalizeBase(params.apiUrl)}/api/session`, {
       method: "GET",
       headers: withSessionHeaders({
         userAddress: params.userAddress,
@@ -159,12 +160,12 @@ export async function fetchSessionInfo(params: {
 }
 
 export async function redeemDesktopLinkToken(params: {
-  lambdaUrl: string;
+  apiUrl: string;
   token: string;
   deviceId: string;
 }): Promise<RedeemedDesktopContext> {
   const response = await requestJson<{ success: boolean; context: RedeemedDesktopContext }>(
-    `${normalizeBase(params.lambdaUrl)}/api/desktop/link-token/redeem`,
+    `${normalizeBase(params.apiUrl)}/api/desktop/link-token/redeem`,
     {
       method: "POST",
       body: JSON.stringify({
@@ -182,7 +183,7 @@ export async function redeemDesktopLinkToken(params: {
 }
 
 export async function registerDesktopDeployment(params: {
-  lambdaUrl: string;
+  apiUrl: string;
   identity: DesktopIdentityContext;
   agentWallet: string;
   agentCardCid: string;
@@ -190,7 +191,7 @@ export async function registerDesktopDeployment(params: {
   deployedAt: number;
 }): Promise<void> {
   await requestJson(
-    `${normalizeBase(params.lambdaUrl)}/api/desktop/deployments/register`,
+    `${normalizeBase(params.apiUrl)}/api/desktop/deployments/register`,
     {
       method: "POST",
       headers: {
@@ -214,24 +215,28 @@ export async function registerDesktopDeployment(params: {
 }
 
 export async function fetchAgentMetadata(params: {
-  manowarUrl: string;
+  runtimeUrl: string;
   agentWallet: string;
 }): Promise<AgentMetadata> {
   return requestJson<AgentMetadata>(
-    `${normalizeBase(params.manowarUrl)}/agent/${walletPath(params.agentWallet)}`,
+    `${normalizeBase(params.runtimeUrl)}/agent/${walletPath(params.agentWallet)}`,
     { method: "GET" },
   );
 }
 
 export async function callAgent(params: {
-  manowarUrl: string;
+  runtimeUrl: string;
   identity: DesktopIdentityContext;
   agentWallet: string;
   message: string;
   threadId?: string;
+  userId?: string;
+  grantedPermissions?: string[];
+  permissionPolicy?: Record<string, "allow" | "ask" | "deny">;
+  backpackAccounts?: BackpackConnectionInfo[];
 }): Promise<{ output?: string; success?: boolean; error?: string }> {
   return requestJson(
-    `${normalizeBase(params.manowarUrl)}/agent/${walletPath(params.agentWallet)}/chat`,
+    `${normalizeBase(params.runtimeUrl)}/agent/${walletPath(params.agentWallet)}/chat`,
     {
       method: "POST",
       headers: {
@@ -246,9 +251,24 @@ export async function callAgent(params: {
       body: JSON.stringify({
         message: params.message,
         threadId: params.threadId,
+        userId: params.userId,
+        grantedPermissions: params.grantedPermissions,
+        permissionPolicy: params.permissionPolicy,
+        backpackAccounts: params.backpackAccounts,
       }),
     },
   );
+}
+
+export async function fetchBackpackConnections(params: {
+  apiUrl: string;
+  userId: string;
+}): Promise<BackpackConnectionInfo[]> {
+  const response = await requestJson<{ connections?: BackpackConnectionInfo[] }>(
+    `${normalizeBase(params.apiUrl)}/api/backpack/connections?userId=${encodeURIComponent(params.userId)}`,
+    { method: "GET" },
+  );
+  return Array.isArray(response.connections) ? response.connections : [];
 }
 
 function normalizeSkillId(prefix: string, value: string): string {
@@ -633,13 +653,13 @@ export async function getMachineMissingBinaries(binaries: string[]): Promise<str
 }
 
 export async function createDesktopLinkToken(params: {
-  lambdaUrl: string;
+  apiUrl: string;
   composeKeyToken: string;
   userAddress: string;
   chainId: number;
   payload: CreateLinkTokenRequest;
 }): Promise<{ deepLinkUrl: string; token: string; expiresAt: number }> {
-  return requestJson(`${normalizeBase(params.lambdaUrl)}/api/desktop/link-token`, {
+  return requestJson(`${normalizeBase(params.apiUrl)}/api/desktop/link-token`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${params.composeKeyToken}`,
@@ -720,7 +740,7 @@ function normalizeBigintString(value: unknown, fallback = "0"): string {
 }
 
 export async function createSession(params: {
-  lambdaUrl: string;
+  apiUrl: string;
   userAddress: string;
   payload: CreateSessionRequest;
 }): Promise<CreateSessionResponse> {
@@ -735,7 +755,7 @@ export async function createSession(params: {
     name?: string;
     chainId?: number;
   }>(
-    `${normalizeBase(params.lambdaUrl)}/api/keys`,
+    `${normalizeBase(params.apiUrl)}/api/keys`,
     {
       method: "POST",
       headers: {
@@ -768,7 +788,7 @@ export async function createSession(params: {
 }
 
 export async function listComposeKeys(params: {
-  lambdaUrl: string;
+  apiUrl: string;
   userAddress: string;
 }): Promise<ComposeKeyRecord[]> {
   const response = await requestJson<{
@@ -785,7 +805,7 @@ export async function listComposeKeys(params: {
       chainId?: number;
     }>;
   }>(
-    `${normalizeBase(params.lambdaUrl)}/api/keys`,
+    `${normalizeBase(params.apiUrl)}/api/keys`,
     {
       method: "GET",
       headers: withSessionHeaders({
@@ -816,13 +836,13 @@ export async function listComposeKeys(params: {
 }
 
 export async function revokeComposeKey(params: {
-  lambdaUrl: string;
+  apiUrl: string;
   userAddress: string;
   keyId: string;
 }): Promise<boolean> {
   try {
     await requestJson(
-      `${normalizeBase(params.lambdaUrl)}/api/keys/${params.keyId}`,
+      `${normalizeBase(params.apiUrl)}/api/keys/${params.keyId}`,
       {
         method: "DELETE",
         headers: withSessionHeaders({
@@ -837,13 +857,13 @@ export async function revokeComposeKey(params: {
 }
 
 export async function getActiveSessionStatus(params: {
-  lambdaUrl: string;
+  apiUrl: string;
   userAddress: string;
   chainId: number;
 }): Promise<ActiveSessionStatusResponse | null> {
   try {
     const response = await requestJson<ActiveSessionStatusResponse>(
-      `${normalizeBase(params.lambdaUrl)}/api/session`,
+      `${normalizeBase(params.apiUrl)}/api/session`,
       {
         method: "GET",
         headers: withSessionHeaders({
