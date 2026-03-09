@@ -1,13 +1,19 @@
 import { useMemo, useState } from "react";
 import { Eye, Globe, Loader2, Play, ShieldCheck, Square, Trash2 } from "lucide-react";
+import { ShellButton, ShellEmptyState, ShellNotice, ShellPageHeader } from "@compose-market/theme/shell";
+import { fetchAgentMetadata } from "../lib/api";
+import { appendAgentReport, buildMeshAgentCard } from "../lib/agent";
 import {
-  fetchAgentMetadata,
-  registerDesktopDeployment,
-} from "../lib/api";
-import { ensureAgentWorkspace } from "../lib/storage";
+  daemonInstallAgent,
+  daemonMeshSet,
+  daemonStartAgent,
+  daemonStatusToWorkerState,
+  daemonStopAgent,
+} from "../lib/daemon";
+import { ensureAgentWorkspace, permissionAllows } from "../lib/storage";
 import type {
+  AgentDnaLock,
   DesktopRuntimeState,
-  ImmutableAgentLock,
   InstalledAgent,
   SessionState,
 } from "../lib/types";
@@ -15,9 +21,10 @@ import type {
 interface AgentManagerProps {
   state: DesktopRuntimeState;
   session: SessionState;
-  appVersion: string;
   onStateChange: (state: DesktopRuntimeState) => Promise<void>;
   onActivateAgent: (agentWallet: string | null) => void;
+  onOpenAgent: (agentWallet: string) => void;
+  onBrowseMarket: () => void;
 }
 
 async function sha256(text: string): Promise<string> {
@@ -48,7 +55,9 @@ async function buildLock(metadata: {
   agentCardUri: string;
   model: string;
   plugins: Array<string | { registryId: string }>;
-}): Promise<ImmutableAgentLock> {
+  chainId: number;
+  dnaHash?: string;
+}): Promise<AgentDnaLock> {
   const ids = pluginIds(metadata.plugins);
   const mcpToolsHash = await sha256(ids.join("|"));
   return {
@@ -56,13 +65,15 @@ async function buildLock(metadata: {
     agentCardCid: extractCid(metadata.agentCardUri),
     modelId: metadata.model,
     mcpToolsHash,
+    chainId: metadata.chainId,
+    dnaHash: metadata.dnaHash || "",
     lockedAt: Date.now(),
   };
 }
 
-async function validateImmutableLock(agent: InstalledAgent, manowarUrl: string): Promise<void> {
+async function validateImmutableLock(agent: InstalledAgent, runtimeUrl: string): Promise<void> {
   const canonical = await fetchAgentMetadata({
-    manowarUrl,
+    runtimeUrl,
     agentWallet: agent.agentWallet,
   });
   const canonicalLock = await buildLock({
@@ -70,6 +81,8 @@ async function validateImmutableLock(agent: InstalledAgent, manowarUrl: string):
     agentCardUri: canonical.agentCardUri,
     model: canonical.model,
     plugins: canonical.plugins,
+    chainId: agent.lock.chainId,
+    dnaHash: canonical.dnaHash,
   });
 
   if (canonicalLock.modelId !== agent.lock.modelId) {
@@ -86,13 +99,13 @@ async function validateImmutableLock(agent: InstalledAgent, manowarUrl: string):
 export function AgentManager({
   state,
   session,
-  appVersion,
   onStateChange,
   onActivateAgent,
+  onOpenAgent,
+  onBrowseMarket,
 }: AgentManagerProps) {
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [viewing, setViewing] = useState<InstalledAgent | null>(null);
 
   const activeIdentity = state.identity;
   const runningCount = useMemo(() => state.installedAgents.filter((agent) => agent.running).length, [state.installedAgents]);
@@ -102,7 +115,7 @@ export function AgentManager({
       setError("Deep-link context required before deployment.");
       return;
     }
-    if (!state.permissionDefaults.filesystemWrite || !state.permissionDefaults.filesystemEdit) {
+    if (!permissionAllows(state.permissionDefaults.filesystemWrite) || !permissionAllows(state.permissionDefaults.filesystemEdit)) {
       setError("Enable Filesystem Write and Filesystem Edit in Settings before deploying local agents.");
       return;
     }
@@ -113,7 +126,7 @@ export function AgentManager({
 
     try {
       const metadata = await fetchAgentMetadata({
-        manowarUrl: state.settings.manowarUrl,
+        runtimeUrl: state.settings.runtimeUrl,
         agentWallet,
       });
 
@@ -122,6 +135,8 @@ export function AgentManager({
         agentCardUri: metadata.agentCardUri,
         model: metadata.model,
         plugins: metadata.plugins,
+        chainId: activeIdentity.chainId,
+        dnaHash: metadata.dnaHash,
       });
 
       const existing = state.installedAgents.find((agent) => agent.agentWallet === agentWallet);
@@ -160,26 +175,48 @@ export function AgentManager({
           lastHeartbeatAt: null,
           lastError: null,
           updatedAt: 0,
+          publicCard: null,
+          recentPings: [],
+          interactions: [],
         },
+        skillStates: {},
+        reports: [],
       };
 
       await ensureAgentWorkspace(installed);
-      await registerDesktopDeployment({
-        lambdaUrl: state.settings.lambdaUrl,
-        identity: activeIdentity,
-        agentWallet,
+      const daemonStatus = await daemonInstallAgent({
+        agentWallet: installed.agentWallet,
         agentCardCid: installed.lock.agentCardCid,
-        desktopVersion: appVersion,
-        deployedAt: Date.now(),
+        chainId: installed.lock.chainId,
+        modelId: installed.lock.modelId,
+        mcpToolsHash: installed.lock.mcpToolsHash,
+        dnaHash: installed.lock.dnaHash,
       });
+      const reportSeed = appendAgentReport(
+        {
+          ...installed,
+          workerState: daemonStatusToWorkerState(daemonStatus),
+          network: {
+            ...installed.network,
+            publicCard: buildMeshAgentCard(installed),
+          },
+        },
+        {
+          kind: "deployment",
+          title: existing ? "Local deployment refreshed" : "Local deployment created",
+          summary: `${metadata.name} is now available on this device.`,
+          outcome: "success",
+        },
+      );
 
       const nextState: DesktopRuntimeState = {
         ...state,
         installedAgents: existing
-          ? state.installedAgents.map((agent) => (agent.agentWallet === installed.agentWallet ? installed : agent))
-          : [...state.installedAgents, installed],
+          ? state.installedAgents.map((agent) => (agent.agentWallet === reportSeed.agentWallet ? reportSeed : agent))
+          : [...state.installedAgents, reportSeed],
       };
       await onStateChange(nextState);
+      onOpenAgent(agentWallet);
     } catch (deployError) {
       console.error("[agents] deployment failed", deployError);
       setError(deployError instanceof Error ? deployError.message : "Failed to deploy local agent.");
@@ -201,13 +238,30 @@ export function AgentManager({
     setError(null);
     try {
       if (!target.running) {
-        await validateImmutableLock(target, state.settings.manowarUrl);
+        await validateImmutableLock(target, state.settings.runtimeUrl);
       }
 
       const shouldRun = !target.running;
+      const daemonStatus = shouldRun
+        ? await daemonStartAgent(agentWallet)
+        : await daemonStopAgent(agentWallet);
       const nextAgents = state.installedAgents.map((agent) =>
         agent.agentWallet === agentWallet
-          ? { ...agent, running: shouldRun }
+          ? appendAgentReport(
+            {
+              ...agent,
+              running: shouldRun,
+              workerState: daemonStatusToWorkerState(daemonStatus),
+            },
+            {
+              kind: "runtime",
+              title: shouldRun ? "Agent started" : "Agent stopped",
+              summary: shouldRun
+                ? `${agent.metadata.name} is running with the current session budget.`
+                : `${agent.metadata.name} stopped on this device.`,
+              outcome: "info",
+            },
+          )
           : shouldRun
             ? { ...agent, running: false }
             : agent,
@@ -227,7 +281,7 @@ export function AgentManager({
     if (!target) {
       return;
     }
-    if (!target.permissions.filesystemDelete) {
+    if (!permissionAllows(target.permissions.filesystemDelete)) {
       setError("Enable Filesystem Delete in Settings before removing local deployments.");
       return;
     }
@@ -243,17 +297,26 @@ export function AgentManager({
     }
 
     const nextEnabled = !target.network.enabled;
+    await daemonMeshSet(agentWallet, nextEnabled);
     const nextAgents = state.installedAgents.map((agent) => {
       if (agent.agentWallet !== agentWallet) {
         return agent;
       }
       return {
-        ...agent,
+        ...appendAgentReport(agent, {
+          kind: "mesh",
+          title: nextEnabled ? "Mesh signaling enabled" : "Mesh signaling disabled",
+          summary: nextEnabled
+            ? `${agent.metadata.name} is now broadcasting on the local mesh.`
+            : `${agent.metadata.name} left the local mesh.`,
+          outcome: "info",
+        }),
         network: {
           ...agent.network,
           enabled: nextEnabled,
           status: nextEnabled ? agent.network.status : "dormant",
           lastError: nextEnabled ? agent.network.lastError : null,
+          publicCard: buildMeshAgentCard(agent),
           updatedAt: Date.now(),
         },
       };
@@ -263,30 +326,36 @@ export function AgentManager({
 
   return (
     <div className="agent-manager">
-      <div className="skills-manager-header">
-        <div>
-          <h2>Local Agents</h2>
-          <p className="subtitle">{state.installedAgents.length} deployed · {runningCount} running</p>
-        </div>
-        <button
-          className="primary"
-          disabled={!activeIdentity || loading !== null}
-          onClick={() => {
-            void deployCurrentAgent();
-          }}
-        >
-          {loading?.startsWith("deploy:") ? <Loader2 size={14} className="spinner" /> : null}
-          Deploy Current Agent
-        </button>
-      </div>
+      <ShellPageHeader
+        eyebrow="My Agents"
+        title="Local Agents"
+        subtitle={`${state.installedAgents.length} deployed · ${runningCount} running`}
+        actions={(
+          <>
+            <ShellButton tone="secondary" onClick={onBrowseMarket}>
+            Browse Market
+            </ShellButton>
+            <ShellButton
+              tone="primary"
+              disabled={!activeIdentity || loading !== null}
+              onClick={() => {
+                void deployCurrentAgent();
+              }}
+            >
+              {loading?.startsWith("deploy:") ? <Loader2 size={14} className="spinner" /> : null}
+              Deploy Linked Agent
+            </ShellButton>
+          </>
+        )}
+      />
 
-      {error ? <div className="notification notification-error">{error}</div> : null}
+      {error ? <ShellNotice tone="error" className="notification">{error}</ShellNotice> : null}
 
       {state.installedAgents.length === 0 ? (
-        <div className="empty-state">
-          <h3>No local agents deployed</h3>
-          <p>Open desktop from market or agent page to deploy the canonical agent locally.</p>
-        </div>
+        <ShellEmptyState
+          title="No local agents deployed"
+          description="Open the desktop flow from market or from an agent page to deploy the canonical agent locally."
+        />
       ) : (
         <div className="agents-list">
           {state.installedAgents.map((agent) => {
@@ -313,6 +382,12 @@ export function AgentManager({
                       Mesh: {agent.network.enabled ? agent.network.status : "disabled"}
                     </span>
                   </div>
+                  <button
+                    className="agent-open-link"
+                    onClick={() => onOpenAgent(agent.agentWallet)}
+                  >
+                    Open agent settings
+                  </button>
                 </div>
 
                 <div className="agent-actions">
@@ -334,8 +409,8 @@ export function AgentManager({
                   </button>
                   <button
                     className="icon-btn"
-                    onClick={() => setViewing(agent)}
-                    title="View lock details"
+                    onClick={() => onOpenAgent(agent.agentWallet)}
+                    title="Open agent settings"
                   >
                     <Eye size={18} />
                   </button>
@@ -365,15 +440,6 @@ export function AgentManager({
         </div>
       )}
 
-      {viewing ? (
-        <div className="modal-overlay" onClick={() => setViewing(null)}>
-          <div className="modal" onClick={(event) => event.stopPropagation()}>
-            <h3>Immutable Agent Lock</h3>
-            <pre className="agent-json">{JSON.stringify(viewing.lock, null, 2)}</pre>
-            <button onClick={() => setViewing(null)}>Close</button>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

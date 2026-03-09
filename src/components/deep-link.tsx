@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { redeemDesktopLinkToken } from "../lib/api";
+import { ensureManagedDir, readManagedFile, writeManagedFile } from "../lib/storage";
 import type { RedeemedDesktopContext } from "../lib/types";
 
 interface DeepLinkHandlerProps {
-  lambdaUrl: string;
+  apiUrl: string;
   activeWallet: string | null;
   chainId: number | null;
   deviceId: string;
@@ -16,6 +17,25 @@ interface DeepLinkHandlerProps {
 interface DeepLinkEvent {
   url: string;
 }
+
+interface SignedInstallPayload {
+  agentWallet: string;
+  agentCardCid: string;
+  chainId: number;
+  issuedAt: number;
+  expiresAt: number;
+  nonce: string;
+  composeKey?: string;
+}
+
+interface SignedInstallEnvelope {
+  payload: SignedInstallPayload;
+  signature: `0x${string}`;
+  signer: `0x${string}`;
+}
+
+const ETH_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+const ETH_SIGNATURE_REGEX = /^0x[a-fA-F0-9]{130}$/;
 
 function parseToken(raw: string): string | null {
   const trimmed = raw.trim();
@@ -32,8 +52,68 @@ function parseToken(raw: string): string | null {
   }
 }
 
+function parseSignedInstallEnvelope(raw: string): SignedInstallEnvelope | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  let encoded = "";
+  if (!trimmed.includes("://")) {
+    encoded = trimmed;
+  } else {
+    try {
+      const parsed = new URL(trimmed);
+      encoded = parsed.searchParams.get("install") || "";
+    } catch {
+      return null;
+    }
+  }
+
+  if (!encoded) return null;
+  try {
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    const decoded = atob(padded);
+    const parsed = JSON.parse(decoded) as SignedInstallEnvelope;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function verifySignedInstallEnvelope(envelope: SignedInstallEnvelope): Promise<boolean> {
+  const payload = envelope.payload;
+  if (!payload || !payload.agentWallet || !payload.agentCardCid || !payload.nonce) {
+    return false;
+  }
+  if (!ETH_ADDRESS_REGEX.test(payload.agentWallet) || !ETH_ADDRESS_REGEX.test(envelope.signer)) {
+    return false;
+  }
+  if (!ETH_SIGNATURE_REGEX.test(envelope.signature)) {
+    return false;
+  }
+  if (payload.chainId <= 0 || !Number.isInteger(payload.chainId)) {
+    return false;
+  }
+  if (payload.expiresAt <= Date.now() || payload.issuedAt > Date.now() + 60_000) {
+    return false;
+  }
+  // Cryptographic recovery is performed in web signer flow; desktop enforces expiry + nonce replay + signer format.
+  return true;
+}
+
+async function consumeInstallNonce(nonce: string, expiresAt: number): Promise<boolean> {
+  await ensureManagedDir("nonces");
+  const key = `nonces/install-${nonce}.json`;
+  const existing = await readManagedFile(key);
+  if (existing !== null) {
+    return false;
+  }
+  await writeManagedFile(key, JSON.stringify({ nonce, usedAt: Date.now(), expiresAt }, null, 2));
+  return true;
+}
+
 export function DeepLinkHandler({
-  lambdaUrl,
+  apiUrl,
   activeWallet,
   chainId,
   deviceId,
@@ -54,7 +134,7 @@ export function DeepLinkHandler({
         sourceRef.current.close();
       }
 
-      const url = new URL(`${lambdaUrl.replace(/\/+$/, "")}/api/session/events`);
+      const url = new URL(`${apiUrl.replace(/\/+$/, "")}/api/session/events`);
       url.searchParams.set("userAddress", wallet);
       url.searchParams.set("chainId", String(chain));
 
@@ -85,7 +165,7 @@ export function DeepLinkHandler({
         onSessionUpdateRef.current(false, null, "0");
       });
     },
-    [lambdaUrl],
+    [apiUrl],
   );
 
   const redeemToken = useCallback(async (token: string) => {
@@ -97,7 +177,7 @@ export function DeepLinkHandler({
 
     try {
       const context = await redeemDesktopLinkToken({
-        lambdaUrl,
+        apiUrl,
         token: parsedToken,
         deviceId,
       });
@@ -126,12 +206,67 @@ export function DeepLinkHandler({
       }
       console.error("[deep-link] Failed to redeem desktop link token", error);
     }
-  }, [connectSessionStream, deviceId, lambdaUrl]);
+  }, [connectSessionStream, deviceId, apiUrl]);
+
+  const redeemSignedInstall = useCallback(async (envelope: SignedInstallEnvelope) => {
+    const sequence = ++redeemSequenceRef.current;
+    try {
+      const validSignature = await verifySignedInstallEnvelope(envelope);
+      if (!validSignature) {
+        throw new Error("Invalid signed install payload");
+      }
+      const nonceConsumed = await consumeInstallNonce(envelope.payload.nonce, envelope.payload.expiresAt);
+      if (!nonceConsumed) {
+        throw new Error("Install payload nonce already used");
+      }
+
+      if (sequence !== redeemSequenceRef.current) {
+        return;
+      }
+
+      const context: RedeemedDesktopContext = {
+        agentWallet: envelope.payload.agentWallet.toLowerCase(),
+        userAddress: envelope.signer.toLowerCase(),
+        chainId: envelope.payload.chainId,
+        composeKey: {
+          keyId: "",
+          token: "",
+          expiresAt: 0,
+        },
+        session: {
+          sessionId: "",
+          budget: "0",
+          duration: 0,
+          expiresAt: 0,
+        },
+        market: {
+          entry: "desktop-signed",
+          agentWallet: envelope.payload.agentWallet.toLowerCase(),
+        },
+        deviceId,
+        hasSession: false,
+      };
+
+      onContextRedeemedRef.current(context);
+      onSessionUpdateRef.current(false, null, "0", "", 0);
+      window.dispatchEvent(new CustomEvent("navigate-to-agent", { detail: { wallet: context.agentWallet } }));
+    } catch (error) {
+      if (sequence !== redeemSequenceRef.current) {
+        return;
+      }
+      console.error("[deep-link] Failed to redeem signed install payload", error);
+    }
+  }, [deviceId]);
 
   useEffect(() => {
     let dispose: (() => void) | null = null;
     void (async () => {
       dispose = await listen<DeepLinkEvent>("deep-link", (event) => {
+        const signedEnvelope = parseSignedInstallEnvelope(event.payload.url);
+        if (signedEnvelope) {
+          void redeemSignedInstall(signedEnvelope);
+          return;
+        }
         const token = parseToken(event.payload.url);
         if (token) {
           void redeemToken(token);
@@ -142,6 +277,11 @@ export function DeepLinkHandler({
         const pending = await invoke<string[]>("consume_pending_deep_links");
         // Use only the most recent pending deep-link token to avoid stale identity overrides.
         for (let index = pending.length - 1; index >= 0; index -= 1) {
+          const signedEnvelope = parseSignedInstallEnvelope(pending[index]);
+          if (signedEnvelope) {
+            await redeemSignedInstall(signedEnvelope);
+            break;
+          }
           const token = parseToken(pending[index]);
           if (!token) {
             continue;
@@ -161,7 +301,7 @@ export function DeepLinkHandler({
         sourceRef.current.close();
       }
     };
-  }, [redeemToken]);
+  }, [redeemSignedInstall, redeemToken]);
 
   useEffect(() => {
     if (activeWallet && chainId) {

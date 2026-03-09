@@ -1,14 +1,18 @@
 import { useMemo, useState } from "react";
 import { ExternalLink, Loader2, ToggleLeft, ToggleRight, Trash2 } from "lucide-react";
+import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { uninstallSkill } from "../lib/api";
+import { daemonUpdateSkill } from "../lib/daemon";
+import { permissionAllows } from "../lib/storage";
 import type { DesktopRuntimeState } from "../lib/types";
 
 interface SkillsManagerProps {
   state: DesktopRuntimeState;
   onStateChange: (next: DesktopRuntimeState) => Promise<void>;
+  agentWallet?: string | null;
 }
 
-export function SkillsManager({ state, onStateChange }: SkillsManagerProps) {
+export function SkillsManager({ state, onStateChange, agentWallet }: SkillsManagerProps) {
   const [busySkill, setBusySkill] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,16 +20,33 @@ export function SkillsManager({ state, onStateChange }: SkillsManagerProps) {
     () => state.installedSkills.filter((skill) => skill.enabled).length,
     [state.installedSkills],
   );
+  const targetAgent = useMemo(
+    () => (
+      (agentWallet ? state.installedAgents.find((agent) => agent.agentWallet === agentWallet) : null) ||
+      state.installedAgents.find((agent) => agent.running) ||
+      state.installedAgents[0] ||
+      null
+    ),
+    [agentWallet, state.installedAgents],
+  );
 
   const toggleSkill = async (skillId: string) => {
     const nextSkills = state.installedSkills.map((skill) =>
       skill.id === skillId ? { ...skill, enabled: !skill.enabled } : skill,
     );
+
+    if (targetAgent) {
+      const toggled = nextSkills.find((skill) => skill.id === skillId);
+      if (toggled) {
+        await daemonUpdateSkill(targetAgent.agentWallet, skillId, toggled.enabled);
+      }
+    }
+
     await onStateChange({ ...state, installedSkills: nextSkills });
   };
 
   const removeSkill = async (skillId: string) => {
-    if (!state.permissionDefaults.filesystemDelete) {
+    if (!permissionAllows(state.permissionDefaults.filesystemDelete)) {
       setError("Enable Filesystem Delete permission in Settings to uninstall skills.");
       return;
     }
@@ -95,6 +116,15 @@ export function SkillsManager({ state, onStateChange }: SkillsManagerProps) {
                   className="icon-btn"
                   onClick={() => window.open(skill.htmlUrl, "_blank", "noopener,noreferrer")}
                   title="Open source repository"
+                >
+                  <ExternalLink size={18} />
+                </button>
+                <button
+                  className="icon-btn"
+                  onClick={() => {
+                    void openUrl(`${skill.localPath}/SKILL.md`);
+                  }}
+                  title="Open local SKILL.md"
                 >
                   <ExternalLink size={18} />
                 </button>

@@ -30,7 +30,7 @@ const DURATION_OPTIONS = [1, 6, 12, 24] as const;
 const USDC_DECIMALS = 1_000_000n;
 
 interface SessionIndicatorProps {
-  lambdaUrl: string;
+  apiUrl: string;
   identity: DesktopIdentityContext | null;
   session: SessionState;
   onRefreshSession: () => Promise<void>;
@@ -39,7 +39,7 @@ interface SessionIndicatorProps {
 
 interface SessionBudgetDialogProps {
   open: boolean;
-  lambdaUrl: string;
+  apiUrl: string;
   identity: DesktopIdentityContext;
   onClose: () => void;
   onRefreshSession: () => Promise<void>;
@@ -48,7 +48,7 @@ interface SessionBudgetDialogProps {
 
 interface SessionManageDialogProps {
   open: boolean;
-  lambdaUrl: string;
+  apiUrl: string;
   identity: DesktopIdentityContext;
   session: SessionState;
   onClose: () => void;
@@ -58,7 +58,7 @@ interface SessionManageDialogProps {
 
 interface ComposeKeyDialogProps {
   open: boolean;
-  lambdaUrl: string;
+  apiUrl: string;
   identity: DesktopIdentityContext;
   session: SessionState;
   onClose: () => void;
@@ -106,7 +106,7 @@ function isActiveKey(key: ComposeKeyRecord): boolean {
 }
 
 export function SessionIndicator({
-  lambdaUrl,
+  apiUrl,
   identity,
   session,
   onRefreshSession,
@@ -134,7 +134,7 @@ export function SessionIndicator({
         </button>
         <SessionBudgetDialog
           open={budgetDialogOpen}
-          lambdaUrl={lambdaUrl}
+          apiUrl={apiUrl}
           identity={identity}
           onClose={() => setBudgetDialogOpen(false)}
           onRefreshSession={onRefreshSession}
@@ -199,7 +199,7 @@ export function SessionIndicator({
 
       <SessionManageDialog
         open={manageDialogOpen}
-        lambdaUrl={lambdaUrl}
+        apiUrl={apiUrl}
         identity={identity}
         session={session}
         onClose={() => setManageDialogOpen(false)}
@@ -209,7 +209,7 @@ export function SessionIndicator({
 
       <ComposeKeyDialog
         open={keyDialogOpen}
-        lambdaUrl={lambdaUrl}
+        apiUrl={apiUrl}
         identity={identity}
         session={session}
         onClose={() => setKeyDialogOpen(false)}
@@ -222,7 +222,7 @@ export function SessionIndicator({
 
 export function SessionBudgetDialog({
   open,
-  lambdaUrl,
+  apiUrl,
   identity,
   onClose,
   onRefreshSession,
@@ -243,7 +243,7 @@ export function SessionBudgetDialog({
     try {
       const expiresAt = Date.now() + durationHours * 60 * 60 * 1000;
       await createSession({
-        lambdaUrl,
+        apiUrl,
         userAddress: identity.userAddress,
         payload: {
           budgetLimit: Number.parseInt(selectedBudget, 10),
@@ -349,7 +349,7 @@ export function SessionBudgetDialog({
 
 export function SessionManageDialog({
   open,
-  lambdaUrl,
+  apiUrl,
   identity,
   session,
   onClose,
@@ -370,7 +370,7 @@ export function SessionManageDialog({
     setLoading(true);
     try {
       const response = await listComposeKeys({
-        lambdaUrl,
+        apiUrl,
         userAddress: identity.userAddress,
       });
       setKeys(response);
@@ -380,7 +380,7 @@ export function SessionManageDialog({
     } finally {
       setLoading(false);
     }
-  }, [identity.userAddress, lambdaUrl, onNotify]);
+  }, [identity.userAddress, apiUrl, onNotify]);
 
   useEffect(() => {
     if (open) {
@@ -394,7 +394,7 @@ export function SessionManageDialog({
 
   const handleRevoke = async (keyId: string) => {
     const success = await revokeComposeKey({
-      lambdaUrl,
+      apiUrl,
       userAddress: identity.userAddress,
       keyId,
     });
@@ -511,7 +511,7 @@ export function SessionManageDialog({
 
       <ComposeKeyDialog
         open={createDialogOpen}
-        lambdaUrl={lambdaUrl}
+        apiUrl={apiUrl}
         identity={identity}
         session={session}
         onClose={() => {
@@ -527,7 +527,7 @@ export function SessionManageDialog({
 
 export function ComposeKeyDialog({
   open,
-  lambdaUrl,
+  apiUrl,
   identity,
   session,
   onClose,
@@ -559,7 +559,7 @@ export function ComposeKeyDialog({
     setGenerating(true);
     try {
       const response = await createSession({
-        lambdaUrl,
+        apiUrl,
         userAddress: identity.userAddress,
         payload: {
           budgetLimit: Number.parseInt(session.budgetRemaining || "0", 10),

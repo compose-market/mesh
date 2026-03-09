@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Download, ExternalLink, Filter, Loader2, RefreshCw, Search, X } from "lucide-react";
 import { discoverSkills, installSkill } from "../lib/api";
+import { permissionAllows } from "../lib/storage";
 import type { DesktopRuntimeState, Skill } from "../lib/types";
 
 interface SkillsMarketplaceProps {
@@ -53,7 +54,7 @@ export function SkillsMarketplace({ state, onStateChange }: SkillsMarketplacePro
   }, [loadSkills]);
 
   const handleInstall = async (skill: Skill) => {
-    if (!state.permissionDefaults.filesystemWrite) {
+    if (!permissionAllows(state.permissionDefaults.filesystemWrite)) {
       showNotification("error", "Enable Filesystem Write permission in Settings to install skills.");
       return;
     }
@@ -164,7 +165,7 @@ export function SkillsMarketplace({ state, onStateChange }: SkillsMarketplacePro
                 </button>
                 <button
                   className={`action-btn primary ${installed ? "installed-btn" : ""}`}
-                  disabled={installed || isInstalling || !state.permissionDefaults.filesystemWrite}
+                  disabled={installed || isInstalling || !permissionAllows(state.permissionDefaults.filesystemWrite)}
                   onClick={() => {
                     void handleInstall(skill);
                   }}
