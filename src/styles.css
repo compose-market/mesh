@@ -32,6 +32,10 @@ body {
   flex-direction: column;
 }
 
+.header-shell {
+  margin: 16px 24px 0;
+}
+
 /* Header */
 .header {
   display: flex;
@@ -467,9 +471,9 @@ button.compact {
 .nav {
   display: flex;
   gap: 4px;
-  padding: 8px 24px;
-  background: hsl(var(--card));
-  border-bottom: 1px solid hsl(var(--border));
+  padding: 12px 24px 0;
+  background: transparent;
+  border-bottom: 0;
 }
 
 .nav-btn {
@@ -497,7 +501,7 @@ button.compact {
 /* Main Content */
 .main {
   flex: 1;
-  padding: 24px;
+  padding: 16px 24px 24px;
   overflow-y: auto;
 }
 
@@ -1527,5 +1531,586 @@ button.primary:hover {
 
   .session-indicator-btn.active {
     gap: 6px;
+  }
+}
+
+.shell-nav {
+  gap: 10px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.connect-banner {
+  margin: 16px 24px 0;
+  padding: 16px 18px;
+  border: 1px solid hsl(var(--primary) / 0.28);
+  background:
+    linear-gradient(135deg, hsl(var(--primary) / 0.12), transparent 55%),
+    linear-gradient(180deg, hsl(var(--card)), hsl(var(--muted)));
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.connect-banner strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.connect-banner span {
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+}
+
+.connect-modal-copy {
+  color: hsl(var(--muted-foreground));
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+
+.settings-modal-shell {
+  max-width: 720px;
+}
+
+.agent-manager {
+  display: grid;
+  gap: 18px;
+}
+
+.agent-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.agent-open-link {
+  min-width: 110px;
+}
+
+.empty-inline {
+  padding: 14px;
+  border: 1px dashed hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--muted) / 0.45);
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+}
+
+.agent-detail-page {
+  display: grid;
+  gap: 18px;
+}
+
+.agent-detail-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(240px, 0.8fr);
+  gap: 18px;
+  padding: 22px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top left, hsl(var(--primary) / 0.16), transparent 45%),
+    linear-gradient(180deg, hsl(var(--card)), hsl(var(--muted) / 0.65));
+}
+
+.detail-back-btn {
+  width: fit-content;
+}
+
+.agent-detail-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-detail-copy h2 {
+  font-size: 28px;
+  line-height: 1;
+  font-family: var(--font-display), "Orbitron", sans-serif;
+}
+
+.agent-detail-copy p,
+.detail-copy {
+  color: hsl(var(--muted-foreground));
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.agent-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.agent-detail-meta span,
+.mesh-stat-pill,
+.mesh-sidebar-meta span,
+.detail-stat-card span {
+  font-size: 12px;
+}
+
+.agent-detail-meta span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: hsl(var(--background) / 0.5);
+  border: 1px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+}
+
+.agent-detail-stats,
+.mesh-header-stats,
+.mesh-kpi-row {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-detail-stats {
+  align-content: start;
+}
+
+.agent-detail-stats > div,
+.detail-stat-card {
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background) / 0.58);
+  display: grid;
+  gap: 4px;
+}
+
+.agent-detail-stats strong,
+.detail-stat-card strong,
+.mesh-sidebar-meta strong {
+  font-size: 15px;
+  color: hsl(var(--foreground));
+  overflow-wrap: anywhere;
+}
+
+.detail-tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.detail-tab-btn {
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+  border: 1px solid hsl(var(--border));
+}
+
+.detail-tab-btn.active {
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary));
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.detail-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card) / 0.92);
+}
+
+.detail-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-panel-header h3 {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+
+.detail-inline-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.active-inline-tab {
+  border-color: hsl(var(--primary)) !important;
+  color: hsl(var(--primary)) !important;
+}
+
+.detail-stat-stack,
+.report-list,
+.mesh-feed-list {
+  display: grid;
+  gap: 10px;
+}
+
+.report-card,
+.peer-signal-card,
+.mesh-feed-item {
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.55);
+}
+
+.report-card-head,
+.peer-signal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.report-card p,
+.peer-signal-card p,
+.mesh-feed-item span,
+.mesh-sidebar-card p {
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.report-card pre,
+.log-console {
+  border-radius: 12px;
+  background: hsl(var(--background) / 0.88);
+  border: 1px solid hsl(var(--border));
+}
+
+.report-card pre {
+  margin-top: 10px;
+  padding: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.report-success {
+  border-color: hsl(142 71% 45% / 0.45);
+}
+
+.report-warning {
+  border-color: hsl(35 92% 50% / 0.4);
+}
+
+.report-error {
+  border-color: hsl(var(--destructive) / 0.48);
+}
+
+.report-info {
+  border-color: hsl(var(--primary) / 0.4);
+}
+
+.log-console {
+  padding: 12px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.log-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  padding: 6px 0;
+  border-bottom: 1px solid hsl(var(--border) / 0.45);
+}
+
+.log-line:last-child {
+  border-bottom: 0;
+}
+
+.mesh-empty {
+  display: grid;
+  place-items: center;
+  min-height: 56vh;
+  text-align: center;
+  gap: 10px;
+  color: hsl(var(--muted-foreground));
+}
+
+.mesh-page {
+  display: grid;
+  gap: 18px;
+}
+
+.mesh-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mesh-page-header h2 {
+  font-size: 28px;
+  line-height: 1;
+  margin-bottom: 8px;
+  font-family: var(--font-display), "Orbitron", sans-serif;
+}
+
+.mesh-page-header p {
+  color: hsl(var(--muted-foreground));
+  max-width: 780px;
+}
+
+.mesh-header-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mesh-stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--card));
+}
+
+.mesh-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(300px, 0.9fr);
+  gap: 18px;
+}
+
+.mesh-radar {
+  position: relative;
+  min-height: 620px;
+  border-radius: 22px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  background:
+    radial-gradient(circle at center, hsl(var(--primary) / 0.08), transparent 45%),
+    linear-gradient(180deg, rgb(1 8 15 / 0.95), rgb(2 6 23 / 0.98));
+}
+
+.mesh-radar-grid,
+.mesh-radar-sweep,
+.mesh-edge-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.mesh-radar-grid {
+  background:
+    radial-gradient(circle at center, transparent 13%, hsl(var(--primary) / 0.14) 13.5%, transparent 14%) center / 100% 100% no-repeat,
+    radial-gradient(circle at center, transparent 25%, hsl(var(--primary) / 0.13) 25.4%, transparent 26%) center / 100% 100% no-repeat,
+    radial-gradient(circle at center, transparent 37%, hsl(var(--primary) / 0.11) 37.3%, transparent 38%) center / 100% 100% no-repeat,
+    radial-gradient(circle at center, transparent 49%, hsl(var(--primary) / 0.09) 49.2%, transparent 50%) center / 100% 100% no-repeat,
+    linear-gradient(90deg, transparent 49.8%, hsl(var(--primary) / 0.12) 50%, transparent 50.2%),
+    linear-gradient(0deg, transparent 49.8%, hsl(var(--primary) / 0.12) 50%, transparent 50.2%);
+}
+
+.mesh-radar-sweep {
+  background: conic-gradient(from 90deg, transparent 0deg, transparent 308deg, hsl(var(--primary) / 0.22) 342deg, transparent 360deg);
+  mix-blend-mode: screen;
+  animation: mesh-sweep 8s linear infinite;
+  transform-origin: 50% 50%;
+}
+
+@keyframes mesh-sweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.mesh-edge {
+  stroke: hsl(var(--primary) / 0.24);
+  stroke-width: 0.4;
+}
+
+.mesh-edge.active {
+  stroke: hsl(var(--primary));
+  stroke-width: 0.65;
+}
+
+.mesh-center-node {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  z-index: 2;
+}
+
+.mesh-center-core {
+  width: 88px;
+  height: 88px;
+  border-radius: 999px;
+  background: radial-gradient(circle, hsl(var(--primary) / 0.9), hsl(var(--primary) / 0.18) 60%, transparent 61%);
+  box-shadow: 0 0 48px hsl(var(--primary) / 0.45);
+}
+
+.mesh-center-copy {
+  text-align: center;
+  display: grid;
+  gap: 4px;
+}
+
+.mesh-center-copy strong {
+  font-size: 14px;
+}
+
+.mesh-center-copy span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mesh-peer-node {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  z-index: 3;
+}
+
+.mesh-peer-pulse,
+.mesh-peer-dot {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+}
+
+.mesh-peer-pulse {
+  background: hsl(var(--primary) / 0.2);
+  animation: mesh-peer-pulse 2.8s ease-out infinite;
+}
+
+.mesh-peer-node.stale .mesh-peer-pulse {
+  background: hsl(var(--muted-foreground) / 0.18);
+}
+
+.mesh-peer-dot {
+  inset: 3px;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 18px hsl(var(--primary) / 0.65);
+}
+
+.mesh-peer-node.selected .mesh-peer-dot {
+  background: hsl(var(--primary));
+  box-shadow: 0 0 24px hsl(var(--primary) / 0.9);
+}
+
+@keyframes mesh-peer-pulse {
+  0% { transform: scale(0.8); opacity: 0.9; }
+  70% { transform: scale(2.2); opacity: 0; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+.mesh-peer-preview {
+  position: absolute;
+  left: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  gap: 3px;
+  min-width: 180px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgb(2 6 23 / 0.96);
+  border: 1px solid hsl(var(--border));
+  text-align: left;
+  pointer-events: none;
+}
+
+.mesh-peer-preview strong {
+  font-size: 12px;
+}
+
+.mesh-peer-preview span,
+.mesh-sidebar-card span,
+.mesh-feed-item small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.mesh-sidebar {
+  display: grid;
+  gap: 14px;
+}
+
+.mesh-sidebar-card,
+.mesh-sidebar-feed {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card) / 0.94);
+}
+
+.mesh-sidebar-card.muted {
+  background: hsl(var(--muted) / 0.55);
+}
+
+.mesh-sidebar-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.mesh-sidebar-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mesh-feed-item {
+  text-align: left;
+  display: grid;
+  gap: 4px;
+}
+
+@media (max-width: 1100px) {
+  .mesh-layout,
+  .detail-grid,
+  .agent-detail-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .mesh-header-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .main {
+    padding: 16px;
+  }
+
+  .connect-banner,
+  .mesh-page-header,
+  .connect-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .mesh-radar {
+    min-height: 460px;
+  }
+
+  .agent-detail-copy h2,
+  .mesh-page-header h2 {
+    font-size: 22px;
   }
 }

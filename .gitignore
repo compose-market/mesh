@@ -4,3 +4,6 @@ tauri/target
 .DS_Store
 .env
 README.md
+coverage
+scripts
+tests

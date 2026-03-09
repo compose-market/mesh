@@ -1,15 +1,35 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Check, Link2, RefreshCw, Shield } from "lucide-react";
+import { AlertTriangle, Check, Link2, RefreshCw, Settings2, Shield, Waypoints } from "lucide-react";
+import {
+  ShellBanner,
+  ShellButton,
+  ShellEmptyState,
+  ShellModal,
+  ShellNotice,
+  ShellPageHeader,
+  ShellPanel,
+  ShellPill,
+  ShellTab,
+  ShellTabStrip,
+} from "@compose-market/theme/shell";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
-import { AgentManager } from "./components/AgentManager";
-import { DeepLinkHandler } from "./components/DeepLinkHandler";
+import { AgentManager } from "./components/manager";
+import { AgentDetailPage } from "./components/agent-details";
+import { DeepLinkHandler } from "./components/deep-link";
+import { MeshNetworkPage } from "./components/mesh";
 import { SessionIndicator } from "./components/session";
-import { SkillsManager } from "./components/SkillsManager";
-import { SkillsMarketplace } from "./components/SkillsMarketplace";
-import { callAgent, getActiveSessionStatus } from "./lib/api";
+import { callAgent, fetchBackpackConnections, getActiveSessionStatus } from "./lib/api";
+import { daemonInstallLaunchAgent, daemonLaunchAgentStatus, daemonUpdatePermissions } from "./lib/daemon";
 import { heartbeatService } from "./lib/heartbeat";
 import { desktopMeshService, type MeshRuntimeStatus } from "./lib/network";
 import { queryMediaPermission, requestMediaPermission } from "./lib/permissions";
+import {
+  appendAgentReport,
+  buildAgentExecutionPolicy,
+  buildMeshAgentCard,
+  mergeMeshPeerSignals,
+  recordMeshPeerSignal,
+} from "./lib/agent";
 import {
   ensureSkillsRoot,
   getDesktopPaths,
@@ -20,16 +40,18 @@ import type {
   AgentPermissionPolicy,
   DesktopIdentityContext,
   DesktopRuntimeState,
+  MeshPeerSignal,
   OsPermissionStatus,
+  PermissionDecision,
   RedeemedDesktopContext,
   SessionState,
 } from "./lib/types";
 import "./styles.css";
 
-const APP_VERSION = "1.0.0";
 const WEB_APP_URL = "https://compose.market";
+const WEB_MARKET_URL = `${WEB_APP_URL}/market`;
 const CONNECT_DESKTOP_PATH = "/connect-desktop";
-type Tab = "agents" | "skills" | "marketplace" | "settings";
+type BasePage = "agents" | "network";
 
 const defaultSessionState: SessionState = {
   active: false,
@@ -107,6 +129,15 @@ function getOrCreateDeviceId(): string {
   return created;
 }
 
+function microsBigIntToUsd(value: bigint): string {
+  const bounded = value > BigInt(Number.MAX_SAFE_INTEGER)
+    ? BigInt(Number.MAX_SAFE_INTEGER)
+    : value < 0n
+      ? 0n
+      : value;
+  return `$${(Number(bounded) / 1_000_000).toFixed(2)}`;
+}
+
 function mergeMeshStatusIntoState(
   current: DesktopRuntimeState,
   status: MeshRuntimeStatus,
@@ -180,18 +211,70 @@ function mergeMeshStatusIntoState(
   };
 }
 
+function mergePeerIndexIntoState(
+  current: DesktopRuntimeState,
+  incoming: MeshPeerSignal[],
+  deviceId: string,
+): DesktopRuntimeState {
+  const targetAgent = current.installedAgents.find((agent) => agent.running && agent.network.enabled);
+  if (!targetAgent || incoming.length === 0) {
+    return current;
+  }
+
+  let nextTarget = targetAgent;
+  let changed = false;
+
+  for (const signal of incoming) {
+    if (signal.deviceId === deviceId && signal.agentWallet === targetAgent.agentWallet) {
+      continue;
+    }
+
+    const existing = nextTarget.network.recentPings.find((item) => item.peerId === signal.peerId);
+    const isUpdated = (
+      !existing ||
+      signal.lastSeenAt > existing.lastSeenAt ||
+      signal.signalCount !== existing.signalCount ||
+      signal.announceCount !== existing.announceCount ||
+      signal.lastMessageType !== existing.lastMessageType
+    );
+
+    if (!isUpdated) {
+      continue;
+    }
+
+    nextTarget = recordMeshPeerSignal(nextTarget, signal);
+    changed = true;
+  }
+
+  if (!changed) {
+    return current;
+  }
+
+  return {
+    ...current,
+    installedAgents: current.installedAgents.map((agent) => (
+      agent.agentWallet === nextTarget.agentWallet
+        ? nextTarget
+        : agent
+    )),
+  };
+}
+
 export default function App() {
   const [state, setState] = useState<DesktopRuntimeState | null>(null);
-  const [activeTab, setActiveTab] = useState<Tab>("agents");
+  const [activePage, setActivePage] = useState<BasePage>("agents");
   const [session, setSession] = useState<SessionState>({ ...defaultSessionState });
   const [activeAgentWallet, setActiveAgentWallet] = useState<string | null>(null);
+  const [selectedAgentWallet, setSelectedAgentWallet] = useState<string | null>(null);
+  const [meshPeers, setMeshPeers] = useState<MeshPeerSignal[]>([]);
   const [paths, setPaths] = useState<Awaited<ReturnType<typeof getDesktopPaths>>>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [deviceId] = useState(getOrCreateDeviceId);
   const [connectModalOpen, setConnectModalOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const wallet = state?.identity?.userAddress || null;
-  const lambdaUrl = state?.settings.lambdaUrl || "https://api.compose.market";
+  const apiUrl = state?.settings.apiUrl || "https://api.compose.market";
 
   const showNotification = useCallback((type: "success" | "error", message: string) => {
     setNotification({ type, message });
@@ -222,12 +305,23 @@ export default function App() {
     const navigateHandler = (event: Event) => {
       const detail = (event as CustomEvent<{ wallet?: string }>).detail;
       if (detail?.wallet) {
-        setActiveTab("agents");
+        setActivePage("agents");
+        setSelectedAgentWallet(detail.wallet.toLowerCase());
       }
     };
     window.addEventListener("navigate-to-agent", navigateHandler);
     return () => window.removeEventListener("navigate-to-agent", navigateHandler);
   }, []);
+
+  useEffect(() => {
+    if (!state || !selectedAgentWallet) {
+      return;
+    }
+    const exists = state.installedAgents.some((agent) => agent.agentWallet === selectedAgentWallet);
+    if (!exists) {
+      setSelectedAgentWallet(null);
+    }
+  }, [selectedAgentWallet, state]);
 
   useEffect(() => {
     if (!state?.identity || !activeAgentWallet) {
@@ -245,12 +339,15 @@ export default function App() {
       agentWallet: activeAgent.agentWallet,
       intervalMs: activeAgent.heartbeat.intervalMs,
       onExecute: async (prompt) => {
+        const executionPolicy = buildAgentExecutionPolicy(activeAgent.permissions);
         const response = await callAgent({
-          manowarUrl: state.settings.manowarUrl,
+          runtimeUrl: state.settings.runtimeUrl,
           identity: state.identity!,
           agentWallet: activeAgent.agentWallet,
           message: prompt,
           threadId: `heartbeat-${activeAgent.agentWallet}`,
+          grantedPermissions: executionPolicy.grantedPermissions,
+          permissionPolicy: executionPolicy.permissionPolicy,
         });
         return response.output || response.error || "HEARTBEAT_OK";
       },
@@ -260,14 +357,35 @@ export default function App() {
       onTickComplete: (result) => {
         const updatedAgents = state.installedAgents.map((agent) =>
           agent.agentWallet === activeAgent.agentWallet
-            ? {
-                ...agent,
-                heartbeat: {
-                  ...agent.heartbeat,
-                  lastRunAt: Date.now(),
-                  lastResult: result,
-                },
-              }
+            ? (
+              result === "ok"
+                ? {
+                  ...agent,
+                  heartbeat: {
+                    ...agent.heartbeat,
+                    lastRunAt: Date.now(),
+                    lastResult: result,
+                  },
+                }
+                : appendAgentReport(
+                  {
+                    ...agent,
+                    heartbeat: {
+                      ...agent.heartbeat,
+                      lastRunAt: Date.now(),
+                      lastResult: result,
+                    },
+                  },
+                  {
+                    kind: "heartbeat",
+                    title: result === "alert" ? "Heartbeat alert" : "Heartbeat execution failed",
+                    summary: result === "alert"
+                      ? `${agent.metadata.name} raised a local heartbeat alert.`
+                      : `${agent.metadata.name} failed its most recent local heartbeat execution.`,
+                    outcome: result === "alert" ? "warning" : "error",
+                  },
+                )
+            )
             : agent,
         );
         void persistState({ ...state, installedAgents: updatedAgents });
@@ -293,7 +411,37 @@ export default function App() {
     };
   }, [deviceId]);
 
-  const runningNetworkAgent = state?.installedAgents.find((agent) => agent.running && agent.network.enabled) || null;
+  useEffect(() => {
+    void desktopMeshService.configurePeerIndex((payload) => {
+      setMeshPeers((current) => mergeMeshPeerSignals(current, payload.peers));
+      setState((current) => {
+        if (!current) {
+          return current;
+        }
+        const next = mergePeerIndexIntoState(current, payload.peers, deviceId);
+        if (next !== current) {
+          void saveRuntimeState(next);
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      void desktopMeshService.configurePeerIndex(null);
+    };
+  }, [deviceId]);
+
+  const runningNetworkAgent = (
+    state?.installedAgents.find((agent) => agent.agentWallet === activeAgentWallet && agent.running && agent.network.enabled) ||
+    state?.installedAgents.find((agent) => agent.running && agent.network.enabled) ||
+    null
+  );
+
+  useEffect(() => {
+    if (!runningNetworkAgent) {
+      setMeshPeers([]);
+    }
+  }, [runningNetworkAgent?.agentWallet]);
 
   useEffect(() => {
     if (
@@ -309,12 +457,24 @@ export default function App() {
       identity: state.identity,
       agentWallet: runningNetworkAgent.agentWallet,
       deviceId,
+      sessionId: state.identity.sessionId || "",
+      dnaHash: runningNetworkAgent.lock.dnaHash || "",
+      capabilitiesHash: runningNetworkAgent.metadata.plugins
+        .map((plugin) => (typeof plugin === "string" ? plugin : plugin.registryId || plugin.name || ""))
+        .map((value) => value.trim().toLowerCase())
+        .filter((value) => value.length > 0)
+        .sort()
+        .join("|"),
+      publicCard: runningNetworkAgent.network.publicCard || buildMeshAgentCard(runningNetworkAgent),
     });
   }, [
     deviceId,
     runningNetworkAgent?.agentWallet,
+    runningNetworkAgent?.lock?.dnaHash,
     runningNetworkAgent?.running,
     runningNetworkAgent?.network.enabled,
+    runningNetworkAgent?.network.publicCard,
+    runningNetworkAgent?.metadata?.plugins,
     state?.identity,
   ]);
 
@@ -352,7 +512,7 @@ export default function App() {
     }
 
     const response = await getActiveSessionStatus({
-      lambdaUrl,
+      apiUrl,
       userAddress: state.identity.userAddress,
       chainId: state.identity.chainId,
     });
@@ -424,10 +584,32 @@ export default function App() {
       nextIdentity.expiresAt !== state.identity.expiresAt ||
       nextIdentity.chainId !== state.identity.chainId
     );
-    if (identityChanged) {
-      await persistState({ ...state, identity: nextIdentity });
+    const previousBudget = BigInt(state.identity.budget || "0");
+    const nextBudget = BigInt(budgetRemaining || "0");
+    const spentMicros = previousBudget > nextBudget ? previousBudget - nextBudget : 0n;
+
+    let nextState = { ...state, identity: nextIdentity };
+    if (spentMicros > 0n) {
+      nextState = {
+        ...nextState,
+        installedAgents: nextState.installedAgents.map((agent) => (
+          agent.agentWallet === state.identity?.agentWallet
+            ? appendAgentReport(agent, {
+              kind: "economics",
+              title: "Session spend recorded",
+              summary: `${microsBigIntToUsd(spentMicros)} consumed from the active compose-key budget.`,
+              outcome: "info",
+              costMicros: Number(spentMicros > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : spentMicros),
+            })
+            : agent
+        )),
+      };
     }
-  }, [lambdaUrl, persistState, state]);
+
+    if (identityChanged || nextState.installedAgents !== state.installedAgents) {
+      await persistState(nextState);
+    }
+  }, [apiUrl, persistState, state]);
 
   useEffect(() => {
     if (!state?.identity?.userAddress) {
@@ -484,18 +666,38 @@ export default function App() {
     setActiveAgentWallet(agentWallet);
   }, []);
 
+  const openAgent = useCallback((agentWallet: string) => {
+    setActivePage("agents");
+    setSelectedAgentWallet(agentWallet.toLowerCase());
+  }, []);
+
+  const closeAgent = useCallback(() => {
+    setSelectedAgentWallet(null);
+  }, []);
+
+  const browseMarket = useCallback(() => {
+    void openUrl(WEB_MARKET_URL);
+  }, []);
+
   const stateReady = state !== null;
+  const selectedAgent = state?.installedAgents.find((agent) => agent.agentWallet === selectedAgentWallet) || null;
+  const visibleMeshPeers = runningNetworkAgent
+    ? meshPeers.filter((peer) => !(peer.deviceId === deviceId && peer.agentWallet === runningNetworkAgent.agentWallet))
+    : [];
 
   return (
     <div className="app">
       {!stateReady ? (
-        <div className="empty-state">
-          <h2>Loading Desktop Runtime...</h2>
+        <div className="main">
+          <ShellEmptyState
+            title="Loading Desktop Runtime"
+            description="Restoring local state, runtime paths, permissions, and mesh identity for this device."
+          />
         </div>
       ) : (
         <>
           <DeepLinkHandler
-            lambdaUrl={lambdaUrl}
+            apiUrl={apiUrl}
             activeWallet={state.identity?.userAddress || null}
             chainId={state.identity?.chainId || null}
             deviceId={deviceId}
@@ -503,91 +705,113 @@ export default function App() {
             onSessionUpdate={handleSessionUpdate}
           />
 
-          <header className="header">
-            <div className="header-left">
-              <h1>Compose Desktop</h1>
-              <span className="subtitle">Local Agent Runtime</span>
-            </div>
-            <div className="header-right">
-              {state.identity ? (
-                <SessionIndicator
-                  lambdaUrl={lambdaUrl}
-                  identity={state.identity}
-                  session={session}
-                  onRefreshSession={refreshSessionFromBackend}
-                  onNotify={showNotification}
-                />
-              ) : null}
-              <button className="secondary connect-btn" onClick={openConnectModal}>
-                <Link2 size={14} />
-                {wallet ? "Reconnect" : "Connect"}
-              </button>
-              {wallet ? (
-                <div className="wallet-badge">
-                  <span className="wallet-address">{wallet.slice(0, 6)}...{wallet.slice(-4)}</span>
-                </div>
-              ) : (
-                <span className="wallet-hint">Not connected</span>
+          <ShellPanel className="header-shell" padded={false}>
+            <ShellPageHeader
+              eyebrow="Compose Desktop"
+              title="Local Authority · Mesh Runtime"
+              subtitle="Per-agent permissions, local scheduling, always-on execution, and real-time libp2p signaling are owned by this device."
+              actions={(
+                <>
+                  {state.identity ? (
+                    <SessionIndicator
+                      apiUrl={apiUrl}
+                      identity={state.identity}
+                      session={session}
+                      onRefreshSession={refreshSessionFromBackend}
+                      onNotify={showNotification}
+                    />
+                  ) : null}
+                  <ShellButton tone="secondary" className="connect-btn" onClick={openConnectModal}>
+                    <Link2 size={14} />
+                    {wallet ? "Reconnect" : "Connect"}
+                  </ShellButton>
+                  <ShellButton tone="secondary" className="connect-btn" onClick={() => setSettingsOpen(true)}>
+                    <Settings2 size={14} />
+                    Settings
+                  </ShellButton>
+                  <ShellPill>
+                    {wallet ? (
+                      <span>{wallet.slice(0, 6)}...{wallet.slice(-4)}</span>
+                    ) : (
+                      <span>Not connected</span>
+                    )}
+                  </ShellPill>
+                </>
               )}
-            </div>
-          </header>
+            />
+          </ShellPanel>
 
           {notification ? (
-            <div className={`notification notification-${notification.type}`}>
+            <ShellNotice tone={notification.type === "success" ? "success" : "error"} className="notification">
               {notification.type === "success" ? <Check size={16} /> : <AlertTriangle size={16} />}
               {notification.message}
-            </div>
+            </ShellNotice>
           ) : null}
 
-          <nav className="nav">
-            <button className={`nav-btn ${activeTab === "agents" ? "active" : ""}`} onClick={() => setActiveTab("agents")}>Agents</button>
-            <button className={`nav-btn ${activeTab === "skills" ? "active" : ""}`} onClick={() => setActiveTab("skills")}>My Skills</button>
-            <button className={`nav-btn ${activeTab === "marketplace" ? "active" : ""}`} onClick={() => setActiveTab("marketplace")}>Marketplace</button>
-            <button className={`nav-btn ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>Settings</button>
+          <nav className="nav shell-nav">
+            <ShellTabStrip>
+              <ShellTab active={activePage === "agents"} onClick={() => setActivePage("agents")}>
+                My Agents
+              </ShellTab>
+              <ShellTab active={activePage === "network"} onClick={() => setActivePage("network")}>
+                <Waypoints size={14} />
+                Network / Mesh
+              </ShellTab>
+            </ShellTabStrip>
           </nav>
 
+          {!wallet ? (
+            <ShellBanner
+              className="connect-banner"
+              title="Desktop is not connected."
+              subtitle="Link the current device from the web app to deploy local agents and refresh the active compose-key."
+              actions={<ShellButton tone="secondary" onClick={openConnectModal}>Connect Desktop</ShellButton>}
+            />
+          ) : null}
+
           <main className="main">
-            {activeTab === "agents" ? (
-              <AgentManager
-                state={state}
-                session={session}
-                appVersion={APP_VERSION}
-                onStateChange={persistState}
-                onActivateAgent={activateAgent}
+            {activePage === "agents" ? (
+              selectedAgent ? (
+                <AgentDetailPage
+                  agent={selectedAgent}
+                  state={state}
+                  meshPeers={visibleMeshPeers}
+                  onBack={closeAgent}
+                  onStateChange={persistState}
+                  onNotify={showNotification}
+                />
+              ) : (
+                <AgentManager
+                  state={state}
+                  session={session}
+                  onStateChange={persistState}
+                  onActivateAgent={activateAgent}
+                  onOpenAgent={openAgent}
+                  onBrowseMarket={browseMarket}
+                />
+              )
+            ) : (
+              <MeshNetworkPage
+                agent={runningNetworkAgent}
+                peers={visibleMeshPeers}
               />
-            ) : null}
-
-            {activeTab === "skills" ? (
-              <SkillsManager
-                state={state}
-                onStateChange={persistState}
-              />
-            ) : null}
-
-            {activeTab === "marketplace" ? (
-              <SkillsMarketplace
-                state={state}
-                onStateChange={persistState}
-              />
-            ) : null}
-
-            {activeTab === "settings" ? (
-              <SettingsPanel
-                state={state}
-                paths={paths}
-                onStateChange={persistState}
-                onNotify={showNotification}
-              />
-            ) : null}
+            )}
           </main>
 
-          {!wallet ? (
-            <div className="empty-state">
-              <h2>Desktop is not connected</h2>
-              <p>Connect your wallet through the web app to link your account.</p>
-              <button className="primary" onClick={openConnectModal}>Connect Desktop</button>
-            </div>
-          ) : null}
+          <ShellModal
+            open={settingsOpen}
+            title="Desktop Settings"
+            subtitle="Runtime endpoints, per-agent defaults, always-on launch behavior, and managed local paths."
+            onClose={() => setSettingsOpen(false)}
+            className="settings-modal-shell"
+          >
+            <SettingsPanel
+              state={state}
+              paths={paths}
+              onStateChange={persistState}
+              onNotify={showNotification}
+            />
+          </ShellModal>
 
           <ConnectModal
             open={connectModalOpen}
@@ -607,6 +831,19 @@ function permissionStatusText(status: OsPermissionStatus): string {
   return "Unknown";
 }
 
+const PERMISSION_ORDER: PermissionDecision[] = ["deny", "ask", "allow"];
+
+function nextDecision(value: PermissionDecision): PermissionDecision {
+  const index = PERMISSION_ORDER.indexOf(value);
+  return PERMISSION_ORDER[(index + 1) % PERMISSION_ORDER.length];
+}
+
+function decisionLabel(value: PermissionDecision): string {
+  if (value === "allow") return "Allow";
+  if (value === "ask") return "Ask";
+  return "Deny";
+}
+
 function SettingsPanel({
   state,
   paths,
@@ -618,10 +855,22 @@ function SettingsPanel({
   onStateChange: (next: DesktopRuntimeState) => Promise<void>;
   onNotify: (type: "success" | "error", message: string) => void;
 }) {
-  const [lambdaUrl, setLambdaUrl] = useState(state.settings.lambdaUrl);
-  const [manowarUrl, setManowarUrl] = useState(state.settings.manowarUrl);
+  const [apiUrl, setApiUrl] = useState(state.settings.apiUrl);
+  const [runtimeUrl, setRuntimeUrl] = useState(state.settings.runtimeUrl);
   const [permissionBusy, setPermissionBusy] = useState<null | keyof AgentPermissionPolicy>(null);
   const [permissionTarget, setPermissionTarget] = useState<string>("default");
+  const [launchAgentInstalled, setLaunchAgentInstalled] = useState<boolean>(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const installed = await daemonLaunchAgentStatus();
+        setLaunchAgentInstalled(installed);
+      } catch {
+        setLaunchAgentInstalled(false);
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     if (permissionTarget === "default") {
@@ -643,6 +892,11 @@ function SettingsPanel({
     nextOsPermissions: DesktopRuntimeState["osPermissions"],
   ) => {
     if (selectedAgent) {
+      try {
+        await daemonUpdatePermissions(selectedAgent.agentWallet, nextPermissions);
+      } catch (error) {
+        onNotify("error", error instanceof Error ? error.message : "Failed to update daemon permissions");
+      }
       const nextAgents = state.installedAgents.map((agent) => (
         agent.agentWallet === selectedAgent.agentWallet
           ? { ...agent, permissions: nextPermissions }
@@ -667,8 +921,8 @@ function SettingsPanel({
     const next: DesktopRuntimeState = {
       ...state,
       settings: {
-        lambdaUrl: lambdaUrl.trim(),
-        manowarUrl: manowarUrl.trim(),
+        apiUrl: apiUrl.trim(),
+        runtimeUrl: runtimeUrl.trim(),
       },
     };
     await onStateChange(next);
@@ -685,8 +939,8 @@ function SettingsPanel({
 
       const nextPermissions: AgentPermissionPolicy = {
         ...activePermissions,
-        camera: camera === "granted" ? activePermissions.camera : false,
-        microphone: microphone === "granted" ? activePermissions.microphone : false,
+        camera: camera === "granted" ? activePermissions.camera : "deny",
+        microphone: microphone === "granted" ? activePermissions.microphone : "deny",
       };
       await updatePermissionState(nextPermissions, {
         camera,
@@ -703,26 +957,26 @@ function SettingsPanel({
     setPermissionBusy(key);
 
     try {
-      const nextEnabled = !activePermissions[key];
-      let nextPermissions: AgentPermissionPolicy = { ...activePermissions, [key]: nextEnabled };
+      const nextDecisionValue = nextDecision(activePermissions[key]);
+      let nextPermissions: AgentPermissionPolicy = { ...activePermissions, [key]: nextDecisionValue };
       let nextOsPermissions = { ...state.osPermissions };
 
-      if (key === "camera" && nextEnabled) {
+      if (key === "camera" && nextDecisionValue === "allow") {
         const status = await requestMediaPermission("camera");
         nextOsPermissions = { ...nextOsPermissions, camera: status };
         if (status !== "granted") {
-          nextPermissions = { ...nextPermissions, camera: false };
+          nextPermissions = { ...nextPermissions, camera: "deny" };
           onNotify("error", "Camera permission was not granted by macOS");
         } else {
           onNotify("success", "Camera permission granted");
         }
       }
 
-      if (key === "microphone" && nextEnabled) {
+      if (key === "microphone" && nextDecisionValue === "allow") {
         const status = await requestMediaPermission("microphone");
         nextOsPermissions = { ...nextOsPermissions, microphone: status };
         if (status !== "granted") {
-          nextPermissions = { ...nextPermissions, microphone: false };
+          nextPermissions = { ...nextPermissions, microphone: "deny" };
           onNotify("error", "Microphone permission was not granted by macOS");
         } else {
           onNotify("success", "Microphone permission granted");
@@ -743,11 +997,11 @@ function SettingsPanel({
         <h3>API</h3>
         <div className="form-group">
           <label>API URL</label>
-          <input type="text" value={lambdaUrl} onChange={(event) => setLambdaUrl(event.target.value)} />
+          <input type="text" value={apiUrl} onChange={(event) => setApiUrl(event.target.value)} />
         </div>
         <div className="form-group">
-          <label>Manowar URL</label>
-          <input type="text" value={manowarUrl} onChange={(event) => setManowarUrl(event.target.value)} />
+          <label>Runtime URL</label>
+          <input type="text" value={runtimeUrl} onChange={(event) => setRuntimeUrl(event.target.value)} />
         </div>
       </div>
 
@@ -784,7 +1038,7 @@ function SettingsPanel({
           <PermissionToggle
             label="Shell Execution"
             description="Allow local command execution for local skills."
-            enabled={activePermissions.shell}
+            decision={activePermissions.shell}
             busy={permissionBusy === "shell"}
             onToggle={() => {
               void togglePermission("shell");
@@ -793,7 +1047,7 @@ function SettingsPanel({
           <PermissionToggle
             label="Filesystem Read"
             description="Allow agents to read local files in managed workspace."
-            enabled={activePermissions.filesystemRead}
+            decision={activePermissions.filesystemRead}
             busy={permissionBusy === "filesystemRead"}
             onToggle={() => {
               void togglePermission("filesystemRead");
@@ -802,7 +1056,7 @@ function SettingsPanel({
           <PermissionToggle
             label="Filesystem Write"
             description="Allow creating new files and folders for skills/runtime."
-            enabled={activePermissions.filesystemWrite}
+            decision={activePermissions.filesystemWrite}
             busy={permissionBusy === "filesystemWrite"}
             onToggle={() => {
               void togglePermission("filesystemWrite");
@@ -811,7 +1065,7 @@ function SettingsPanel({
           <PermissionToggle
             label="Filesystem Edit"
             description="Allow modifying existing files in managed workspace."
-            enabled={activePermissions.filesystemEdit}
+            decision={activePermissions.filesystemEdit}
             busy={permissionBusy === "filesystemEdit"}
             onToggle={() => {
               void togglePermission("filesystemEdit");
@@ -820,16 +1074,25 @@ function SettingsPanel({
           <PermissionToggle
             label="Filesystem Delete"
             description="Allow deleting local files and installed skills."
-            enabled={activePermissions.filesystemDelete}
+            decision={activePermissions.filesystemDelete}
             busy={permissionBusy === "filesystemDelete"}
             onToggle={() => {
               void togglePermission("filesystemDelete");
             }}
           />
           <PermissionToggle
+            label="Network"
+            description="Allow network calls for MCP/GOAT tool execution."
+            decision={activePermissions.network}
+            busy={permissionBusy === "network"}
+            onToggle={() => {
+              void togglePermission("network");
+            }}
+          />
+          <PermissionToggle
             label="Camera"
             description={`macOS status: ${permissionStatusText(state.osPermissions.camera)}`}
-            enabled={activePermissions.camera}
+            decision={activePermissions.camera}
             busy={permissionBusy === "camera"}
             onToggle={() => {
               void togglePermission("camera");
@@ -838,17 +1101,41 @@ function SettingsPanel({
           <PermissionToggle
             label="Microphone"
             description={`macOS status: ${permissionStatusText(state.osPermissions.microphone)}`}
-            enabled={activePermissions.microphone}
+            decision={activePermissions.microphone}
             busy={permissionBusy === "microphone"}
             onToggle={() => {
               void togglePermission("microphone");
             }}
           />
         </div>
-        <button className="secondary permission-refresh-btn" onClick={() => void refreshMacPermissions()}>
+        <ShellButton tone="secondary" className="permission-refresh-btn" onClick={() => void refreshMacPermissions()}>
           <RefreshCw size={14} />
           Refresh macOS Permission Status
-        </button>
+        </ShellButton>
+      </div>
+
+      <div className="settings-section">
+        <h3>Daemon</h3>
+        <div className="form-group">
+          <label>LaunchAgent</label>
+          <input type="text" value={launchAgentInstalled ? "Installed" : "Not installed"} disabled />
+        </div>
+        <ShellButton
+          tone="secondary"
+          onClick={() => {
+            void (async () => {
+              try {
+                await daemonInstallLaunchAgent();
+                setLaunchAgentInstalled(true);
+                onNotify("success", "LaunchAgent installed for always-on runtime");
+              } catch (error) {
+                onNotify("error", error instanceof Error ? error.message : "Failed to install LaunchAgent");
+              }
+            })();
+          }}
+        >
+          Install LaunchAgent
+        </ShellButton>
       </div>
 
       <div className="settings-section">
@@ -863,7 +1150,7 @@ function SettingsPanel({
         </div>
       </div>
 
-      <button className="primary" onClick={() => void save()}>Save Settings</button>
+      <ShellButton tone="primary" onClick={() => void save()}>Save Settings</ShellButton>
     </div>
   );
 }
@@ -871,18 +1158,21 @@ function SettingsPanel({
 function PermissionToggle({
   label,
   description,
-  enabled,
+  decision,
   busy,
   onToggle,
 }: {
   label: string;
   description: string;
-  enabled: boolean;
+  decision: PermissionDecision;
   busy: boolean;
   onToggle: () => void;
 }) {
+  const active = decision === "allow";
+  const asking = decision === "ask";
+
   return (
-    <div className={`permission-toggle ${enabled ? "enabled" : ""}`}>
+    <div className={`permission-toggle ${active ? "enabled" : asking ? "ask" : ""}`}>
       <div className="permission-copy">
         <div className="permission-label">
           <Shield size={14} />
@@ -890,9 +1180,14 @@ function PermissionToggle({
         </div>
         <p>{description}</p>
       </div>
-      <button className={`permission-btn ${enabled ? "enabled" : ""}`} onClick={onToggle} disabled={busy}>
-        {enabled ? "On" : "Off"}
-      </button>
+      <ShellButton
+        tone={active ? "primary" : asking ? "ghost" : "secondary"}
+        className={`permission-btn ${active ? "enabled" : asking ? "ask" : ""}`}
+        onClick={onToggle}
+        disabled={busy}
+      >
+        {decisionLabel(decision)}
+      </ShellButton>
     </div>
   );
 }
@@ -906,10 +1201,6 @@ function ConnectModal({
   deviceId: string;
   onClose: () => void;
 }) {
-  if (!open) {
-    return null;
-  }
-
   const handleConnect = async () => {
     const connectUrl = `${WEB_APP_URL}${CONNECT_DESKTOP_PATH}?device_id=${encodeURIComponent(deviceId)}`;
     await openUrl(connectUrl);
@@ -917,18 +1208,23 @@ function ConnectModal({
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal connect-modal" onClick={(event) => event.stopPropagation()}>
-        <h3>Connect Desktop</h3>
-        <p>Click the button below to open the Compose web app and authorize this desktop application.</p>
+    <ShellModal
+      open={open}
+      title="Connect Desktop"
+      subtitle="Open the Compose web app and authorize this desktop device from the browser flow."
+      onClose={onClose}
+      className="connect-modal"
+    >
+      <div className="connect-modal-copy">
+        Click the button below to open the Compose web app and authorize this desktop application.
+      </div>
         <div className="connect-modal-actions">
-          <button onClick={onClose} className="secondary">Cancel</button>
-          <button className="primary" onClick={handleConnect}>
+          <ShellButton tone="secondary" onClick={onClose}>Cancel</ShellButton>
+          <ShellButton tone="primary" onClick={handleConnect}>
             <Link2 size={14} style={{ marginRight: "8px" }} />
             Authorize in Browser
-          </button>
+          </ShellButton>
         </div>
-      </div>
-    </div>
+    </ShellModal>
   );
 }
