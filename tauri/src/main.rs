@@ -32,6 +32,118 @@ struct DesktopPaths {
     skills_dir: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonPermissionPolicy {
+    shell: String,
+    filesystem_read: String,
+    filesystem_write: String,
+    filesystem_edit: String,
+    filesystem_delete: String,
+    camera: String,
+    microphone: String,
+    network: String,
+}
+
+impl Default for DaemonPermissionPolicy {
+    fn default() -> Self {
+        Self {
+            shell: "ask".to_string(),
+            filesystem_read: "ask".to_string(),
+            filesystem_write: "ask".to_string(),
+            filesystem_edit: "ask".to_string(),
+            filesystem_delete: "deny".to_string(),
+            camera: "ask".to_string(),
+            microphone: "ask".to_string(),
+            network: "allow".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonSkillState {
+    enabled: bool,
+    eligible: bool,
+    source: String,
+    revision: String,
+    updated_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonAgentState {
+    agent_wallet: String,
+    runtime_id: Option<String>,
+    desired_running: bool,
+    running: bool,
+    mesh_enabled: bool,
+    status: String,
+    dna_hash: String,
+    chain_id: u32,
+    model_id: String,
+    mcp_tools_hash: String,
+    agent_card_cid: String,
+    permissions: DaemonPermissionPolicy,
+    skills: HashMap<String, DaemonSkillState>,
+    logs_cursor: usize,
+    last_error: Option<String>,
+    updated_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PermissionDecisionTicket {
+    id: String,
+    agent_wallet: String,
+    action: String,
+    decision: String,
+    issued_at: u64,
+    expires_at: u64,
+    nonce: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonStateFile {
+    version: u32,
+    agents: HashMap<String, DaemonAgentState>,
+    tickets: HashMap<String, PermissionDecisionTicket>,
+}
+
+impl Default for DaemonStateFile {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            agents: HashMap::new(),
+            tickets: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct DesktopDaemonState {
+    state: Mutex<DaemonStateFile>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonInstallPayload {
+    agent_wallet: String,
+    agent_card_cid: String,
+    chain_id: u32,
+    model_id: String,
+    mcp_tools_hash: String,
+    dna_hash: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonLogTail {
+    lines: Vec<String>,
+    cursor: usize,
+}
+
 #[derive(Default)]
 struct PendingDeepLinks(Mutex<Vec<String>>);
 
@@ -39,6 +151,19 @@ struct PendingDeepLinks(Mutex<Vec<String>>);
 struct MeshRuntimeState {
     status: Mutex<MeshRuntimeStatus>,
     stop_tx: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshAgentCard {
+    name: String,
+    description: String,
+    model: String,
+    framework: String,
+    headline: String,
+    status_line: String,
+    capabilities: Vec<String>,
+    updated_at: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -57,6 +182,14 @@ struct MeshJoinRequest {
     kad_protocol: String,
     #[serde(default)]
     capabilities: Vec<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    dna_hash: Option<String>,
+    #[serde(default)]
+    capabilities_hash: Option<String>,
+    #[serde(default)]
+    public_card: Option<MeshAgentCard>,
     #[serde(default)]
     bootstrap_multiaddrs: Vec<String>,
     #[serde(default)]
@@ -207,6 +340,49 @@ fn normalize_wallet(value: &str) -> Option<String> {
     Some(trimmed)
 }
 
+fn truncate_string(input: String, max_len: usize) -> String {
+    let trimmed = input.trim().to_string();
+    if trimmed.chars().count() <= max_len {
+        return trimmed;
+    }
+    trimmed.chars().take(max_len).collect()
+}
+
+fn sanitize_mesh_agent_card(card: Option<MeshAgentCard>) -> Option<MeshAgentCard> {
+    let Some(card) = card else {
+        return None;
+    };
+
+    let name = truncate_string(card.name, 80);
+    let description = truncate_string(card.description, 240);
+    let model = truncate_string(card.model, 120);
+    let framework = truncate_string(card.framework, 80);
+    let headline = truncate_string(card.headline, 120);
+    let status_line = truncate_string(card.status_line, 180);
+    let capabilities = card
+        .capabilities
+        .into_iter()
+        .map(|value| truncate_string(value, 48))
+        .filter(|value| !value.is_empty())
+        .take(24)
+        .collect::<Vec<_>>();
+
+    if name.is_empty() && headline.is_empty() && status_line.is_empty() {
+        return None;
+    }
+
+    Some(MeshAgentCard {
+        name,
+        description,
+        model,
+        framework,
+        headline,
+        status_line,
+        capabilities,
+        updated_at: if card.updated_at == 0 { now_ms() } else { card.updated_at },
+    })
+}
+
 fn normalize_device_id(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.len() < 8 || trimmed.len() > 128 {
@@ -287,6 +463,10 @@ fn validate_mesh_join_request(request: &MeshJoinRequest) -> Result<MeshJoinReque
         heartbeat_ms: request.heartbeat_ms,
         kad_protocol: request.kad_protocol.trim().to_string(),
         capabilities,
+        session_id: request.session_id.clone(),
+        dna_hash: request.dna_hash.clone(),
+        capabilities_hash: request.capabilities_hash.clone(),
+        public_card: sanitize_mesh_agent_card(request.public_card.clone()),
         bootstrap_multiaddrs: request
             .bootstrap_multiaddrs
             .iter()
@@ -310,6 +490,56 @@ fn resolve_base_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join("runtime");
     fs::create_dir_all(&base).map_err(|err| format!("failed to create app data directory: {err}"))?;
     Ok(base)
+}
+
+fn daemon_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(resolve_base_dir(app)?.join("daemon_state.json"))
+}
+
+fn read_daemon_state_from_disk(app: &tauri::AppHandle) -> Result<DaemonStateFile, String> {
+    let file = daemon_state_path(app)?;
+    if !file.exists() {
+        return Ok(DaemonStateFile::default());
+    }
+
+    let raw = fs::read_to_string(&file).map_err(|err| format!("failed to read daemon state: {err}"))?;
+    serde_json::from_str(&raw).map_err(|err| format!("failed to parse daemon state: {err}"))
+}
+
+fn write_daemon_state_to_disk(app: &tauri::AppHandle, state: &DaemonStateFile) -> Result<(), String> {
+    let file = daemon_state_path(app)?;
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("failed to create daemon state dir: {err}"))?;
+    }
+    let serialized = serde_json::to_string_pretty(state)
+        .map_err(|err| format!("failed to serialize daemon state: {err}"))?;
+    fs::write(&file, serialized).map_err(|err| format!("failed to persist daemon state: {err}"))?;
+    Ok(())
+}
+
+fn normalize_daemon_decision(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "allow" => "allow".to_string(),
+        "ask" => "ask".to_string(),
+        _ => "deny".to_string(),
+    }
+}
+
+fn normalize_daemon_permission_policy(policy: DaemonPermissionPolicy) -> DaemonPermissionPolicy {
+    DaemonPermissionPolicy {
+        shell: normalize_daemon_decision(&policy.shell),
+        filesystem_read: normalize_daemon_decision(&policy.filesystem_read),
+        filesystem_write: normalize_daemon_decision(&policy.filesystem_write),
+        filesystem_edit: normalize_daemon_decision(&policy.filesystem_edit),
+        filesystem_delete: normalize_daemon_decision(&policy.filesystem_delete),
+        camera: normalize_daemon_decision(&policy.camera),
+        microphone: normalize_daemon_decision(&policy.microphone),
+        network: normalize_daemon_decision(&policy.network),
+    }
+}
+
+fn now_nonce() -> String {
+    format!("{}-{}", now_ms(), std::process::id())
 }
 
 fn mesh_key_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -452,6 +682,12 @@ struct MeshEnvelope {
     peer_id: String,
     caps: Vec<String>,
     listen_addrs: Vec<String>,
+    agent_wallet: String,
+    device_id: String,
+    session_id: String,
+    dna_hash: String,
+    capabilities_hash: String,
+    card: Option<MeshAgentCard>,
     ts_ms: u64,
     nonce: String,
     sig: Vec<u8>,
@@ -464,6 +700,12 @@ struct MeshEnvelopeUnsigned {
     peer_id: String,
     caps: Vec<String>,
     listen_addrs: Vec<String>,
+    agent_wallet: String,
+    device_id: String,
+    session_id: String,
+    dna_hash: String,
+    capabilities_hash: String,
+    card: Option<MeshAgentCard>,
     ts_ms: u64,
     nonce: String,
 }
@@ -472,8 +714,14 @@ struct MeshEnvelopeUnsigned {
 struct PeerCacheEntry {
     last_seen_ms: u64,
     stale: bool,
+    agent_wallet: String,
+    device_id: String,
     caps: Vec<String>,
     listen_addrs: Vec<String>,
+    card: Option<MeshAgentCard>,
+    signal_count: u64,
+    announce_count: u64,
+    last_msg_type: String,
 }
 
 fn unsigned_envelope_bytes(value: &MeshEnvelopeUnsigned) -> Result<Vec<u8>, String> {
@@ -483,6 +731,12 @@ fn unsigned_envelope_bytes(value: &MeshEnvelopeUnsigned) -> Result<Vec<u8>, Stri
         &value.peer_id,
         &value.caps,
         &value.listen_addrs,
+        &value.agent_wallet,
+        &value.device_id,
+        &value.session_id,
+        &value.dna_hash,
+        &value.capabilities_hash,
+        &value.card,
         value.ts_ms,
         &value.nonce,
     ))
@@ -491,18 +745,33 @@ fn unsigned_envelope_bytes(value: &MeshEnvelopeUnsigned) -> Result<Vec<u8>, Stri
 
 fn build_signed_envelope_payload(
     local_key: &identity::Keypair,
+    request: &MeshJoinRequest,
     msg_type: &str,
     peer_id: &str,
     caps: &[String],
     listen_multiaddrs: &[String],
     nonce: String,
 ) -> Result<Vec<u8>, String> {
+    let computed_caps_hash = {
+        let mut sorted = caps.to_vec();
+        sorted.sort();
+        sorted.join("|")
+    };
     let unsigned = MeshEnvelopeUnsigned {
         v: ENVELOPE_VERSION,
         msg_type: msg_type.to_string(),
         peer_id: peer_id.to_string(),
         caps: caps.to_vec(),
         listen_addrs: listen_multiaddrs.to_vec(),
+        agent_wallet: request.agent_wallet.clone(),
+        device_id: request.device_id.clone(),
+        session_id: request.session_id.clone().unwrap_or_default(),
+        dna_hash: request.dna_hash.clone().unwrap_or_default(),
+        capabilities_hash: request
+            .capabilities_hash
+            .clone()
+            .unwrap_or(computed_caps_hash),
+        card: request.public_card.clone(),
         ts_ms: now_ms(),
         nonce,
     };
@@ -516,6 +785,12 @@ fn build_signed_envelope_payload(
         peer_id: unsigned.peer_id,
         caps: unsigned.caps,
         listen_addrs: unsigned.listen_addrs,
+        agent_wallet: unsigned.agent_wallet,
+        device_id: unsigned.device_id,
+        session_id: unsigned.session_id,
+        dna_hash: unsigned.dna_hash,
+        capabilities_hash: unsigned.capabilities_hash,
+        card: unsigned.card,
         ts_ms: unsigned.ts_ms,
         nonce: unsigned.nonce,
         sig,
@@ -567,6 +842,12 @@ fn decode_and_validate_envelope(
         peer_id: envelope.peer_id.clone(),
         caps: envelope.caps.clone(),
         listen_addrs: envelope.listen_addrs.clone(),
+        agent_wallet: envelope.agent_wallet.clone(),
+        device_id: envelope.device_id.clone(),
+        session_id: envelope.session_id.clone(),
+        dna_hash: envelope.dna_hash.clone(),
+        capabilities_hash: envelope.capabilities_hash.clone(),
+        card: envelope.card.clone(),
         ts_ms: envelope.ts_ms,
         nonce: envelope.nonce.clone(),
     };
@@ -711,12 +992,26 @@ fn emit_peer_index(app: &tauri::AppHandle, peer_cache: &HashMap<String, PeerCach
     let peers = peer_cache
         .iter()
         .map(|(peer_id, entry)| {
+            let node_distance = if entry.stale {
+                3
+            } else if !entry.listen_addrs.is_empty() {
+                1
+            } else {
+                2
+            };
             serde_json::json!({
                 "peerId": peer_id,
+                "agentWallet": entry.agent_wallet,
+                "deviceId": entry.device_id,
                 "lastSeenAt": entry.last_seen_ms,
                 "stale": entry.stale,
                 "caps": entry.caps,
                 "listenMultiaddrs": entry.listen_addrs,
+                "card": entry.card,
+                "signalCount": entry.signal_count,
+                "announceCount": entry.announce_count,
+                "lastMessageType": if entry.last_msg_type.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(entry.last_msg_type.clone()) },
+                "nodeDistance": node_distance,
             })
         })
         .collect::<Vec<_>>();
@@ -924,6 +1219,7 @@ async fn run_mesh_loop(app: tauri::AppHandle, request: MeshJoinRequest, mut stop
                 let listen_multiaddrs = with_mesh_status(&app, |status| status.listen_multiaddrs.clone()).unwrap_or_default();
                 let presence_payload = build_signed_envelope_payload(
                     &local_key,
+                    &request,
                     "presence",
                     &local_peer_id,
                     &request.capabilities,
@@ -932,6 +1228,7 @@ async fn run_mesh_loop(app: tauri::AppHandle, request: MeshJoinRequest, mut stop
                 );
                 let announce_payload = build_signed_envelope_payload(
                     &local_key,
+                    &request,
                     "announce",
                     &local_peer_id,
                     &request.capabilities,
@@ -1032,13 +1329,27 @@ async fn run_mesh_loop(app: tauri::AppHandle, request: MeshJoinRequest, mut stop
                                     let entry = peer_cache.entry(envelope.peer_id.clone()).or_insert(PeerCacheEntry {
                                         last_seen_ms: envelope.ts_ms,
                                         stale: false,
+                                        agent_wallet: envelope.agent_wallet.clone(),
+                                        device_id: envelope.device_id.clone(),
                                         caps: envelope.caps.clone(),
                                         listen_addrs: envelope.listen_addrs.clone(),
+                                        card: envelope.card.clone(),
+                                        signal_count: 0,
+                                        announce_count: 0,
+                                        last_msg_type: envelope.msg_type.clone(),
                                     });
                                     entry.last_seen_ms = envelope.ts_ms;
                                     entry.stale = false;
+                                    entry.agent_wallet = envelope.agent_wallet.clone();
+                                    entry.device_id = envelope.device_id.clone();
                                     entry.caps = envelope.caps;
                                     entry.listen_addrs = envelope.listen_addrs.clone();
+                                    entry.card = envelope.card.clone();
+                                    entry.signal_count = entry.signal_count.saturating_add(1);
+                                    if envelope.msg_type == "announce" {
+                                        entry.announce_count = entry.announce_count.saturating_add(1);
+                                    }
+                                    entry.last_msg_type = envelope.msg_type.clone();
 
                                     for raw_addr in envelope.listen_addrs {
                                         if let Ok(addr) = raw_addr.parse::<Multiaddr>() {
@@ -1238,6 +1549,437 @@ fn consume_pending_deep_links(state: tauri::State<PendingDeepLinks>) -> Vec<Stri
     }
 }
 
+fn daemon_agent_workspace_relative(agent_wallet: &str) -> String {
+    format!("agents/{}", agent_wallet.to_lowercase())
+}
+
+fn daemon_agent_workspace_path(app: &tauri::AppHandle, agent_wallet: &str) -> Result<PathBuf, String> {
+    resolve_managed_path(app, &daemon_agent_workspace_relative(agent_wallet))
+}
+
+fn daemon_agent_logs_path(app: &tauri::AppHandle, agent_wallet: &str) -> Result<PathBuf, String> {
+    Ok(daemon_agent_workspace_path(app, agent_wallet)?.join("runtime.log"))
+}
+
+fn bootstrap_agent_workspace(app: &tauri::AppHandle, payload: &DaemonInstallPayload) -> Result<(), String> {
+    let workspace = daemon_agent_workspace_path(app, &payload.agent_wallet)?;
+    fs::create_dir_all(&workspace).map_err(|err| format!("failed to create agent workspace: {err}"))?;
+    fs::create_dir_all(workspace.join("skills")).map_err(|err| format!("failed to create skills dir: {err}"))?;
+    fs::create_dir_all(workspace.join("skills").join("generated"))
+        .map_err(|err| format!("failed to create generated skills dir: {err}"))?;
+
+    let files = vec![
+        (
+            workspace.join("DNA.md"),
+            format!(
+                "# DNA\nagentWallet: {}\nmodelId: {}\nchainId: {}\nagentCardCid: {}\nmcpToolsHash: {}\ndnaHash: {}\nlockedAt: {}\n",
+                payload.agent_wallet.to_lowercase(),
+                payload.model_id,
+                payload.chain_id,
+                payload.agent_card_cid,
+                payload.mcp_tools_hash,
+                payload.dna_hash,
+                now_ms()
+            ),
+        ),
+        (
+            workspace.join("SOUL.md"),
+            "# SOUL\n\nMutable behavior and persona notes for this local deployment.\n".to_string(),
+        ),
+        (
+            workspace.join("AGENTS.md"),
+            "# AGENTS\n\nPer-agent local operating instructions.\n".to_string(),
+        ),
+        (
+            workspace.join("TOOLS.md"),
+            "# TOOLS\n\nTool identities are immutable from DNA.md.\n".to_string(),
+        ),
+        (
+            workspace.join("IDENTITY.md"),
+            format!("# IDENTITY\n\nagentWallet: {}\n", payload.agent_wallet.to_lowercase()),
+        ),
+        (
+            workspace.join("USER.md"),
+            "# USER\n\nLocal user preferences and runtime instructions.\n".to_string(),
+        ),
+        (
+            workspace.join("HEARTBEAT.md"),
+            "# HEARTBEAT\n\nKeep checks lightweight. Reply HEARTBEAT_OK when idle.\n".to_string(),
+        ),
+        (
+            workspace.join("runtime.log"),
+            "".to_string(),
+        ),
+    ];
+
+    for (file, content) in files {
+        if !file.exists() {
+            fs::write(&file, content).map_err(|err| format!("failed to write bootstrap file: {err}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn with_daemon_state<T>(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, DesktopDaemonState>,
+    updater: impl FnOnce(&mut DaemonStateFile) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = state
+        .state
+        .lock()
+        .map_err(|_| "failed to lock daemon state".to_string())?;
+    let output = updater(&mut guard)?;
+    write_daemon_state_to_disk(app, &guard)?;
+    Ok(output)
+}
+
+#[tauri::command]
+fn daemon_install_agent(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopDaemonState>,
+    payload: DaemonInstallPayload,
+) -> Result<DaemonAgentState, String> {
+    let normalized_wallet = normalize_wallet(&payload.agent_wallet)
+        .ok_or_else(|| "agentWallet must be a valid wallet address".to_string())?;
+    if payload.agent_card_cid.trim().is_empty() {
+        return Err("agentCardCid is required".to_string());
+    }
+    if payload.model_id.trim().is_empty() {
+        return Err("modelId is required".to_string());
+    }
+    if payload.mcp_tools_hash.trim().is_empty() {
+        return Err("mcpToolsHash is required".to_string());
+    }
+
+    let normalized_payload = DaemonInstallPayload {
+        agent_wallet: normalized_wallet.clone(),
+        agent_card_cid: payload.agent_card_cid.trim().to_string(),
+        chain_id: payload.chain_id,
+        model_id: payload.model_id.trim().to_string(),
+        mcp_tools_hash: payload.mcp_tools_hash.trim().to_string(),
+        dna_hash: payload.dna_hash.trim().to_string(),
+    };
+
+    bootstrap_agent_workspace(&app, &normalized_payload)?;
+
+    with_daemon_state(&app, &state, |daemon| {
+        let entry = daemon.agents.entry(normalized_wallet.clone()).or_insert(DaemonAgentState {
+            agent_wallet: normalized_wallet.clone(),
+            runtime_id: None,
+            desired_running: false,
+            running: false,
+            mesh_enabled: false,
+            status: "stopped".to_string(),
+            dna_hash: normalized_payload.dna_hash.clone(),
+            chain_id: normalized_payload.chain_id,
+            model_id: normalized_payload.model_id.clone(),
+            mcp_tools_hash: normalized_payload.mcp_tools_hash.clone(),
+            agent_card_cid: normalized_payload.agent_card_cid.clone(),
+            permissions: DaemonPermissionPolicy::default(),
+            skills: HashMap::new(),
+            logs_cursor: 0,
+            last_error: None,
+            updated_at: now_ms(),
+        });
+
+        entry.chain_id = normalized_payload.chain_id;
+        entry.model_id = normalized_payload.model_id.clone();
+        entry.mcp_tools_hash = normalized_payload.mcp_tools_hash.clone();
+        entry.agent_card_cid = normalized_payload.agent_card_cid.clone();
+        entry.dna_hash = normalized_payload.dna_hash.clone();
+        entry.updated_at = now_ms();
+
+        Ok(entry.clone())
+    })
+}
+
+#[tauri::command]
+fn daemon_start_agent(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopDaemonState>,
+    agent_wallet: String,
+) -> Result<DaemonAgentState, String> {
+    let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
+
+    with_daemon_state(&app, &state, |daemon| {
+        let entry = daemon
+            .agents
+            .get_mut(&wallet)
+            .ok_or_else(|| format!("agent not installed: {wallet}"))?;
+
+        entry.desired_running = true;
+        entry.running = true;
+        entry.status = "running".to_string();
+        entry.runtime_id = Some(format!("openclaw-{}-{}", wallet, now_ms()));
+        entry.last_error = None;
+        entry.updated_at = now_ms();
+        Ok(entry.clone())
+    })
+}
+
+#[tauri::command]
+fn daemon_stop_agent(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopDaemonState>,
+    agent_wallet: String,
+) -> Result<DaemonAgentState, String> {
+    let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
+
+    with_daemon_state(&app, &state, |daemon| {
+        let entry = daemon
+            .agents
+            .get_mut(&wallet)
+            .ok_or_else(|| format!("agent not installed: {wallet}"))?;
+
+        entry.desired_running = false;
+        entry.running = false;
+        entry.status = "stopped".to_string();
+        entry.updated_at = now_ms();
+        Ok(entry.clone())
+    })
+}
+
+#[tauri::command]
+fn daemon_update_permissions(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopDaemonState>,
+    agent_wallet: String,
+    policy: DaemonPermissionPolicy,
+) -> Result<DaemonAgentState, String> {
+    let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
+    let normalized_policy = normalize_daemon_permission_policy(policy);
+
+    with_daemon_state(&app, &state, |daemon| {
+        let entry = daemon
+            .agents
+            .get_mut(&wallet)
+            .ok_or_else(|| format!("agent not installed: {wallet}"))?;
+        entry.permissions = normalized_policy.clone();
+        entry.updated_at = now_ms();
+        Ok(entry.clone())
+    })
+}
+
+#[tauri::command]
+fn daemon_update_skill(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopDaemonState>,
+    agent_wallet: String,
+    skill_key: String,
+    enabled: bool,
+) -> Result<DaemonAgentState, String> {
+    let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
+    let normalized_skill_key = skill_key.trim().to_string();
+    if normalized_skill_key.is_empty() {
+        return Err("skillKey is required".to_string());
+    }
+
+    with_daemon_state(&app, &state, |daemon| {
+        let entry = daemon
+            .agents
+            .get_mut(&wallet)
+            .ok_or_else(|| format!("agent not installed: {wallet}"))?;
+
+        let updated_at = now_ms();
+        let existing = entry.skills.get(&normalized_skill_key).cloned();
+        entry.skills.insert(
+            normalized_skill_key.clone(),
+            DaemonSkillState {
+                enabled,
+                eligible: existing.as_ref().map(|v| v.eligible).unwrap_or(true),
+                source: existing
+                    .as_ref()
+                    .map(|v| v.source.clone())
+                    .unwrap_or_else(|| "agent".to_string()),
+                revision: existing
+                    .as_ref()
+                    .map(|v| v.revision.clone())
+                    .unwrap_or_else(|| format!("rev-{}", updated_at)),
+                updated_at,
+            },
+        );
+        entry.updated_at = updated_at;
+        Ok(entry.clone())
+    })
+}
+
+#[tauri::command]
+fn daemon_get_agent_status(
+    state: tauri::State<'_, DesktopDaemonState>,
+    agent_wallet: String,
+) -> Result<Option<DaemonAgentState>, String> {
+    let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
+    let guard = state
+        .state
+        .lock()
+        .map_err(|_| "failed to lock daemon state".to_string())?;
+    Ok(guard.agents.get(&wallet).cloned())
+}
+
+#[tauri::command]
+fn daemon_tail_logs(
+    app: tauri::AppHandle,
+    agent_wallet: String,
+    cursor: Option<usize>,
+) -> Result<DaemonLogTail, String> {
+    let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
+    let logs_path = daemon_agent_logs_path(&app, &wallet)?;
+    if !logs_path.exists() {
+        return Ok(DaemonLogTail {
+            lines: Vec::new(),
+            cursor: cursor.unwrap_or(0),
+        });
+    }
+
+    let raw = fs::read_to_string(&logs_path).map_err(|err| format!("failed to read logs: {err}"))?;
+    let all_lines = raw
+        .lines()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
+    let from = cursor.unwrap_or(0).min(all_lines.len());
+    let slice = all_lines[from..].to_vec();
+
+    Ok(DaemonLogTail {
+        lines: slice,
+        cursor: all_lines.len(),
+    })
+}
+
+#[tauri::command]
+fn daemon_mesh_set(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopDaemonState>,
+    agent_wallet: String,
+    enabled: bool,
+) -> Result<DaemonAgentState, String> {
+    let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
+
+    with_daemon_state(&app, &state, |daemon| {
+        let entry = daemon
+            .agents
+            .get_mut(&wallet)
+            .ok_or_else(|| format!("agent not installed: {wallet}"))?;
+        entry.mesh_enabled = enabled;
+        entry.updated_at = now_ms();
+        Ok(entry.clone())
+    })
+}
+
+#[tauri::command]
+fn daemon_issue_permission_ticket(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopDaemonState>,
+    agent_wallet: String,
+    action: String,
+    decision: String,
+    ttl_seconds: Option<u64>,
+) -> Result<PermissionDecisionTicket, String> {
+    let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
+    let normalized_action = action.trim().to_string();
+    if normalized_action.is_empty() {
+        return Err("action is required".to_string());
+    }
+    let normalized_decision = normalize_daemon_decision(&decision);
+    let ttl_ms = ttl_seconds.unwrap_or(120).clamp(1, 3600) * 1000;
+    let issued_at = now_ms();
+
+    with_daemon_state(&app, &state, |daemon| {
+        let ticket = PermissionDecisionTicket {
+            id: format!("ticket-{}-{}", wallet, issued_at),
+            agent_wallet: wallet.clone(),
+            action: normalized_action.clone(),
+            decision: normalized_decision.clone(),
+            issued_at,
+            expires_at: issued_at.saturating_add(ttl_ms),
+            nonce: now_nonce(),
+        };
+        daemon.tickets.insert(ticket.id.clone(), ticket.clone());
+        Ok(ticket)
+    })
+}
+
+#[tauri::command]
+fn daemon_validate_permission_ticket(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopDaemonState>,
+    ticket_id: String,
+    action: String,
+) -> Result<bool, String> {
+    with_daemon_state(&app, &state, |daemon| {
+        daemon.tickets.retain(|_, value| value.expires_at > now_ms());
+        let Some(ticket) = daemon.tickets.get(&ticket_id).cloned() else {
+            return Ok(false);
+        };
+        if ticket.expires_at <= now_ms() {
+            daemon.tickets.remove(&ticket_id);
+            return Ok(false);
+        }
+        if ticket.action != action.trim() {
+            return Ok(false);
+        }
+        Ok(ticket.decision == "allow")
+    })
+}
+
+#[tauri::command]
+fn daemon_install_launch_agent(app: tauri::AppHandle) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
+    let launch_agents_dir = Path::new(&home).join("Library").join("LaunchAgents");
+    fs::create_dir_all(&launch_agents_dir)
+        .map_err(|err| format!("failed to create LaunchAgents directory: {err}"))?;
+
+    let plist_path = launch_agents_dir.join("market.compose.desktop.daemon.plist");
+    let exe_path = std::env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
+    let label = "market.compose.desktop.daemon";
+
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>WorkingDirectory</key>
+  <string>{}</string>
+  <key>StandardOutPath</key>
+  <string>{}</string>
+  <key>StandardErrorPath</key>
+  <string>{}</string>
+</dict>
+</plist>
+"#,
+        exe_path.display(),
+        resolve_base_dir(&app)?.display(),
+        resolve_base_dir(&app)?.join("daemon.stdout.log").display(),
+        resolve_base_dir(&app)?.join("daemon.stderr.log").display(),
+    );
+
+    fs::write(&plist_path, plist).map_err(|err| format!("failed to write LaunchAgent plist: {err}"))?;
+    Ok(plist_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn daemon_launch_agent_status() -> Result<bool, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
+    let plist_path = Path::new(&home)
+        .join("Library")
+        .join("LaunchAgents")
+        .join("market.compose.desktop.daemon.plist");
+    Ok(plist_path.exists())
+}
+
 #[tauri::command]
 fn desktop_network_status(state: tauri::State<MeshRuntimeState>) -> Result<MeshRuntimeStatus, String> {
     let status = state
@@ -1307,6 +2049,7 @@ fn main() {
         .plugin(tauri_plugin_deep_link::init())
         .manage(PendingDeepLinks::default())
         .manage(MeshRuntimeState::default())
+        .manage(DesktopDaemonState::default())
         .invoke_handler(tauri::generate_handler![
             get_desktop_paths,
             load_desktop_state,
@@ -1319,9 +2062,26 @@ fn main() {
             consume_pending_deep_links,
             desktop_network_status,
             desktop_network_join,
-            desktop_network_leave
+            desktop_network_leave,
+            daemon_install_agent,
+            daemon_start_agent,
+            daemon_stop_agent,
+            daemon_update_permissions,
+            daemon_update_skill,
+            daemon_get_agent_status,
+            daemon_tail_logs,
+            daemon_mesh_set,
+            daemon_issue_permission_ticket,
+            daemon_validate_permission_ticket,
+            daemon_install_launch_agent,
+            daemon_launch_agent_status
         ])
         .setup(|app| {
+            let daemon_disk_state = read_daemon_state_from_disk(&app.handle()).unwrap_or_default();
+            if let Ok(mut guard) = app.state::<DesktopDaemonState>().state.lock() {
+                *guard = daemon_disk_state;
+            }
+
             #[cfg(desktop)]
             {
                 let handle = app.handle().clone();
