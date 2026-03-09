@@ -37,6 +37,13 @@ export interface MeshBootstrapResolution {
   source: "dns" | "local";
 }
 
+export interface MeshBootstrapAnchor {
+  peerId: string;
+  host: string | null;
+  region: string | null;
+  provider: string | null;
+}
+
 function parseCsv(value: string | undefined): string[] {
   if (!value) return [];
   return value
@@ -56,6 +63,137 @@ function parsePositiveInt(value: string | undefined, fallback: number, min: numb
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
+}
+
+function parseProvider(code: string | null): string | null {
+  if (!code) return null;
+  if (code === "do") return "digitalocean";
+  if (code === "az") return "azure";
+  if (code === "gcp") return "gcp";
+  return code;
+}
+
+function parseMultiaddrParts(input: string): {
+  host: string | null;
+  peerIds: string[];
+  hasCircuit: boolean;
+} {
+  const parts = input.split("/").filter(Boolean);
+  let host: string | null = null;
+  const peerIds: string[] = [];
+  let hasCircuit = false;
+
+  for (let index = 0; index < parts.length; index += 1) {
+    const protocol = parts[index];
+    if (protocol === "dns4" || protocol === "dns6") {
+      const value = parts[index + 1];
+      if (!value) continue;
+      host = value;
+      index += 1;
+      continue;
+    }
+    if (protocol === "p2p") {
+      const value = parts[index + 1];
+      if (!value) continue;
+      peerIds.push(value);
+      index += 1;
+      continue;
+    }
+    if (protocol === "p2p-circuit") {
+      hasCircuit = true;
+    }
+  }
+
+  return { host, peerIds, hasCircuit };
+}
+
+function anchorFromHost(host: string | null): Pick<MeshBootstrapAnchor, "host" | "region" | "provider"> {
+  if (!host) {
+    return { host: null, region: null, provider: null };
+  }
+  const parts = host.toLowerCase().split(".").filter(Boolean);
+  if (parts.length < 4) {
+    return { host, region: null, provider: null };
+  }
+  return {
+    host,
+    provider: parseProvider(parts[1] || null),
+    region: parts[2] || null,
+  };
+}
+
+export function deriveBootstrapAnchors(resolution: Pick<MeshBootstrapResolution, "bootstrapMultiaddrs" | "relayMultiaddrs">): Record<string, MeshBootstrapAnchor> {
+  const byPeerId: Record<string, MeshBootstrapAnchor> = {};
+  const source = unique([
+    ...resolution.bootstrapMultiaddrs,
+    ...resolution.relayMultiaddrs,
+  ]);
+
+  source.forEach((multiaddr) => {
+    const parsed = parseMultiaddrParts(multiaddr);
+    const peerId = parsed.peerIds[parsed.peerIds.length - 1];
+    if (!peerId) {
+      return;
+    }
+    byPeerId[peerId] = {
+      peerId,
+      ...anchorFromHost(parsed.host),
+    };
+  });
+
+  return byPeerId;
+}
+
+export function derivePeerAnchor(
+  listenMultiaddrs: string[],
+  anchorsByPeerId: Record<string, MeshBootstrapAnchor>,
+): {
+  relayPeerId: string | null;
+  anchorHost: string | null;
+  anchorRegion: string | null;
+  anchorProvider: string | null;
+} {
+  for (const multiaddr of listenMultiaddrs) {
+    const parsed = parseMultiaddrParts(multiaddr);
+    if (parsed.host) {
+      const hostAnchor = anchorFromHost(parsed.host);
+      return {
+        relayPeerId: parsed.hasCircuit ? parsed.peerIds[0] || null : null,
+        anchorHost: hostAnchor.host,
+        anchorRegion: hostAnchor.region,
+        anchorProvider: hostAnchor.provider,
+      };
+    }
+
+    const relayPeerId = parsed.hasCircuit ? parsed.peerIds[0] || null : null;
+    if (relayPeerId && anchorsByPeerId[relayPeerId]) {
+      const anchor = anchorsByPeerId[relayPeerId];
+      return {
+        relayPeerId,
+        anchorHost: anchor.host,
+        anchorRegion: anchor.region,
+        anchorProvider: anchor.provider,
+      };
+    }
+
+    const mapped = parsed.peerIds.find((peerId) => anchorsByPeerId[peerId]);
+    if (mapped) {
+      const anchor = anchorsByPeerId[mapped];
+      return {
+        relayPeerId: mapped,
+        anchorHost: anchor.host,
+        anchorRegion: anchor.region,
+        anchorProvider: anchor.provider,
+      };
+    }
+  }
+
+  return {
+    relayPeerId: null,
+    anchorHost: null,
+    anchorRegion: null,
+    anchorProvider: null,
+  };
 }
 
 function stripTxtQuotes(value: string): string {

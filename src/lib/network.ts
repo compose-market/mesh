@@ -1,12 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
-import { resolveMeshBootstrap, resolveLocalMeshBootstrap, type MeshBootstrapResolution } from "./mesh-bootstrap";
-import type { DesktopIdentityContext } from "./types";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  deriveBootstrapAnchors,
+  derivePeerAnchor,
+  resolveMeshBootstrap,
+  resolveLocalMeshBootstrap,
+  type MeshBootstrapAnchor,
+  type MeshBootstrapResolution,
+} from "./mesh-bootstrap";
+import type { DesktopIdentityContext, MeshAgentCard, MeshPeerSignal } from "./types";
 
 interface MeshJoinRequest {
   userAddress: string;
   agentWallet: string;
   deviceId: string;
   chainId: number;
+  sessionId?: string;
+  dnaHash?: string;
+  capabilitiesHash?: string;
   gossipTopic: string;
   announceTopic: string;
   kadProtocol: string;
@@ -14,6 +25,7 @@ interface MeshJoinRequest {
   capabilities: string[];
   bootstrapMultiaddrs: string[];
   relayMultiaddrs: string[];
+  publicCard?: MeshAgentCard;
 }
 
 interface MeshBootstrapConfig {
@@ -24,6 +36,7 @@ interface MeshBootstrapConfig {
   kadProtocol: string;
   heartbeatMs: number;
   source: "dns" | "local";
+  anchorsByPeerId: Record<string, MeshBootstrapAnchor>;
 }
 
 export interface MeshRuntimeStatus {
@@ -45,6 +58,15 @@ export interface MeshDesiredState {
   identity: DesktopIdentityContext;
   agentWallet: string;
   deviceId: string;
+  sessionId?: string;
+  dnaHash?: string;
+  capabilitiesHash?: string;
+  publicCard?: MeshAgentCard;
+}
+
+export interface MeshPeerIndexPayload {
+  peers: MeshPeerSignal[];
+  updatedAt: number;
 }
 
 function isTauriRuntime(): boolean {
@@ -99,6 +121,7 @@ function normalizeBootstrap(resolution: MeshBootstrapResolution): MeshBootstrapC
     kadProtocol: resolution.kadProtocol,
     heartbeatMs: resolution.heartbeatMs,
     source: resolution.source,
+    anchorsByPeerId: deriveBootstrapAnchors(resolution),
   };
 }
 
@@ -111,6 +134,8 @@ class DesktopMeshService {
   private lastJoinFingerprint: string | null = null;
   private lastStatus: MeshRuntimeStatus = dormantStatus();
   private onStatus: ((status: MeshRuntimeStatus) => void) | null = null;
+  private peerUnlisten: UnlistenFn | null = null;
+  private onPeerIndex: ((payload: MeshPeerIndexPayload) => void) | null = null;
 
   private desiredKey(state: MeshDesiredState | null): string {
     if (!state) {
@@ -121,6 +146,9 @@ class DesktopMeshService {
       String(state.identity.chainId),
       state.agentWallet.toLowerCase(),
       state.deviceId,
+      state.sessionId || "",
+      state.dnaHash || "",
+      state.capabilitiesHash || "",
     ].join("|");
   }
 
@@ -130,6 +158,9 @@ class DesktopMeshService {
       state.agentWallet.toLowerCase(),
       state.deviceId,
       String(state.identity.chainId),
+      state.sessionId || "",
+      state.dnaHash || "",
+      state.capabilitiesHash || "",
       bootstrap.gossipTopic,
       bootstrap.announceTopic,
       bootstrap.kadProtocol,
@@ -144,6 +175,35 @@ class DesktopMeshService {
     if (listener) {
       listener(this.lastStatus);
     }
+  }
+
+  public async configurePeerIndex(listener: ((payload: MeshPeerIndexPayload) => void) | null): Promise<void> {
+    this.onPeerIndex = listener;
+
+    if (this.peerUnlisten) {
+      this.peerUnlisten();
+      this.peerUnlisten = null;
+    }
+
+    if (!listener || !isTauriRuntime()) {
+      return;
+    }
+
+    this.peerUnlisten = await listen<MeshPeerIndexPayload>("mesh-peer-index", (event) => {
+      if (this.onPeerIndex) {
+        const peers = event.payload.peers.map((peer) => ({
+          ...peer,
+          ...derivePeerAnchor(
+            peer.listenMultiaddrs,
+            this.bootstrap?.anchorsByPeerId || {},
+          ),
+        }));
+        this.onPeerIndex({
+          ...event.payload,
+          peers,
+        });
+      }
+    });
   }
 
   public async setDesiredState(state: MeshDesiredState | null): Promise<void> {
@@ -275,6 +335,9 @@ class DesktopMeshService {
           agentWallet: this.desired.agentWallet,
           deviceId: this.desired.deviceId,
           chainId: this.desired.identity.chainId,
+          sessionId: this.desired.sessionId,
+          dnaHash: this.desired.dnaHash,
+          capabilitiesHash: this.desired.capabilitiesHash,
           gossipTopic: this.bootstrap.gossipTopic,
           announceTopic: this.bootstrap.announceTopic,
           kadProtocol: this.bootstrap.kadProtocol,
@@ -282,6 +345,7 @@ class DesktopMeshService {
           capabilities: [`agent-${this.desired.agentWallet.toLowerCase().replace(/^0x/, "")}`],
           bootstrapMultiaddrs: this.bootstrap.bootstrapMultiaddrs,
           relayMultiaddrs: this.bootstrap.relayMultiaddrs,
+          publicCard: this.desired.publicCard,
         };
         activeStatus = await startMeshRuntime(request);
         this.lastJoinFingerprint = joinFingerprint;
