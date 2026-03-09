@@ -1,32 +1,36 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentMeshInteraction,
   AgentNetworkState,
+  AgentDnaLock,
   AgentPermissionPolicy,
+  AgentTaskReport,
   DesktopPaths,
   DesktopRuntimeState,
   InstalledAgent,
+  MeshAgentCard,
+  MeshPeerSignal,
   OsPermissionSnapshot,
+  PermissionDecision,
 } from "./types";
 
 const STORAGE_FALLBACK_KEY = "compose_desktop_state_v1";
-const DEFAULT_LAMBDA_URL = (
+
+const DEFAULT_API_URL = (
   import.meta.env.VITE_API_URL ||
-  import.meta.env.VITE_LAMBDA_URL ||
+  import.meta.env.VITE_API_URL ||
   "https://api.compose.market"
-).replace(/\/+$/, "");
-const DEFAULT_MANOWAR_URL = (
-  import.meta.env.VITE_MANOWAR_URL ||
-  "https://manowar.compose.market"
 ).replace(/\/+$/, "");
 
 const defaultPermissions: AgentPermissionPolicy = {
-  shell: false,
-  filesystemRead: false,
-  filesystemWrite: false,
-  filesystemEdit: false,
-  filesystemDelete: false,
-  camera: false,
-  microphone: false,
+  shell: "ask",
+  filesystemRead: "ask",
+  filesystemWrite: "ask",
+  filesystemEdit: "ask",
+  filesystemDelete: "ask",
+  camera: "ask",
+  microphone: "ask",
+  network: "ask",
 };
 
 const defaultOsPermissions: OsPermissionSnapshot = {
@@ -43,17 +47,153 @@ const defaultAgentNetworkState: AgentNetworkState = {
   lastHeartbeatAt: null,
   lastError: null,
   updatedAt: 0,
+  publicCard: null,
+  recentPings: [],
+  interactions: [],
 };
 
-function normalizePermissionPolicy(value: Partial<AgentPermissionPolicy> | null | undefined): AgentPermissionPolicy {
+function normalizeMeshAgentCard(value: Partial<MeshAgentCard> | null | undefined): MeshAgentCard | null {
+  if (!value) {
+    return null;
+  }
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  const description = typeof value.description === "string" ? value.description.trim() : "";
+  const model = typeof value.model === "string" ? value.model.trim() : "";
+  const framework = typeof value.framework === "string" ? value.framework.trim() : "";
+  const headline = typeof value.headline === "string" ? value.headline.trim() : "";
+  const statusLine = typeof value.statusLine === "string" ? value.statusLine.trim() : "";
+  const capabilities = Array.isArray(value.capabilities)
+    ? [...new Set(value.capabilities.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()))]
+    : [];
+
+  if (!name && !headline && !statusLine) {
+    return null;
+  }
+
   return {
-    shell: Boolean(value?.shell ?? defaultPermissions.shell),
-    filesystemRead: Boolean(value?.filesystemRead ?? defaultPermissions.filesystemRead),
-    filesystemWrite: Boolean(value?.filesystemWrite ?? defaultPermissions.filesystemWrite),
-    filesystemEdit: Boolean(value?.filesystemEdit ?? defaultPermissions.filesystemEdit),
-    filesystemDelete: Boolean(value?.filesystemDelete ?? defaultPermissions.filesystemDelete),
-    camera: Boolean(value?.camera ?? defaultPermissions.camera),
-    microphone: Boolean(value?.microphone ?? defaultPermissions.microphone),
+    name,
+    description,
+    model,
+    framework,
+    headline,
+    statusLine,
+    capabilities,
+    updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),
+  };
+}
+
+function normalizeMeshPeerSignal(value: Partial<MeshPeerSignal> | null | undefined): MeshPeerSignal | null {
+  if (!value || typeof value.peerId !== "string" || value.peerId.trim().length === 0) {
+    return null;
+  }
+
+  const lastMessageType = value.lastMessageType === "presence" || value.lastMessageType === "announce"
+    ? value.lastMessageType
+    : null;
+
+  return {
+    peerId: value.peerId.trim(),
+    agentWallet: typeof value.agentWallet === "string" && value.agentWallet.trim().length > 0 ? value.agentWallet.trim().toLowerCase() : null,
+    deviceId: typeof value.deviceId === "string" && value.deviceId.trim().length > 0 ? value.deviceId.trim() : null,
+    lastSeenAt: Number.isFinite(value.lastSeenAt) ? Number(value.lastSeenAt) : Date.now(),
+    stale: Boolean(value.stale),
+    caps: Array.isArray(value.caps)
+      ? [...new Set(value.caps.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()))].sort()
+      : [],
+    listenMultiaddrs: Array.isArray(value.listenMultiaddrs)
+      ? value.listenMultiaddrs.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [],
+    relayPeerId: typeof value.relayPeerId === "string" && value.relayPeerId.trim().length > 0 ? value.relayPeerId.trim() : null,
+    anchorHost: typeof value.anchorHost === "string" && value.anchorHost.trim().length > 0 ? value.anchorHost.trim() : null,
+    anchorRegion: typeof value.anchorRegion === "string" && value.anchorRegion.trim().length > 0 ? value.anchorRegion.trim() : null,
+    anchorProvider: typeof value.anchorProvider === "string" && value.anchorProvider.trim().length > 0 ? value.anchorProvider.trim() : null,
+    nodeDistance: Number.isFinite(value.nodeDistance) ? Math.max(1, Number(value.nodeDistance)) : 1,
+    signalCount: Number.isFinite(value.signalCount) ? Math.max(0, Number(value.signalCount)) : 0,
+    announceCount: Number.isFinite(value.announceCount) ? Math.max(0, Number(value.announceCount)) : 0,
+    lastMessageType,
+    card: normalizeMeshAgentCard(value.card),
+  };
+}
+
+function normalizeMeshInteraction(value: Partial<AgentMeshInteraction> | null | undefined): AgentMeshInteraction | null {
+  if (!value || typeof value.id !== "string" || typeof value.peerId !== "string") {
+    return null;
+  }
+  const direction = value.direction === "outbound" ? "outbound" : "inbound";
+  const kind = value.kind === "announce" || value.kind === "connect" || value.kind === "disconnect" ? value.kind : "signal";
+
+  return {
+    id: value.id,
+    peerId: value.peerId,
+    peerAgentWallet: typeof value.peerAgentWallet === "string" && value.peerAgentWallet.trim().length > 0
+      ? value.peerAgentWallet.trim().toLowerCase()
+      : null,
+    direction,
+    kind,
+    summary: typeof value.summary === "string" ? value.summary : "",
+    createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : Date.now(),
+  };
+}
+
+function normalizeAgentReport(value: Partial<AgentTaskReport> | null | undefined): AgentTaskReport | null {
+  if (!value || typeof value.id !== "string" || typeof value.title !== "string") {
+    return null;
+  }
+  const kind = (
+    value.kind === "deployment" ||
+    value.kind === "runtime" ||
+    value.kind === "heartbeat" ||
+    value.kind === "permission" ||
+    value.kind === "skill" ||
+    value.kind === "mesh" ||
+    value.kind === "economics"
+  )
+    ? value.kind
+    : "runtime";
+
+  const outcome = (
+    value.outcome === "success" ||
+    value.outcome === "warning" ||
+    value.outcome === "error" ||
+    value.outcome === "info"
+  )
+    ? value.outcome
+    : "info";
+
+  return {
+    id: value.id,
+    kind,
+    title: value.title,
+    summary: typeof value.summary === "string" ? value.summary : "",
+    details: typeof value.details === "string" ? value.details : undefined,
+    outcome,
+    createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : Date.now(),
+    costMicros: Number.isFinite(value.costMicros) ? Number(value.costMicros) : undefined,
+    revenueMicros: Number.isFinite(value.revenueMicros) ? Number(value.revenueMicros) : undefined,
+    peerId: typeof value.peerId === "string" && value.peerId.trim().length > 0 ? value.peerId.trim() : undefined,
+  };
+}
+
+function normalizePermissionPolicy(value: Partial<AgentPermissionPolicy> | null | undefined): AgentPermissionPolicy {
+  const toDecision = (input: unknown, fallback: PermissionDecision): PermissionDecision => {
+    if (input === "allow" || input === "ask" || input === "deny") {
+      return input;
+    }
+    if (typeof input === "boolean") {
+      return input ? "allow" : "deny";
+    }
+    return fallback;
+  };
+
+  return {
+    shell: toDecision(value?.shell, defaultPermissions.shell),
+    filesystemRead: toDecision(value?.filesystemRead, defaultPermissions.filesystemRead),
+    filesystemWrite: toDecision(value?.filesystemWrite, defaultPermissions.filesystemWrite),
+    filesystemEdit: toDecision(value?.filesystemEdit, defaultPermissions.filesystemEdit),
+    filesystemDelete: toDecision(value?.filesystemDelete, defaultPermissions.filesystemDelete),
+    camera: toDecision(value?.camera, defaultPermissions.camera),
+    microphone: toDecision(value?.microphone, defaultPermissions.microphone),
+    network: toDecision(value?.network, defaultPermissions.network),
   };
 }
 
@@ -79,6 +219,13 @@ function normalizeNetworkState(value: Partial<AgentNetworkState> | null | undefi
     lastHeartbeatAt: Number.isFinite(value?.lastHeartbeatAt) ? Number(value?.lastHeartbeatAt) : null,
     lastError: typeof value?.lastError === "string" && value.lastError.trim().length > 0 ? value.lastError : null,
     updatedAt: Number.isFinite(value?.updatedAt) ? Number(value?.updatedAt) : 0,
+    publicCard: normalizeMeshAgentCard(value?.publicCard),
+    recentPings: Array.isArray(value?.recentPings)
+      ? value.recentPings.map((item) => normalizeMeshPeerSignal(item)).filter((item): item is MeshPeerSignal => item !== null).slice(0, 32)
+      : [],
+    interactions: Array.isArray(value?.interactions)
+      ? value.interactions.map((item) => normalizeMeshInteraction(item)).filter((item): item is AgentMeshInteraction => item !== null).slice(0, 64)
+      : [],
   };
 }
 
@@ -95,23 +242,40 @@ function normalizeInstalledAgent(
 
   const normalizedPermissions = normalizePermissionPolicy(
     agent.permissions as Partial<AgentPermissionPolicy> | undefined
-      || (agent as { permissionPolicy?: Partial<AgentPermissionPolicy> }).permissionPolicy
-      || permissionDefaults,
+    || (agent as { permissionPolicy?: Partial<AgentPermissionPolicy> }).permissionPolicy
+    || permissionDefaults,
   );
   const normalizedNetwork = normalizeNetworkState(agent.network as Partial<AgentNetworkState> | undefined);
+
+  const lock = (agent.lock || {}) as Partial<AgentDnaLock>;
 
   return {
     ...(agent as InstalledAgent),
     agentWallet: agent.agentWallet.toLowerCase(),
+    lock: {
+      agentWallet: (lock.agentWallet || agent.agentWallet).toLowerCase(),
+      agentCardCid: lock.agentCardCid || "",
+      modelId: lock.modelId || "",
+      mcpToolsHash: lock.mcpToolsHash || "",
+      lockedAt: Number.isFinite(lock.lockedAt) ? Number(lock.lockedAt) : Date.now(),
+      chainId: Number.isFinite(lock.chainId) ? Number(lock.chainId) : 0,
+      dnaHash: typeof lock.dnaHash === "string" ? lock.dnaHash : "",
+    },
     permissions: normalizedPermissions,
     network: normalizedNetwork,
+    skillStates: typeof (agent as InstalledAgent).skillStates === "object" && (agent as InstalledAgent).skillStates !== null
+      ? (agent as InstalledAgent).skillStates
+      : {},
+    reports: Array.isArray((agent as InstalledAgent).reports)
+      ? (agent as InstalledAgent).reports.map((item) => normalizeAgentReport(item)).filter((item): item is AgentTaskReport => item !== null).slice(0, 128)
+      : [],
   };
 }
 
 const defaultState: DesktopRuntimeState = {
   settings: {
-    lambdaUrl: DEFAULT_LAMBDA_URL,
-    manowarUrl: DEFAULT_MANOWAR_URL,
+    apiUrl: DEFAULT_API_URL,
+    runtimeUrl: DEFAULT_API_URL,
   },
   identity: null,
   permissionDefaults: { ...defaultPermissions },
@@ -152,8 +316,8 @@ function normalizeState(state: Partial<DesktopRuntimeState> | null | undefined):
 
   return {
     settings: {
-      lambdaUrl: state.settings?.lambdaUrl || base.settings.lambdaUrl,
-      manowarUrl: state.settings?.manowarUrl || base.settings.manowarUrl,
+      apiUrl: state.settings?.apiUrl || base.settings.apiUrl,
+      runtimeUrl: state.settings?.runtimeUrl || base.settings.runtimeUrl,
     },
     identity: state.identity || null,
     permissionDefaults: migratedPermissions,
@@ -304,14 +468,57 @@ export function getGlobalSkillsRelativePath(): string {
 export async function ensureAgentWorkspace(agent: InstalledAgent): Promise<void> {
   const workspaceDir = getAgentWorkspaceRelativePath(agent.agentWallet);
   const skillsDir = getAgentSkillsRelativePath(agent.agentWallet);
+  const generatedSkillsDir = `${skillsDir}/generated`;
   await ensureManagedDir(workspaceDir);
   await ensureManagedDir(skillsDir);
+  await ensureManagedDir(generatedSkillsDir);
 
-  const heartbeatPath = getAgentHeartbeatRelativePath(agent.agentWallet);
-  const existing = await readManagedFile(heartbeatPath);
-  if (existing === null) {
-    const initial = `# HEARTBEAT\n\nKeep local agent checks lightweight. Reply HEARTBEAT_OK when no action is needed.\n`;
-    await writeManagedFile(heartbeatPath, initial);
+  const files: Array<{ path: string; content: string }> = [
+    {
+      path: getAgentHeartbeatRelativePath(agent.agentWallet),
+      content: "# HEARTBEAT\n\nKeep local checks lightweight. Reply HEARTBEAT_OK when no action is needed.\n",
+    },
+    {
+      path: `${workspaceDir}/DNA.md`,
+      content: [
+        "# DNA",
+        `agentWallet: ${agent.lock.agentWallet}`,
+        `modelId: ${agent.lock.modelId}`,
+        `chainId: ${agent.lock.chainId}`,
+        `agentCardCid: ${agent.lock.agentCardCid}`,
+        `mcpToolsHash: ${agent.lock.mcpToolsHash}`,
+        `dnaHash: ${agent.lock.dnaHash}`,
+        `lockedAt: ${agent.lock.lockedAt}`,
+        "",
+      ].join("\n"),
+    },
+    {
+      path: `${workspaceDir}/SOUL.md`,
+      content: "# SOUL\n\nMutable behavior and persona notes for this local deployment.\n",
+    },
+    {
+      path: `${workspaceDir}/AGENTS.md`,
+      content: "# AGENTS\n\nPer-agent local operating instructions.\n",
+    },
+    {
+      path: `${workspaceDir}/TOOLS.md`,
+      content: "# TOOLS\n\nMCP/GOAT identities are immutable from DNA.md.\n",
+    },
+    {
+      path: `${workspaceDir}/IDENTITY.md`,
+      content: `# IDENTITY\n\nagentWallet: ${agent.agentWallet}\n`,
+    },
+    {
+      path: `${workspaceDir}/USER.md`,
+      content: "# USER\n\nLocal user preferences and instructions.\n",
+    },
+  ];
+
+  for (const file of files) {
+    const existing = await readManagedFile(file.path);
+    if (existing === null) {
+      await writeManagedFile(file.path, file.content);
+    }
   }
 }
 
@@ -321,6 +528,23 @@ export async function ensureSkillsRoot(): Promise<void> {
 
 export function getDefaultPermissionPolicy(): AgentPermissionPolicy {
   return { ...defaultPermissions };
+}
+
+export function permissionAllows(value: PermissionDecision): boolean {
+  return value === "allow" || value === "ask";
+}
+
+export function permissionPolicyToGrantedList(policy: AgentPermissionPolicy): string[] {
+  const granted: string[] = ["runtime.main", "runtime.cron", "runtime.subagent"];
+  if (policy.shell === "allow") granted.push("shell");
+  if (policy.filesystemRead === "allow") granted.push("fs.read");
+  if (policy.filesystemWrite === "allow") granted.push("fs.write");
+  if (policy.filesystemEdit === "allow") granted.push("fs.edit");
+  if (policy.filesystemDelete === "allow") granted.push("fs.delete");
+  if (policy.camera === "allow") granted.push("camera");
+  if (policy.microphone === "allow") granted.push("microphone");
+  if (policy.network === "allow") granted.push("network");
+  return granted;
 }
 
 export function getDefaultAgentNetworkState(): AgentNetworkState {

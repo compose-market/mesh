@@ -36,6 +36,11 @@ export interface ImmutableAgentLock {
   lockedAt: number;
 }
 
+export interface AgentDnaLock extends ImmutableAgentLock {
+  chainId: number;
+  dnaHash: string;
+}
+
 export interface AgentHeartbeatState {
   enabled: boolean;
   intervalMs: number;
@@ -43,16 +48,43 @@ export interface AgentHeartbeatState {
   lastResult: "ok" | "alert" | "error" | null;
 }
 
+export type AgentReportKind =
+  | "deployment"
+  | "runtime"
+  | "heartbeat"
+  | "permission"
+  | "skill"
+  | "mesh"
+  | "economics";
+
+export type AgentReportOutcome = "success" | "warning" | "error" | "info";
+
+export interface AgentTaskReport {
+  id: string;
+  kind: AgentReportKind;
+  title: string;
+  summary: string;
+  details?: string;
+  outcome: AgentReportOutcome;
+  createdAt: number;
+  costMicros?: number;
+  revenueMicros?: number;
+  peerId?: string;
+}
+
 export interface InstalledAgent {
   agentWallet: string;
   metadata: AgentMetadata;
-  lock: ImmutableAgentLock;
+  lock: AgentDnaLock;
   addedAt: number;
   running: boolean;
   runtimeId: string;
   heartbeat: AgentHeartbeatState;
   permissions: AgentPermissionPolicy;
   network: AgentNetworkState;
+  workerState?: AgentWorkerState;
+  skillStates: Record<string, AgentSkillState>;
+  reports: AgentTaskReport[];
 }
 
 export interface DesktopIdentityContext {
@@ -69,21 +101,64 @@ export interface DesktopIdentityContext {
 }
 
 export interface DesktopSettings {
-  lambdaUrl: string;
-  manowarUrl: string;
+  apiUrl: string;
+  runtimeUrl: string;
 }
 
+export type PermissionDecision = "allow" | "ask" | "deny";
+
 export interface AgentPermissionPolicy {
-  shell: boolean;
-  filesystemRead: boolean;
-  filesystemWrite: boolean;
-  filesystemEdit: boolean;
-  filesystemDelete: boolean;
-  camera: boolean;
-  microphone: boolean;
+  shell: PermissionDecision;
+  filesystemRead: PermissionDecision;
+  filesystemWrite: PermissionDecision;
+  filesystemEdit: PermissionDecision;
+  filesystemDelete: PermissionDecision;
+  camera: PermissionDecision;
+  microphone: PermissionDecision;
+  network: PermissionDecision;
 }
 
 export type AgentNetworkStatus = "dormant" | "connecting" | "online" | "error";
+
+export interface MeshAgentCard {
+  name: string;
+  description: string;
+  model: string;
+  framework: string;
+  headline: string;
+  statusLine: string;
+  capabilities: string[];
+  updatedAt: number;
+}
+
+export interface MeshPeerSignal {
+  peerId: string;
+  agentWallet: string | null;
+  deviceId: string | null;
+  lastSeenAt: number;
+  stale: boolean;
+  caps: string[];
+  listenMultiaddrs: string[];
+  relayPeerId: string | null;
+  anchorHost: string | null;
+  anchorRegion: string | null;
+  anchorProvider: string | null;
+  nodeDistance: number;
+  signalCount: number;
+  announceCount: number;
+  lastMessageType: "presence" | "announce" | null;
+  card: MeshAgentCard | null;
+}
+
+export interface AgentMeshInteraction {
+  id: string;
+  peerId: string;
+  peerAgentWallet: string | null;
+  direction: "inbound" | "outbound";
+  kind: "signal" | "announce" | "connect" | "disconnect";
+  summary: string;
+  createdAt: number;
+}
 
 export interface AgentNetworkState {
   enabled: boolean;
@@ -94,6 +169,29 @@ export interface AgentNetworkState {
   lastHeartbeatAt: number | null;
   lastError: string | null;
   updatedAt: number;
+  publicCard: MeshAgentCard | null;
+  recentPings: MeshPeerSignal[];
+  interactions: AgentMeshInteraction[];
+}
+
+export interface AgentWorkerState {
+  running: boolean;
+  desiredRunning: boolean;
+  status: "stopped" | "starting" | "running" | "stopping" | "error";
+  runtimeId: string | null;
+  lastHeartbeatAt: number | null;
+  lastError: string | null;
+  updatedAt: number;
+}
+
+export interface PermissionDecisionTicket {
+  id: string;
+  agentWallet: string;
+  action: string;
+  decision: "allow" | "deny";
+  issuedAt: number;
+  expiresAt: number;
+  nonce: string;
 }
 
 export type OsPermissionStatus = "unknown" | "granted" | "denied" | "unsupported";
@@ -157,6 +255,15 @@ export interface InstalledSkill {
   requirements: SkillRequirements;
 }
 
+export interface AgentSkillState {
+  skillId: string;
+  enabled: boolean;
+  eligible: boolean;
+  source: "agent" | "shared" | "bundled" | "generated";
+  revision: string;
+  updatedAt: number;
+}
+
 export interface SkillsDiscoveryResult {
   skills: Skill[];
   total: number;
@@ -194,6 +301,22 @@ export interface RedeemedDesktopContext {
   hasSession: boolean;
 }
 
+export interface SignedDesktopInstallPayload {
+  agentWallet: string;
+  agentCardCid: string;
+  chainId: number;
+  issuedAt: number;
+  expiresAt: number;
+  nonce: string;
+  composeKey?: string;
+}
+
+export interface SignedDesktopInstallEnvelope {
+  payload: SignedDesktopInstallPayload;
+  signature: `0x${string}`;
+  signer: `0x${string}`;
+}
+
 export interface CreateLinkTokenRequest {
   agentWallet?: string;
   userAddress: string;
@@ -203,4 +326,12 @@ export interface CreateLinkTokenRequest {
   duration?: number;
   chainId?: number;
   deviceId?: string;
+}
+
+export interface BackpackConnectionInfo {
+  slug: string;
+  name: string;
+  connected: boolean;
+  accountId?: string;
+  status?: string;
 }
