@@ -1930,9 +1930,9 @@ fn daemon_install_launch_agent(app: tauri::AppHandle) -> Result<String, String> 
     fs::create_dir_all(&launch_agents_dir)
         .map_err(|err| format!("failed to create LaunchAgents directory: {err}"))?;
 
-    let plist_path = launch_agents_dir.join("market.compose.desktop.daemon.plist");
+    let plist_path = launch_agents_dir.join("compose.market.daemon.plist");
     let exe_path = std::env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
-    let label = "market.compose.desktop.daemon";
+    let label = "compose.market.daemon";
 
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1976,7 +1976,7 @@ fn daemon_launch_agent_status() -> Result<bool, String> {
     let plist_path = Path::new(&home)
         .join("Library")
         .join("LaunchAgents")
-        .join("market.compose.desktop.daemon.plist");
+        .join("compose.market.daemon.plist");
     Ok(plist_path.exists())
 }
 

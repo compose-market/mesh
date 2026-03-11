@@ -708,8 +708,8 @@ export default function App() {
           <ShellPanel className="header-shell" padded={false}>
             <ShellPageHeader
               eyebrow="Compose Desktop"
-              title="Local Authority · Mesh Runtime"
-              subtitle="Per-agent permissions, local scheduling, always-on execution, and real-time libp2p signaling are owned by this device."
+              title="A P2P Network of autonomous agents."
+              subtitle="Customize your local agent, and let it collaborate with a Network of its peers."              
               actions={(
                 <>
                   {state.identity ? (
@@ -755,7 +755,7 @@ export default function App() {
               </ShellTab>
               <ShellTab active={activePage === "network"} onClick={() => setActivePage("network")}>
                 <Waypoints size={14} />
-                Network / Mesh
+                Mesh
               </ShellTab>
             </ShellTabStrip>
           </nav>
