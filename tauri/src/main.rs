@@ -22,6 +22,7 @@ use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
+use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::oneshot;
 
 #[derive(Debug, serde::Serialize)]
@@ -210,6 +211,17 @@ struct MeshRuntimeStatus {
     last_heartbeat_at: Option<u64>,
     last_error: Option<String>,
     updated_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopUpdateCheckResult {
+    enabled: bool,
+    available: bool,
+    current_version: Option<String>,
+    version: Option<String>,
+    body: Option<String>,
+    date: Option<String>,
 }
 
 impl Default for MeshRuntimeStatus {
@@ -2040,6 +2052,107 @@ async fn desktop_network_leave(
     desktop_network_status(state)
 }
 
+fn normalize_api_base(api_url: &str) -> Result<String, String> {
+    let trimmed = api_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("Desktop updater apiUrl is required".to_string());
+    }
+    if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
+        return Err("Desktop updater apiUrl must start with http:// or https://".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_updater_pubkey(pubkey: &str) -> Result<String, String> {
+    let normalized = pubkey.trim();
+    if normalized.is_empty() {
+        return Err("Desktop updater public key is required".to_string());
+    }
+    Ok(normalized.to_string())
+}
+
+fn build_desktop_update_endpoint(api_url: &str) -> Result<String, String> {
+    let api_base = normalize_api_base(api_url)?;
+    Ok(format!(
+        "{api_base}/api/desktop/updates/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}"
+    ))
+}
+
+fn build_desktop_updater(
+    app: &tauri::AppHandle,
+    api_url: &str,
+    pubkey: &str,
+) -> Result<tauri_plugin_updater::Updater, String> {
+    let endpoint = build_desktop_update_endpoint(api_url)?;
+    let pubkey = normalize_updater_pubkey(pubkey)?;
+    let endpoint = endpoint
+        .parse()
+        .map_err(|error| format!("Invalid desktop updater endpoint: {error}"))?;
+
+    app.updater_builder()
+        .pubkey(pubkey)
+        .endpoints(vec![endpoint])
+        .map_err(|error| format!("Failed to configure desktop updater endpoints: {error}"))?
+        .build()
+        .map_err(|error| format!("Failed to initialize desktop updater: {error}"))
+}
+
+#[tauri::command]
+async fn desktop_check_for_updates(
+    app: tauri::AppHandle,
+    api_url: String,
+    pubkey: String,
+) -> Result<DesktopUpdateCheckResult, String> {
+    let updater = build_desktop_updater(&app, &api_url, &pubkey)?;
+    let current_version = app.package_info().version.to_string();
+    let update = updater
+        .check()
+        .await
+        .map_err(|error| format!("Failed to check for desktop updates: {error}"))?;
+
+    Ok(match update {
+        Some(update) => DesktopUpdateCheckResult {
+            enabled: true,
+            available: true,
+            current_version: Some(update.current_version),
+            version: Some(update.version),
+            body: update.body,
+            date: update.date.map(|value| value.to_string()),
+        },
+        None => DesktopUpdateCheckResult {
+            enabled: true,
+            available: false,
+            current_version: Some(current_version),
+            version: None,
+            body: None,
+            date: None,
+        },
+    })
+}
+
+#[tauri::command]
+async fn desktop_install_update(
+    app: tauri::AppHandle,
+    api_url: String,
+    pubkey: String,
+) -> Result<(), String> {
+    let updater = build_desktop_updater(&app, &api_url, &pubkey)?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|error| format!("Failed to check for desktop updates: {error}"))?;
+    let Some(update) = update else {
+        return Err("Compose Desktop is already on the latest version".to_string());
+    };
+
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|error| format!("Failed to install desktop update: {error}"))?;
+
+    app.restart();
+}
+
 #[cfg(desktop)]
 use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -2047,6 +2160,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PendingDeepLinks::default())
         .manage(MeshRuntimeState::default())
         .manage(DesktopDaemonState::default())
@@ -2074,7 +2188,9 @@ fn main() {
             daemon_issue_permission_ticket,
             daemon_validate_permission_ticket,
             daemon_install_launch_agent,
-            daemon_launch_agent_status
+            daemon_launch_agent_status,
+            desktop_check_for_updates,
+            desktop_install_update
         ])
         .setup(|app| {
             let daemon_disk_state = read_daemon_state_from_disk(&app.handle()).unwrap_or_default();

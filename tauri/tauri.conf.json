@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Compose Desktop",
   "version": "1.0.0",
-  "identifier": "compose.market/desktop",
+  "identifier": "compose.market.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -28,10 +28,21 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app"],
+    "targets": [
+      "dmg",
+      "app"
+    ],
     "category": "public.app-category.productivity",
     "shortDescription": "Compose Desktop - Agent Gateway",
     "longDescription": "Compose Desktop provides a local runtime for autonomous agents with real-time session management, skills marketplace, and OpenClaw-style self-learning capabilities.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
     "macOS": {
       "minimumSystemVersion": "12.0",
       "entitlements": "entitlements.plist",
@@ -43,11 +54,19 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["manowar"]
+        "schemes": [
+          "manowar"
+        ]
       },
       "macOS": {
-        "schemes": ["manowar"]
+        "schemes": [
+          "manowar"
+        ]
       }
+    },
+    "updater": {
+      "pubkey": "runtime-configured-updater-key",
+      "endpoints": []
     },
     "shell": {
       "open": true
