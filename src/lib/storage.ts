@@ -8,6 +8,7 @@ import type {
   DesktopPaths,
   DesktopRuntimeState,
   InstalledAgent,
+  LinkedDeploymentIntent,
   MeshAgentCard,
   MeshPeerSignal,
   OsPermissionSnapshot,
@@ -278,6 +279,7 @@ const defaultState: DesktopRuntimeState = {
     runtimeUrl: DEFAULT_API_URL,
   },
   identity: null,
+  linkedDeployment: null,
   permissionDefaults: { ...defaultPermissions },
   osPermissions: { ...defaultOsPermissions },
   installedAgents: [],
@@ -292,10 +294,30 @@ function cloneDefaultState(): DesktopRuntimeState {
   return {
     settings: { ...defaultState.settings },
     identity: null,
+    linkedDeployment: null,
     permissionDefaults: { ...defaultPermissions },
     osPermissions: { ...defaultOsPermissions },
     installedAgents: [],
     installedSkills: [],
+  };
+}
+
+function normalizeLinkedDeploymentIntent(value: Partial<LinkedDeploymentIntent> | null | undefined): LinkedDeploymentIntent | null {
+  if (!value || typeof value.agentWallet !== "string" || value.agentWallet.trim().length === 0) {
+    return null;
+  }
+
+  const source = value.source === "signed-install" ? "signed-install" : "desktop-link";
+  const agentCardCid = typeof value.agentCardCid === "string" && value.agentCardCid.trim().length > 0
+    ? value.agentCardCid.trim()
+    : null;
+
+  return {
+    agentWallet: value.agentWallet.trim().toLowerCase(),
+    agentCardCid,
+    chainId: Number.isFinite(value.chainId) ? Number(value.chainId) : 0,
+    source,
+    receivedAt: Number.isFinite(value.receivedAt) ? Number(value.receivedAt) : Date.now(),
   };
 }
 
@@ -320,6 +342,7 @@ function normalizeState(state: Partial<DesktopRuntimeState> | null | undefined):
       runtimeUrl: state.settings?.runtimeUrl || base.settings.runtimeUrl,
     },
     identity: state.identity || null,
+    linkedDeployment: normalizeLinkedDeploymentIntent(state.linkedDeployment),
     permissionDefaults: migratedPermissions,
     osPermissions: {
       camera: state.osPermissions?.camera || base.osPermissions.camera,

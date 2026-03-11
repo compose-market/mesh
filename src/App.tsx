@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Check, Link2, RefreshCw, Settings2, Shield, Waypoints } from "lucide-react";
+import { ComposeAppShell } from "@compose-market/theme/app";
 import {
   ShellBanner,
   ShellButton,
@@ -13,23 +14,37 @@ import {
   ShellTabStrip,
 } from "@compose-market/theme/shell";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
-import { AgentManager } from "./components/manager";
-import { AgentDetailPage } from "./components/agent-details";
 import { DeepLinkHandler } from "./components/deep-link";
-import { MeshNetworkPage } from "./components/mesh";
 import { SessionIndicator } from "./components/session";
-import { callAgent, fetchBackpackConnections, getActiveSessionStatus } from "./lib/api";
-import { daemonInstallLaunchAgent, daemonLaunchAgentStatus, daemonUpdatePermissions } from "./lib/daemon";
-import { heartbeatService } from "./lib/heartbeat";
-import { desktopMeshService, type MeshRuntimeStatus } from "./lib/network";
-import { queryMediaPermission, requestMediaPermission } from "./lib/permissions";
+import { AgentDetailPage, AgentManagerPage } from "./features/agents/pages";
 import {
   appendAgentReport,
   buildAgentExecutionPolicy,
-  buildMeshAgentCard,
   mergeMeshPeerSignals,
-  recordMeshPeerSignal,
-} from "./lib/agent";
+} from "./features/agents/model";
+import {
+  buildMeshDesiredState,
+  desktopMeshService,
+  mergeMeshStatusIntoState,
+  mergePeerIndexIntoState,
+  MeshPage,
+  resolveLocalMeshBootstrap,
+  resolveMeshBootstrap,
+  type MeshBootstrapResolution,
+} from "./features/mesh";
+import { callAgent, getActiveSessionStatus } from "./lib/api";
+import { daemonInstallLaunchAgent, daemonLaunchAgentStatus, daemonUpdatePermissions } from "./lib/daemon";
+import { heartbeatService } from "./lib/heartbeat";
+import { deriveLinkedDeploymentIntent } from "./lib/local-deploy";
+import { queryMediaPermission, requestMediaPermission } from "./lib/permissions";
+import {
+  applyDesktopUpdateCheck,
+  checkForDesktopUpdates,
+  createDesktopUpdateState,
+  installDesktopUpdate,
+  setDesktopUpdateError,
+  setDesktopUpdatePhase,
+} from "./lib/updater";
 import {
   ensureSkillsRoot,
   getDesktopPaths,
@@ -138,128 +153,6 @@ function microsBigIntToUsd(value: bigint): string {
   return `$${(Number(bounded) / 1_000_000).toFixed(2)}`;
 }
 
-function mergeMeshStatusIntoState(
-  current: DesktopRuntimeState,
-  status: MeshRuntimeStatus,
-  deviceId: string,
-): DesktopRuntimeState {
-  const targetWallet = status.agentWallet?.toLowerCase() || null;
-  const nextAgents = current.installedAgents.map((agent) => {
-    if (!agent.network.enabled) {
-      if (
-        agent.network.status !== "dormant" ||
-        agent.network.peerId !== null ||
-        agent.network.listenMultiaddrs.length > 0 ||
-        agent.network.peersDiscovered !== 0 ||
-        agent.network.lastError !== null ||
-        agent.network.lastHeartbeatAt !== null
-      ) {
-        return {
-          ...agent,
-          network: {
-            ...agent.network,
-            status: "dormant" as const,
-            peerId: null,
-            listenMultiaddrs: [],
-            peersDiscovered: 0,
-            lastError: null,
-            lastHeartbeatAt: null,
-            updatedAt: Date.now(),
-          },
-        };
-      }
-      return agent;
-    }
-
-    if (!targetWallet || targetWallet !== agent.agentWallet || status.deviceId !== deviceId) {
-      if (agent.network.status === "dormant" && !agent.network.lastError) {
-        return agent;
-      }
-      return {
-        ...agent,
-        network: {
-          ...agent.network,
-          status: "dormant" as const,
-          peerId: null,
-          listenMultiaddrs: [],
-          peersDiscovered: 0,
-          lastError: null,
-          lastHeartbeatAt: null,
-          updatedAt: Date.now(),
-        },
-      };
-    }
-
-    return {
-      ...agent,
-      network: {
-        ...agent.network,
-        status: status.status,
-        peerId: status.peerId,
-        listenMultiaddrs: [...status.listenMultiaddrs],
-        peersDiscovered: status.peersDiscovered,
-        lastHeartbeatAt: status.lastHeartbeatAt,
-        lastError: status.lastError,
-        updatedAt: status.updatedAt,
-      },
-    };
-  });
-
-  return {
-    ...current,
-    installedAgents: nextAgents,
-  };
-}
-
-function mergePeerIndexIntoState(
-  current: DesktopRuntimeState,
-  incoming: MeshPeerSignal[],
-  deviceId: string,
-): DesktopRuntimeState {
-  const targetAgent = current.installedAgents.find((agent) => agent.running && agent.network.enabled);
-  if (!targetAgent || incoming.length === 0) {
-    return current;
-  }
-
-  let nextTarget = targetAgent;
-  let changed = false;
-
-  for (const signal of incoming) {
-    if (signal.deviceId === deviceId && signal.agentWallet === targetAgent.agentWallet) {
-      continue;
-    }
-
-    const existing = nextTarget.network.recentPings.find((item) => item.peerId === signal.peerId);
-    const isUpdated = (
-      !existing ||
-      signal.lastSeenAt > existing.lastSeenAt ||
-      signal.signalCount !== existing.signalCount ||
-      signal.announceCount !== existing.announceCount ||
-      signal.lastMessageType !== existing.lastMessageType
-    );
-
-    if (!isUpdated) {
-      continue;
-    }
-
-    nextTarget = recordMeshPeerSignal(nextTarget, signal);
-    changed = true;
-  }
-
-  if (!changed) {
-    return current;
-  }
-
-  return {
-    ...current,
-    installedAgents: current.installedAgents.map((agent) => (
-      agent.agentWallet === nextTarget.agentWallet
-        ? nextTarget
-        : agent
-    )),
-  };
-}
-
 export default function App() {
   const [state, setState] = useState<DesktopRuntimeState | null>(null);
   const [activePage, setActivePage] = useState<BasePage>("agents");
@@ -267,11 +160,13 @@ export default function App() {
   const [activeAgentWallet, setActiveAgentWallet] = useState<string | null>(null);
   const [selectedAgentWallet, setSelectedAgentWallet] = useState<string | null>(null);
   const [meshPeers, setMeshPeers] = useState<MeshPeerSignal[]>([]);
+  const [meshBootstrap, setMeshBootstrap] = useState<MeshBootstrapResolution>(() => resolveLocalMeshBootstrap());
   const [paths, setPaths] = useState<Awaited<ReturnType<typeof getDesktopPaths>>>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [deviceId] = useState(getOrCreateDeviceId);
   const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [appUpdate, setAppUpdate] = useState(() => createDesktopUpdateState());
 
   const wallet = state?.identity?.userAddress || null;
   const apiUrl = state?.settings.apiUrl || "https://api.compose.market";
@@ -312,6 +207,63 @@ export default function App() {
     window.addEventListener("navigate-to-agent", navigateHandler);
     return () => window.removeEventListener("navigate-to-agent", navigateHandler);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshBootstrap = async () => {
+      const resolved = await resolveMeshBootstrap();
+      if (!cancelled) {
+        setMeshBootstrap(resolved);
+      }
+    };
+
+    void refreshBootstrap();
+    const intervalId = window.setInterval(() => {
+      void refreshBootstrap();
+    }, 5 * 60_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  const refreshDesktopUpdate = useCallback(async (options?: { showChecking?: boolean; showErrors?: boolean }) => {
+    if (!state?.settings.apiUrl) {
+      return;
+    }
+
+    if (options?.showChecking) {
+      setAppUpdate((current) => setDesktopUpdatePhase(current, "checking"));
+    }
+
+    try {
+      const checkedAt = Date.now();
+      const result = await checkForDesktopUpdates(state.settings.apiUrl);
+      setAppUpdate((current) => applyDesktopUpdateCheck(current, result, checkedAt));
+    } catch (error) {
+      console.error("[updater] Failed to check for desktop updates", error);
+      if (!options?.showErrors) {
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Failed to check for desktop updates.";
+      setAppUpdate((current) => setDesktopUpdateError(current, message));
+    }
+  }, [state?.settings.apiUrl]);
+
+  useEffect(() => {
+    if (!state?.settings.apiUrl) {
+      return;
+    }
+
+    void refreshDesktopUpdate();
+    const intervalId = window.setInterval(() => {
+      void refreshDesktopUpdate();
+    }, 30 * 60_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [refreshDesktopUpdate, state?.settings.apiUrl]);
 
   useEffect(() => {
     if (!state || !selectedAgentWallet) {
@@ -444,39 +396,8 @@ export default function App() {
   }, [runningNetworkAgent?.agentWallet]);
 
   useEffect(() => {
-    if (
-      !state?.identity ||
-      !runningNetworkAgent
-    ) {
-      void desktopMeshService.setDesiredState(null);
-      return;
-    }
-
-    void desktopMeshService.setDesiredState({
-      enabled: true,
-      identity: state.identity,
-      agentWallet: runningNetworkAgent.agentWallet,
-      deviceId,
-      sessionId: state.identity.sessionId || "",
-      dnaHash: runningNetworkAgent.lock.dnaHash || "",
-      capabilitiesHash: runningNetworkAgent.metadata.plugins
-        .map((plugin) => (typeof plugin === "string" ? plugin : plugin.registryId || plugin.name || ""))
-        .map((value) => value.trim().toLowerCase())
-        .filter((value) => value.length > 0)
-        .sort()
-        .join("|"),
-      publicCard: runningNetworkAgent.network.publicCard || buildMeshAgentCard(runningNetworkAgent),
-    });
-  }, [
-    deviceId,
-    runningNetworkAgent?.agentWallet,
-    runningNetworkAgent?.lock?.dnaHash,
-    runningNetworkAgent?.running,
-    runningNetworkAgent?.network.enabled,
-    runningNetworkAgent?.network.publicCard,
-    runningNetworkAgent?.metadata?.plugins,
-    state?.identity,
-  ]);
+    void desktopMeshService.setDesiredState(buildMeshDesiredState(runningNetworkAgent, state?.identity || null, deviceId));
+  }, [deviceId, runningNetworkAgent, state?.identity]);
 
   const handleSessionUpdate = useCallback((active: boolean, expiresAt: number | null, budget: string | null, sessionId?: string, duration?: number) => {
     setSession((prev) => ({
@@ -642,7 +563,12 @@ export default function App() {
   const handleContextRedeemed = useCallback((context: RedeemedDesktopContext) => {
     if (!state) return;
     const identity = toIdentityContext(context);
-    const next = { ...state, identity };
+    const linkedDeployment = deriveLinkedDeploymentIntent(context);
+    const next = {
+      ...state,
+      identity,
+      linkedDeployment: linkedDeployment || state.linkedDeployment,
+    };
     void persistState(next);
     setSession(sessionFromIdentity(identity));
     if (identity) {
@@ -679,6 +605,31 @@ export default function App() {
     void openUrl(WEB_MARKET_URL);
   }, []);
 
+  const handleInstallUpdate = useCallback(async () => {
+    if (!state?.settings.apiUrl) {
+      return;
+    }
+
+    setAppUpdate((current) => setDesktopUpdatePhase(current, "installing"));
+    try {
+      await installDesktopUpdate(state.settings.apiUrl);
+    } catch (error) {
+      console.error("[updater] Failed to install desktop update", error);
+      const message = error instanceof Error ? error.message : "Failed to install desktop update.";
+      setAppUpdate((current) => setDesktopUpdateError(current, message));
+      showNotification("error", message);
+    }
+  }, [showNotification, state?.settings.apiUrl]);
+
+  const dismissUpdateBanner = useCallback(() => {
+    setAppUpdate((current) => ({
+      ...current,
+      phase: "idle",
+      available: null,
+      error: null,
+    }));
+  }, []);
+
   const stateReady = state !== null;
   const selectedAgent = state?.installedAgents.find((agent) => agent.agentWallet === selectedAgentWallet) || null;
   const visibleMeshPeers = runningNetworkAgent
@@ -686,7 +637,7 @@ export default function App() {
     : [];
 
   return (
-    <div className="app">
+    <ComposeAppShell contentClassName="app">
       {!stateReady ? (
         <div className="main">
           <ShellEmptyState
@@ -748,6 +699,40 @@ export default function App() {
             </ShellNotice>
           ) : null}
 
+          {appUpdate.available ? (
+            <ShellBanner
+              className="connect-banner update-banner"
+              title={appUpdate.phase === "error"
+                ? `Compose Desktop ${appUpdate.available.version} could not be installed.`
+                : appUpdate.phase === "installing"
+                  ? `Installing Compose Desktop ${appUpdate.available.version}...`
+                  : `Compose Desktop ${appUpdate.available.version} is available.`}
+              subtitle={appUpdate.phase === "error"
+                ? (appUpdate.error || "The update check succeeded, but installation failed. Retry directly from the app.")
+                : (appUpdate.available.notes || `Current version ${appUpdate.currentVersion || "unknown"} can be upgraded in place from this desktop shell.`)}
+              actions={(
+                <>
+                  {appUpdate.phase === "installing" ? (
+                    <ShellButton tone="secondary" disabled>
+                      <RefreshCw size={14} className="cm-spinner" />
+                      Installing
+                    </ShellButton>
+                  ) : (
+                    <ShellButton tone="primary" onClick={() => void handleInstallUpdate()}>
+                      <RefreshCw size={14} />
+                      {appUpdate.phase === "error" ? "Retry Update" : "Install Update"}
+                    </ShellButton>
+                  )}
+                  {appUpdate.phase !== "installing" ? (
+                    <ShellButton tone="ghost" onClick={dismissUpdateBanner}>
+                      Later
+                    </ShellButton>
+                  ) : null}
+                </>
+              )}
+            />
+          ) : null}
+
           <nav className="nav shell-nav">
             <ShellTabStrip>
               <ShellTab active={activePage === "agents"} onClick={() => setActivePage("agents")}>
@@ -781,7 +766,7 @@ export default function App() {
                   onNotify={showNotification}
                 />
               ) : (
-                <AgentManager
+                <AgentManagerPage
                   state={state}
                   session={session}
                   onStateChange={persistState}
@@ -791,9 +776,10 @@ export default function App() {
                 />
               )
             ) : (
-              <MeshNetworkPage
+              <MeshPage
                 agent={runningNetworkAgent}
                 peers={visibleMeshPeers}
+                bootstrapResolution={meshBootstrap}
               />
             )}
           </main>
@@ -820,7 +806,7 @@ export default function App() {
           />
         </>
       )}
-    </div>
+    </ComposeAppShell>
   );
 }
 
