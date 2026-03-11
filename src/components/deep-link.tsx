@@ -242,6 +242,7 @@ export function DeepLinkHandler({
         market: {
           entry: "desktop-signed",
           agentWallet: envelope.payload.agentWallet.toLowerCase(),
+          agentCardCid: envelope.payload.agentCardCid,
         },
         deviceId,
         hasSession: false,

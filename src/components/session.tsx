@@ -1,16 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Check, ChevronDown, Clock, Copy, Key, Plus, Shield, Trash2, Wallet, Zap } from "lucide-react";
 import {
-  Check,
-  ChevronDown,
-  Clock,
-  Copy,
-  Key,
-  Plus,
-  Shield,
-  Trash2,
-  Wallet,
-  Zap,
-} from "lucide-react";
+  ComposeKeyDialogShell,
+  SessionBudgetDialogShell,
+  SessionIndicatorShell,
+  SessionManageDialogShell,
+  type SessionManageKey,
+  type SessionSummaryRow,
+} from "@compose-market/theme/session";
 import {
   createSession,
   listComposeKeys,
@@ -77,8 +74,7 @@ function formatUsdc(wei: string, precision = 2): string {
     if (safePrecision === 0) {
       return whole.toString();
     }
-    const padded = rounded.toString().padStart(safePrecision, "0");
-    return `${whole.toString()}.${padded}`;
+    return `${whole.toString()}.${rounded.toString().padStart(safePrecision, "0")}`;
   } catch {
     return "0.00";
   }
@@ -86,11 +82,14 @@ function formatUsdc(wei: string, precision = 2): string {
 
 function formatTimeRemaining(expiresAt: number): string {
   const remaining = expiresAt - Date.now();
-  if (remaining <= 0) return "Expired";
+  if (remaining <= 0) {
+    return "Expired";
+  }
 
   const totalMinutes = Math.floor(remaining / (1000 * 60));
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
+
   if (hours >= 24) {
     const days = Math.floor(hours / 24);
     return `${days}d ${hours % 24}h`;
@@ -112,7 +111,6 @@ export function SessionIndicator({
   onRefreshSession,
   onNotify,
 }: SessionIndicatorProps) {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [budgetDialogOpen, setBudgetDialogOpen] = useState(false);
   const [manageDialogOpen, setManageDialogOpen] = useState(false);
   const [keyDialogOpen, setKeyDialogOpen] = useState(false);
@@ -121,81 +119,32 @@ export function SessionIndicator({
     return null;
   }
 
-  if (!session.active) {
-    return (
-      <>
-        <button
-          className="session-indicator-btn"
-          onClick={() => setBudgetDialogOpen(true)}
-          title="Start Session"
-        >
-          <Zap size={14} />
-          Start Session
-        </button>
-        <SessionBudgetDialog
-          open={budgetDialogOpen}
-          apiUrl={apiUrl}
-          identity={identity}
-          onClose={() => setBudgetDialogOpen(false)}
-          onRefreshSession={onRefreshSession}
-          onNotify={onNotify}
-        />
-      </>
-    );
-  }
-
-  const expiresLabel = session.expiresAt ? formatTimeRemaining(session.expiresAt) : "Never";
-  const budgetLabel = `$${formatUsdc(session.budgetRemaining || "0", 2)}`;
-
   return (
     <>
-      <div className="session-menu">
-        <button
-          className="session-indicator-btn active"
-          onClick={() => setMenuOpen((open) => !open)}
-          title="Session Actions"
-        >
-          <Zap size={14} />
-          Session
-          <span className="session-indicator-mobile">{budgetLabel}</span>
-          <ChevronDown size={12} />
-        </button>
+      <SessionIndicatorShell
+        active={session.active}
+        budgetLabel={`$${formatUsdc(session.budgetRemaining || "0", 2)}`}
+        expiresLabel={session.expiresAt ? formatTimeRemaining(session.expiresAt) : "Never"}
+        mobileBudgetLabel={`$${formatUsdc(session.budgetRemaining || "0", 0)}`}
+        startLabel="Start Session"
+        activeLabel="Session"
+        leadingIcon={<Zap size={14} />}
+        trailingIcon={<ChevronDown size={12} />}
+        keyIcon={<Key size={14} />}
+        manageIcon={<Wallet size={14} />}
+        onStart={() => setBudgetDialogOpen(true)}
+        onOpenKey={() => setKeyDialogOpen(true)}
+        onOpenManage={() => setManageDialogOpen(true)}
+      />
 
-        {menuOpen ? (
-          <div className="session-menu-dropdown">
-            <div className="session-menu-header">
-              <div className="session-menu-row">
-                <span>Budget</span>
-                <strong>{budgetLabel}</strong>
-              </div>
-              <div className="session-menu-row">
-                <span>Expires</span>
-                <strong>{expiresLabel}</strong>
-              </div>
-            </div>
-            <button
-              className="session-menu-item"
-              onClick={() => {
-                setKeyDialogOpen(true);
-                setMenuOpen(false);
-              }}
-            >
-              <Key size={14} />
-              Generate API Key
-            </button>
-            <button
-              className="session-menu-item"
-              onClick={() => {
-                setManageDialogOpen(true);
-                setMenuOpen(false);
-              }}
-            >
-              <Wallet size={14} />
-              Manage Sessions
-            </button>
-          </div>
-        ) : null}
-      </div>
+      <SessionBudgetDialog
+        open={budgetDialogOpen}
+        apiUrl={apiUrl}
+        identity={identity}
+        onClose={() => setBudgetDialogOpen(false)}
+        onRefreshSession={onRefreshSession}
+        onNotify={onNotify}
+      />
 
       <SessionManageDialog
         open={manageDialogOpen}
@@ -220,7 +169,7 @@ export function SessionIndicator({
   );
 }
 
-export function SessionBudgetDialog({
+function SessionBudgetDialog({
   open,
   apiUrl,
   identity,
@@ -233,9 +182,20 @@ export function SessionBudgetDialog({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (!open) {
-    return null;
-  }
+  const summaryRows: SessionSummaryRow[] = useMemo(() => [
+    {
+      label: "Max Spend",
+      value: `$${formatUsdc(selectedBudget, 2)} USDC`,
+    },
+    {
+      label: "Expires After",
+      value: `${durationHours} hours`,
+    },
+    {
+      label: "Approvals Required",
+      value: "1 (now)",
+    },
+  ], [durationHours, selectedBudget]);
 
   const handleCreateSession = async () => {
     setCreating(true);
@@ -265,89 +225,36 @@ export function SessionBudgetDialog({
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal session-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <h3>
-            <Shield size={18} />
-            Session Budget
-          </h3>
-          <button className="close-btn" onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </div>
-
-        <p className="session-modal-copy">
-          Set a spending limit to skip wallet signatures for each AI call.
-          One approval, unlimited inference within your budget.
-        </p>
-
-        <div className="session-section">
-          <label>Budget Limit (USDC)</label>
-          <div className="session-presets">
-            {BUDGET_PRESETS.map((preset) => (
-              <button
-                key={preset.value}
-                className={`session-preset-btn ${selectedBudget === preset.value ? "active" : ""}`}
-                onClick={() => setSelectedBudget(preset.value)}
-                type="button"
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="session-section">
-          <label>
-            <Clock size={13} />
-            Session Duration
-          </label>
-          <div className="session-presets">
-            {DURATION_OPTIONS.map((hours) => (
-              <button
-                key={hours}
-                className={`session-preset-btn ${durationHours === hours ? "active" : ""}`}
-                onClick={() => setDurationHours(hours)}
-                type="button"
-              >
-                {hours}h
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="session-info-box">
-          <div className="session-info-row">
-            <span>Max Spend</span>
-            <strong>${formatUsdc(selectedBudget, 2)} USDC</strong>
-          </div>
-          <div className="session-info-row">
-            <span>Expires After</span>
-            <strong>{durationHours} hours</strong>
-          </div>
-          <div className="session-info-row">
-            <span>Approvals Required</span>
-            <strong>1 (now)</strong>
-          </div>
-        </div>
-
-        {error ? <div className="session-error">{error}</div> : null}
-
-        <div className="modal-footer">
-          <button className="secondary" onClick={onClose} disabled={creating}>
-            Cancel
-          </button>
-          <button className="primary session-action-btn" onClick={() => void handleCreateSession()} disabled={creating}>
-            {creating ? "Creating..." : "Approve & Start Session"}
-          </button>
-        </div>
-      </div>
-    </div>
+    <SessionBudgetDialogShell
+      open={open}
+      title="Session Budget"
+      subtitle="Set a spending limit to skip wallet signatures for each AI call. One approval, unlimited inference within your budget."
+      titleIcon={<Shield size={18} />}
+      budgetLabel="Budget Limit (USDC)"
+      durationLabel="Session Duration"
+      durationIcon={<Clock size={14} />}
+      budgetChoices={BUDGET_PRESETS.map((preset) => ({
+        label: preset.label,
+        active: selectedBudget === preset.value,
+        onSelect: () => setSelectedBudget(preset.value),
+      }))}
+      durationChoices={DURATION_OPTIONS.map((hours) => ({
+        label: `${hours}h`,
+        active: durationHours === hours,
+        onSelect: () => setDurationHours(hours),
+      }))}
+      summaryRows={summaryRows}
+      error={error || undefined}
+      onClose={onClose}
+      onSubmit={() => void handleCreateSession()}
+      submitting={creating}
+      submitLabel="Approve & Start Session"
+      submittingLabel="Creating..."
+    />
   );
 }
 
-export function SessionManageDialog({
+function SessionManageDialog({
   open,
   apiUrl,
   identity,
@@ -361,10 +268,7 @@ export function SessionManageDialog({
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
 
-  const activeKeys = useMemo(
-    () => keys.filter((key) => isActiveKey(key)),
-    [keys],
-  );
+  const activeKeys = useMemo(() => keys.filter((key) => isActiveKey(key)), [keys]);
 
   const fetchKeys = useCallback(async () => {
     setLoading(true);
@@ -380,17 +284,13 @@ export function SessionManageDialog({
     } finally {
       setLoading(false);
     }
-  }, [identity.userAddress, apiUrl, onNotify]);
+  }, [apiUrl, identity.userAddress, onNotify]);
 
   useEffect(() => {
     if (open) {
       void fetchKeys();
     }
-  }, [open, fetchKeys]);
-
-  if (!open) {
-    return null;
-  }
+  }, [fetchKeys, open]);
 
   const handleRevoke = async (keyId: string) => {
     const success = await revokeComposeKey({
@@ -398,116 +298,77 @@ export function SessionManageDialog({
       userAddress: identity.userAddress,
       keyId,
     });
+
     if (!success) {
       onNotify("error", "Failed to revoke session");
       return;
     }
+
     await Promise.all([fetchKeys(), onRefreshSession()]);
     onNotify("success", "Session revoked");
   };
 
   const handleCopyMaskedKey = async (keyId: string) => {
-    const masked = `compose-${keyId.slice(0, 8)}***`;
-    await navigator.clipboard.writeText(masked);
+    await navigator.clipboard.writeText(`compose-${keyId.slice(0, 8)}***`);
     setCopiedKeyId(keyId);
     onNotify("success", "Key ID copied");
     window.setTimeout(() => setCopiedKeyId(null), 2000);
   };
 
+  const mappedKeys: SessionManageKey[] = activeKeys.map((key) => ({
+    id: key.keyId,
+    title: key.name || "Unnamed Key",
+    maskedValue: `compose-${key.keyId.slice(0, 8)}***`,
+    summaryRows: [
+      {
+        label: "Budget",
+        value: `$${formatUsdc(key.budgetRemaining, 2)} / $${formatUsdc(key.budgetLimit, 2)}`,
+      },
+      {
+        label: "Expires",
+        value: formatTimeRemaining(key.expiresAt),
+      },
+    ],
+    copyIcon: <Copy size={14} />,
+    copiedIcon: <Check size={14} />,
+    revokeIcon: <Trash2 size={14} />,
+    copied: copiedKeyId === key.keyId,
+    onCopy: () => void handleCopyMaskedKey(key.keyId),
+    onRevoke: () => void handleRevoke(key.keyId),
+  }));
+
   return (
     <>
-      <div className="modal-overlay" onClick={onClose}>
-        <div className="modal session-modal" onClick={(event) => event.stopPropagation()}>
-          <div className="modal-header">
-            <h3>
-              <Wallet size={18} />
-              Manage Sessions
-            </h3>
-            <button className="close-btn" onClick={onClose} aria-label="Close">
-              ×
-            </button>
-          </div>
-
-          <p className="session-modal-copy">
-            View and manage your active API sessions and keys.
-          </p>
-
-          {session.active ? (
-            <div className="session-current-card">
-              <div className="session-current-title">
-                <Zap size={14} />
-                Current Session
-              </div>
-              <div className="session-current-grid">
-                <div>
-                  <span>Remaining</span>
-                  <strong>${formatUsdc(session.budgetRemaining || "0", 2)}</strong>
-                </div>
-                <div>
-                  <span>Expires</span>
-                  <strong>{session.expiresAt ? formatTimeRemaining(session.expiresAt) : "Never"}</strong>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="session-keys-header">
-            <span>API Keys</span>
-            <button className="secondary compact" onClick={() => setCreateDialogOpen(true)}>
-              <Plus size={14} />
-              New Key
-            </button>
-          </div>
-
-          {loading ? (
-            <div className="session-loading">Loading sessions...</div>
-          ) : activeKeys.length === 0 ? (
-            <div className="session-empty-state">
-              No API keys created yet.
-              <button onClick={() => setCreateDialogOpen(true)}>Generate your first key</button>
-            </div>
-          ) : (
-            <div className="session-keys-list">
-              {activeKeys.map((key) => (
-                <div key={key.keyId} className="session-key-card">
-                  <div className="session-key-header">
-                    <strong>{key.name || "Unnamed Key"}</strong>
-                    <div className="session-key-actions">
-                      <button
-                        className="icon-btn"
-                        onClick={() => void handleCopyMaskedKey(key.keyId)}
-                        title="Copy key ID"
-                      >
-                        {copiedKeyId === key.keyId ? <Check size={13} /> : <Copy size={13} />}
-                      </button>
-                      <button
-                        className="icon-btn danger"
-                        onClick={() => void handleRevoke(key.keyId)}
-                        title="Revoke key"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="session-key-id">compose-{key.keyId.slice(0, 8)}***</div>
-                  <div className="session-key-grid">
-                    <div>
-                      <span>Budget</span>
-                      <strong>
-                        ${formatUsdc(key.budgetRemaining, 2)} / ${formatUsdc(key.budgetLimit, 2)}
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Expires</span>
-                      <strong>{formatTimeRemaining(key.expiresAt)}</strong>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+      <SessionManageDialogShell
+        open={open}
+        title="Manage Sessions"
+        subtitle="View and manage your active API sessions and keys."
+        titleIcon={<Wallet size={18} />}
+        currentSessionTitle={session.active ? "Current Session" : undefined}
+        currentSessionIcon={session.active ? <Zap size={14} /> : undefined}
+        currentSessionRows={session.active ? [
+          {
+            label: "Remaining",
+            value: `$${formatUsdc(session.budgetRemaining || "0", 2)}`,
+          },
+          {
+            label: "Expires",
+            value: session.expiresAt ? formatTimeRemaining(session.expiresAt) : "Never",
+          },
+        ] : []}
+        sectionLabel="API Keys"
+        newKeyLabel="New Key"
+        newKeyIcon={<Plus size={14} />}
+        loading={loading}
+        keys={mappedKeys}
+        emptyState={{
+          title: "No API keys created yet.",
+          actionLabel: "Generate your first key",
+          onAction: () => setCreateDialogOpen(true),
+        }}
+        onClose={onClose}
+        onCreateKey={() => setCreateDialogOpen(true)}
+      />
 
       <ComposeKeyDialog
         open={createDialogOpen}
@@ -525,7 +386,7 @@ export function SessionManageDialog({
   );
 }
 
-export function ComposeKeyDialog({
+function ComposeKeyDialog({
   open,
   apiUrl,
   identity,
@@ -538,10 +399,6 @@ export function ComposeKeyDialog({
   const [generating, setGenerating] = useState(false);
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-
-  if (!open) {
-    return null;
-  }
 
   const handleClose = () => {
     setKeyName("Desktop");
@@ -580,7 +437,10 @@ export function ComposeKeyDialog({
   };
 
   const handleCopy = async () => {
-    if (!generatedKey) return;
+    if (!generatedKey) {
+      return;
+    }
+
     await navigator.clipboard.writeText(generatedKey);
     setCopied(true);
     onNotify("success", "Copied to clipboard");
@@ -588,88 +448,40 @@ export function ComposeKeyDialog({
   };
 
   return (
-    <div className="modal-overlay" onClick={handleClose}>
-      <div className="modal session-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <h3>
-            <Key size={18} />
-            Generate API Key
-          </h3>
-          <button className="close-btn" onClick={handleClose} aria-label="Close">
-            ×
-          </button>
-        </div>
-
-        {!generatedKey ? (
-          <>
-            <p className="session-modal-copy">
-              Create a key for external tools like Cursor or OpenCode.
-              Uses your current session budget.
-            </p>
-            <div className="session-section">
-              <label>Key Name</label>
-              <input
-                type="text"
-                value={keyName}
-                onChange={(event) => setKeyName(event.target.value)}
-                placeholder="e.g., Cursor, OpenCode"
-              />
-            </div>
-
-            <div className="session-info-box">
-              <div className="session-info-row">
-                <span>Budget</span>
-                <strong>${formatUsdc(session.budgetRemaining || "0", 2)} USDC</strong>
-              </div>
-              <div className="session-info-row">
-                <span>Expires</span>
-                <strong>{session.expiresAt ? new Date(session.expiresAt).toLocaleString() : "Never"}</strong>
-              </div>
-            </div>
-
-            <div className="modal-footer">
-              <button className="secondary" onClick={handleClose} disabled={generating}>
-                Cancel
-              </button>
-              <button className="primary session-action-btn" onClick={() => void handleGenerate()} disabled={generating}>
-                {generating ? "Generating..." : "Generate Key"}
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="session-section">
-              <label>Your API Key</label>
-              <div className="session-generated-row">
-                <input type="text" readOnly value={generatedKey} />
-                <button className="secondary compact" onClick={() => void handleCopy()}>
-                  {copied ? <Check size={13} /> : <Copy size={13} />}
-                </button>
-              </div>
-            </div>
-
-            <div className="session-warning">
-              Save this key now. You will not be able to see it again.
-            </div>
-
-            <div className="session-info-box">
-              <div className="session-info-row">
-                <span>Usage</span>
-                <strong>Authorization: Bearer compose-...</strong>
-              </div>
-            </div>
-
-            <div className="modal-footer">
-              <button className="secondary" onClick={handleClose}>
-                Close
-              </button>
-              <button className="primary session-action-btn" onClick={() => void handleCopy()}>
-                {copied ? "Copied!" : "Copy to Clipboard"}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+    <ComposeKeyDialogShell
+      open={open}
+      title="Generate API Key"
+      subtitle="Create a key for external tools like Cursor or OpenCode. Uses your current session budget."
+      titleIcon={<Key size={18} />}
+      keyName={keyName}
+      keyNameLabel="Key Name"
+      keyNamePlaceholder="e.g., Cursor, OpenCode"
+      onKeyNameChange={setKeyName}
+      summaryRows={[
+        {
+          label: "Budget",
+          value: `$${formatUsdc(session.budgetRemaining || "0", 2)} USDC`,
+        },
+        {
+          label: "Expires",
+          value: session.expiresAt ? new Date(session.expiresAt).toLocaleString() : "Never",
+        },
+      ]}
+      generatedKey={generatedKey}
+      warning="Save this key now. You will not be able to see it again."
+      usageLabel="Usage"
+      usageValue="Authorization: Bearer compose-..."
+      onClose={handleClose}
+      onGenerate={() => void handleGenerate()}
+      generating={generating}
+      generateLabel="Generate Key"
+      generatingLabel="Generating..."
+      onCopy={() => void handleCopy()}
+      copied={copied}
+      copyLabel="Copy to Clipboard"
+      copiedLabel="Copied!"
+      copyIcon={<Copy size={14} />}
+      copiedIcon={<Check size={14} />}
+    />
   );
 }
