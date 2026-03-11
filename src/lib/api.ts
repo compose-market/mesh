@@ -25,6 +25,11 @@ const GITHUB_HEADERS = {
   Accept: "application/vnd.github+json",
   "User-Agent": "compose-desktop/1.0",
 };
+const IPFS_GATEWAYS = [
+  "https://compose.mypinata.cloud/ipfs",
+  "https://gateway.pinata.cloud/ipfs",
+  "https://ipfs.io/ipfs",
+];
 
 export const SESSION_HEADERS = {
   userAddress: "x-session-user-address",
@@ -134,6 +139,62 @@ function walletPath(wallet: string): string {
   return wallet.toLowerCase();
 }
 
+function normalizeWalletAddress(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(normalized)) {
+    throw new Error("Agent card walletAddress is invalid");
+  }
+  return normalized;
+}
+
+async function fetchAgentMetadataFromIpfs(agentCardCid: string, expectedWallet: string): Promise<AgentMetadata> {
+  let lastError: Error | null = null;
+
+  for (const gateway of IPFS_GATEWAYS) {
+    try {
+      const response = await fetch(`${gateway}/${agentCardCid}`, {
+        headers: {
+          Accept: "application/json",
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json() as Partial<AgentMetadata> & {
+        endpoint?: string;
+      };
+      const walletAddress = normalizeWalletAddress(data.walletAddress || "");
+      const normalizedExpectedWallet = normalizeWalletAddress(expectedWallet);
+      if (walletAddress !== normalizedExpectedWallet) {
+        throw new Error("Linked agent card does not match the requested agent wallet");
+      }
+
+      return {
+        name: data.name || "Unnamed Agent",
+        description: data.description || "",
+        agentCardUri: `ipfs://${agentCardCid}`,
+        creator: data.creator || "",
+        walletAddress,
+        dnaHash: data.dnaHash || "",
+        model: data.model || "",
+        framework: data.framework || "openclaw",
+        plugins: Array.isArray(data.plugins) ? data.plugins : [],
+        createdAt: data.createdAt || new Date().toISOString(),
+        endpoints: data.endpoints || (data.endpoint
+          ? {
+            chat: data.endpoint,
+          }
+          : undefined),
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  throw new Error(lastError?.message || "Failed to fetch linked agent card");
+}
+
 export async function fetchSessionInfo(params: {
   apiUrl: string;
   userAddress: string;
@@ -217,11 +278,19 @@ export async function registerDesktopDeployment(params: {
 export async function fetchAgentMetadata(params: {
   runtimeUrl: string;
   agentWallet: string;
+  agentCardCid?: string;
 }): Promise<AgentMetadata> {
-  return requestJson<AgentMetadata>(
-    `${normalizeBase(params.runtimeUrl)}/agent/${walletPath(params.agentWallet)}`,
-    { method: "GET" },
-  );
+  try {
+    return await requestJson<AgentMetadata>(
+      `${normalizeBase(params.runtimeUrl)}/agent/${walletPath(params.agentWallet)}`,
+      { method: "GET" },
+    );
+  } catch (error) {
+    if (!params.agentCardCid) {
+      throw error;
+    }
+    return fetchAgentMetadataFromIpfs(params.agentCardCid, params.agentWallet);
+  }
 }
 
 export async function callAgent(params: {

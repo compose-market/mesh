@@ -204,6 +204,7 @@ export interface OsPermissionSnapshot {
 export interface DesktopRuntimeState {
   settings: DesktopSettings;
   identity: DesktopIdentityContext | null;
+  linkedDeployment: LinkedDeploymentIntent | null;
   permissionDefaults: AgentPermissionPolicy;
   osPermissions: OsPermissionSnapshot;
   installedAgents: InstalledAgent[];
@@ -296,9 +297,18 @@ export interface RedeemedDesktopContext {
   market: {
     entry: string;
     agentWallet: string;
+    agentCardCid?: string | null;
   };
   deviceId: string;
   hasSession: boolean;
+}
+
+export interface LinkedDeploymentIntent {
+  agentWallet: string;
+  agentCardCid: string | null;
+  chainId: number;
+  source: "desktop-link" | "signed-install";
+  receivedAt: number;
 }
 
 export interface SignedDesktopInstallPayload {
@@ -319,6 +329,7 @@ export interface SignedDesktopInstallEnvelope {
 
 export interface CreateLinkTokenRequest {
   agentWallet?: string;
+  agentCardCid?: string;
   userAddress: string;
   composeKeyId?: string;
   sessionId?: string;
