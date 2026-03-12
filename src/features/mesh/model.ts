@@ -54,10 +54,28 @@ export interface MeshBootstrapRegion {
   peerIds: string[];
 }
 
+export interface MeshRegionProfile {
+  code: string;
+  city: string;
+  country: string;
+  lat: number;
+  lon: number;
+}
+
+export interface MeshProjectedPoint {
+  x: number;
+  y: number;
+  depth: number;
+}
+
 export interface MeshAnchorNode extends MeshBootstrapRegion {
   x: number;
   y: number;
   depth: number;
+  city: string | null;
+  country: string | null;
+  lat: number | null;
+  lon: number | null;
 }
 
 export interface MeshScenePeerNode {
@@ -73,6 +91,25 @@ export interface MeshScene {
   anchors: MeshAnchorNode[];
   peers: MeshScenePeerNode[];
 }
+
+const REGION_PROFILES: Record<string, MeshRegionProfile> = {
+  ams3: { code: "ams3", city: "Amsterdam", country: "NL", lat: 52.3676, lon: 4.9041 },
+  blr1: { code: "blr1", city: "Bengaluru", country: "IN", lat: 12.9716, lon: 77.5946 },
+  fra1: { code: "fra1", city: "Frankfurt", country: "DE", lat: 50.1109, lon: 8.6821 },
+  lon1: { code: "lon1", city: "London", country: "UK", lat: 51.5072, lon: -0.1276 },
+  nyc1: { code: "nyc1", city: "New York", country: "US", lat: 40.7128, lon: -74.006 },
+  sfo2: { code: "sfo2", city: "San Francisco", country: "US", lat: 37.7749, lon: -122.4194 },
+  sgp1: { code: "sgp1", city: "Singapore", country: "SG", lat: 1.3521, lon: 103.8198 },
+  syd1: { code: "syd1", city: "Sydney", country: "AU", lat: -33.8688, lon: 151.2093 },
+  tor1: { code: "tor1", city: "Toronto", country: "CA", lat: 43.6532, lon: -79.3832 },
+};
+
+const WORLD_FRAME = {
+  left: 8,
+  right: 92,
+  top: 18,
+  bottom: 82,
+} as const;
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
@@ -175,12 +212,39 @@ function anchorGroupKey(anchor: MeshBootstrapAnchor): string {
   return anchor.host || anchor.peerId;
 }
 
-function orbitPosition(index: number, total: number, radius: number): { x: number; y: number; depth: number } {
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function fallbackProjection(index: number, total: number): MeshProjectedPoint {
   const angle = (-Math.PI / 2) + ((Math.PI * 2 * index) / Math.max(1, total));
   return {
-    x: 50 + (Math.cos(angle) * radius),
-    y: 50 + (Math.sin(angle) * radius * 0.56) + ((index % 2 === 0 ? -1 : 1) * 2.4),
+    x: 50 + (Math.cos(angle) * 32),
+    y: 50 + (Math.sin(angle) * 18),
     depth: 0.4 + ((Math.sin(angle) + 1) / 2),
+  };
+}
+
+export function resolveMeshRegionProfile(region: string | null): MeshRegionProfile | null {
+  if (!region) {
+    return null;
+  }
+  return REGION_PROFILES[region.toLowerCase()] || null;
+}
+
+export function projectMeshCoordinate(lat: number, lon: number): MeshProjectedPoint {
+  const clampedLat = clamp(lat, -55, 65);
+  const clampedLon = clamp(lon, -180, 180);
+  const width = WORLD_FRAME.right - WORLD_FRAME.left;
+  const height = WORLD_FRAME.bottom - WORLD_FRAME.top;
+  const x = WORLD_FRAME.left + (((clampedLon + 180) / 360) * width);
+  const y = WORLD_FRAME.top + (((65 - clampedLat) / 120) * height) + (Math.sin((clampedLon * Math.PI) / 180) * 1.4);
+  const depth = 0.35 + (Math.cos((clampedLat * Math.PI) / 180) * 0.28);
+
+  return {
+    x: clamp(x, WORLD_FRAME.left + 1.2, WORLD_FRAME.right - 1.2),
+    y: clamp(y, WORLD_FRAME.top + 1.2, WORLD_FRAME.bottom - 1.2),
+    depth,
   };
 }
 
@@ -344,10 +408,21 @@ export function buildBootstrapRegions(
 }
 
 export function buildMeshScene(input: { peers: MeshPeerSignal[]; resolution: MeshBootstrapResolution }): MeshScene {
-  const anchors = buildBootstrapRegions(input.resolution).map((region, index, all) => ({
-    ...region,
-    ...orbitPosition(index, all.length, 35 + ((index % 3) * 3)),
-  }));
+  const anchors = buildBootstrapRegions(input.resolution).map((region, index, all) => {
+    const profile = resolveMeshRegionProfile(region.region);
+    const projection = profile
+      ? projectMeshCoordinate(profile.lat, profile.lon)
+      : fallbackProjection(index, all.length);
+
+    return {
+      ...region,
+      ...projection,
+      city: profile?.city || null,
+      country: profile?.country || null,
+      lat: profile?.lat || null,
+      lon: profile?.lon || null,
+    };
+  });
   const anchorsByPeerId = deriveBootstrapAnchors(input.resolution);
   const anchorNodeById = new Map(anchors.map((anchor) => [anchor.id, anchor]));
   const anchorNodeByHost = new Map(
@@ -386,12 +461,12 @@ export function buildMeshScene(input: { peers: MeshPeerSignal[]; resolution: Mes
 
     sortedPeers.forEach((peer, index) => {
       const ring = Math.max(1, Math.min(4, peer.nodeDistance || 1));
-      const radius = 5 + (ring * 3.2) + Math.floor(index / 3) * 2.4;
+      const radius = 2.2 + (ring * 1.45) + Math.floor(index / 3) * 0.9;
       const angle = (-Math.PI / 2) + (index * spread);
       peers.push({
         peer,
-        x: baseX + (Math.cos(angle) * radius),
-        y: baseY + (Math.sin(angle) * radius * 0.58),
+        x: clamp(baseX + (Math.cos(angle) * radius), WORLD_FRAME.left + 1, WORLD_FRAME.right - 1),
+        y: clamp(baseY + (Math.sin(angle) * radius * 0.72), WORLD_FRAME.top + 1, WORLD_FRAME.bottom - 1),
         depth: (anchorNode?.depth ?? 0.5) + 0.08,
         anchorNodeId: anchorNode?.id || null,
         anchorHost: peer.anchorHost || anchorNode?.host || null,
