@@ -4,6 +4,7 @@ import type {
   AgentNetworkState,
   AgentDnaLock,
   AgentPermissionPolicy,
+  MeshManifest,
   AgentTaskReport,
   DesktopPaths,
   DesktopRuntimeState,
@@ -51,6 +52,7 @@ const defaultAgentNetworkState: AgentNetworkState = {
   publicCard: null,
   recentPings: [],
   interactions: [],
+  manifest: null,
 };
 
 function normalizeMeshAgentCard(value: Partial<MeshAgentCard> | null | undefined): MeshAgentCard | null {
@@ -113,6 +115,58 @@ function normalizeMeshPeerSignal(value: Partial<MeshPeerSignal> | null | undefin
     announceCount: Number.isFinite(value.announceCount) ? Math.max(0, Number(value.announceCount)) : 0,
     lastMessageType,
     card: normalizeMeshAgentCard(value.card),
+  };
+}
+
+function normalizeMeshManifest(value: Partial<MeshManifest> | null | undefined): MeshManifest | null {
+  if (!value) {
+    return null;
+  }
+
+  const agentWallet = typeof value.agentWallet === "string" ? value.agentWallet.trim().toLowerCase() : "";
+  const userWallet = typeof value.userWallet === "string" ? value.userWallet.trim().toLowerCase() : "";
+  const deviceId = typeof value.deviceId === "string" ? value.deviceId.trim() : "";
+  const peerId = typeof value.peerId === "string" ? value.peerId.trim() : "";
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+
+  if (!agentWallet || !userWallet || !deviceId || !name) {
+    return null;
+  }
+
+  const dedupe = (items: unknown): string[] => (
+    Array.isArray(items)
+      ? [...new Set(items.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()))].sort()
+      : []
+  );
+
+  return {
+    agentWallet,
+    userWallet,
+    deviceId,
+    peerId,
+    chainId: Number.isFinite(value.chainId) ? Math.max(1, Number(value.chainId)) : 1,
+    stateVersion: Number.isFinite(value.stateVersion) ? Math.max(1, Number(value.stateVersion)) : 1,
+    stateRootHash: typeof value.stateRootHash === "string" && value.stateRootHash.trim().length > 0 ? value.stateRootHash.trim() : null,
+    pdpPieceCid: typeof value.pdpPieceCid === "string" && value.pdpPieceCid.trim().length > 0 ? value.pdpPieceCid.trim() : null,
+    pdpAnchoredAt: Number.isFinite(value.pdpAnchoredAt) ? Number(value.pdpAnchoredAt) : null,
+    name,
+    description: typeof value.description === "string" ? value.description.trim() : "",
+    model: typeof value.model === "string" ? value.model.trim() : "",
+    framework: typeof value.framework === "string" ? value.framework.trim() : "",
+    headline: typeof value.headline === "string" ? value.headline.trim() : "",
+    statusLine: typeof value.statusLine === "string" ? value.statusLine.trim() : "",
+    skills: dedupe(value.skills),
+    mcpServers: dedupe(value.mcpServers),
+    a2aEndpoints: dedupe(value.a2aEndpoints),
+    capabilities: dedupe(value.capabilities),
+    agentCardUri: typeof value.agentCardUri === "string" ? value.agentCardUri.trim() : "",
+    listenMultiaddrs: dedupe(value.listenMultiaddrs),
+    relayPeerId: typeof value.relayPeerId === "string" && value.relayPeerId.trim().length > 0 ? value.relayPeerId.trim() : null,
+    reputationScore: Number.isFinite(value.reputationScore) ? Math.max(0, Math.min(1, Number(value.reputationScore))) : 0,
+    totalConclaves: Number.isFinite(value.totalConclaves) ? Math.max(0, Number(value.totalConclaves)) : 0,
+    successfulConclaves: Number.isFinite(value.successfulConclaves) ? Math.max(0, Number(value.successfulConclaves)) : 0,
+    signedAt: Number.isFinite(value.signedAt) ? Math.max(0, Number(value.signedAt)) : 0,
+    signature: typeof value.signature === "string" ? value.signature.trim() : "",
   };
 }
 
@@ -227,6 +281,7 @@ function normalizeNetworkState(value: Partial<AgentNetworkState> | null | undefi
     interactions: Array.isArray(value?.interactions)
       ? value.interactions.map((item) => normalizeMeshInteraction(item)).filter((item): item is AgentMeshInteraction => item !== null).slice(0, 64)
       : [],
+    manifest: normalizeMeshManifest(value?.manifest),
   };
 }
 

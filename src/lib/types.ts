@@ -131,6 +131,36 @@ export interface MeshAgentCard {
   updatedAt: number;
 }
 
+export interface MeshManifest {
+  agentWallet: string;
+  userWallet: string;
+  deviceId: string;
+  peerId: string;
+  chainId: number;
+  stateVersion: number;
+  stateRootHash: string | null;
+  pdpPieceCid: string | null;
+  pdpAnchoredAt: number | null;
+  name: string;
+  description: string;
+  model: string;
+  framework: string;
+  headline: string;
+  statusLine: string;
+  skills: string[];
+  mcpServers: string[];
+  a2aEndpoints: string[];
+  capabilities: string[];
+  agentCardUri: string;
+  listenMultiaddrs: string[];
+  relayPeerId: string | null;
+  reputationScore: number;
+  totalConclaves: number;
+  successfulConclaves: number;
+  signedAt: number;
+  signature: string;
+}
+
 export interface MeshPeerSignal {
   peerId: string;
   agentWallet: string | null;
@@ -172,6 +202,7 @@ export interface AgentNetworkState {
   publicCard: MeshAgentCard | null;
   recentPings: MeshPeerSignal[];
   interactions: AgentMeshInteraction[];
+  manifest: MeshManifest | null;
 }
 
 export interface AgentWorkerState {
