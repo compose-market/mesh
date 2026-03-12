@@ -23,7 +23,7 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, serde::Serialize)]
 struct DesktopPaths {
@@ -152,6 +152,7 @@ struct PendingDeepLinks(Mutex<Vec<String>>);
 struct MeshRuntimeState {
     status: Mutex<MeshRuntimeStatus>,
     stop_tx: Mutex<Option<oneshot::Sender<()>>>,
+    command_tx: Mutex<Option<mpsc::UnboundedSender<MeshLoopCommand>>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -169,6 +170,75 @@ struct MeshAgentCard {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MeshManifest {
+    agent_wallet: String,
+    user_wallet: String,
+    device_id: String,
+    peer_id: String,
+    chain_id: u32,
+    state_version: u64,
+    state_root_hash: Option<String>,
+    pdp_piece_cid: Option<String>,
+    pdp_anchored_at: Option<u64>,
+    name: String,
+    description: String,
+    model: String,
+    framework: String,
+    headline: String,
+    status_line: String,
+    skills: Vec<String>,
+    mcp_servers: Vec<String>,
+    a2a_endpoints: Vec<String>,
+    capabilities: Vec<String>,
+    agent_card_uri: String,
+    listen_multiaddrs: Vec<String>,
+    relay_peer_id: Option<String>,
+    reputation_score: f64,
+    total_conclaves: u64,
+    successful_conclaves: u64,
+    signed_at: u64,
+    signature: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct MeshManifestUnsigned {
+    agent_wallet: String,
+    user_wallet: String,
+    device_id: String,
+    peer_id: String,
+    chain_id: u32,
+    state_version: u64,
+    state_root_hash: Option<String>,
+    pdp_piece_cid: Option<String>,
+    pdp_anchored_at: Option<u64>,
+    name: String,
+    description: String,
+    model: String,
+    framework: String,
+    headline: String,
+    status_line: String,
+    skills: Vec<String>,
+    mcp_servers: Vec<String>,
+    a2a_endpoints: Vec<String>,
+    capabilities: Vec<String>,
+    agent_card_uri: String,
+    listen_multiaddrs: Vec<String>,
+    relay_peer_id: Option<String>,
+    reputation_score: f64,
+    total_conclaves: u64,
+    successful_conclaves: u64,
+    signed_at: u64,
+}
+
+enum MeshLoopCommand {
+    PublishManifest {
+        manifest: MeshManifest,
+        reply: oneshot::Sender<Result<MeshManifest, String>>,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MeshJoinRequest {
     user_address: String,
     agent_wallet: String,
@@ -177,6 +247,10 @@ struct MeshJoinRequest {
     gossip_topic: String,
     #[serde(default = "default_announce_topic")]
     announce_topic: String,
+    #[serde(default = "default_manifest_topic")]
+    manifest_topic: String,
+    #[serde(default = "default_conclave_topic")]
+    conclave_topic: String,
     #[serde(default = "default_mesh_heartbeat_ms")]
     heartbeat_ms: u64,
     #[serde(default = "default_kad_protocol")]
@@ -337,6 +411,14 @@ fn default_announce_topic() -> String {
     "compose/announce/v1".to_string()
 }
 
+fn default_manifest_topic() -> String {
+    "compose/manifest/v1".to_string()
+}
+
+fn default_conclave_topic() -> String {
+    "compose/conclave/v1".to_string()
+}
+
 fn default_kad_protocol() -> String {
     "/compose-market/desktop/kad/1.0.0".to_string()
 }
@@ -423,6 +505,104 @@ fn normalize_capability(raw: &str) -> Option<String> {
     Some(trimmed)
 }
 
+fn normalize_manifest_atom(raw: &str, max_len: usize) -> Option<String> {
+    let trimmed = raw.trim().to_lowercase();
+    if trimmed.is_empty() || trimmed.len() > max_len {
+        return None;
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/' | '@'))
+    {
+        return None;
+    }
+    Some(trimmed)
+}
+
+fn normalize_manifest_atoms(values: &[String], max_items: usize, max_len: usize) -> Vec<String> {
+    let mut out = values
+        .iter()
+        .filter_map(|value| normalize_manifest_atom(value, max_len))
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out.truncate(max_items);
+    out
+}
+
+fn normalize_manifest_urls(values: &[String], max_items: usize) -> Vec<String> {
+    let mut out = values
+        .iter()
+        .map(|value| truncate_string(value.clone(), 256))
+        .filter(|value| {
+            let lower = value.to_lowercase();
+            lower.starts_with("https://") || lower.starts_with("http://")
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out.truncate(max_items);
+    out
+}
+
+fn normalize_optional_hex_32(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim().to_lowercase();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("stateRootHash must be a 64-character hex string".to_string());
+    }
+    Ok(Some(trimmed))
+}
+
+fn normalize_optional_cid(value: Option<String>) -> Option<String> {
+    let trimmed = value.unwrap_or_default().trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(truncate_string(trimmed, 256))
+    }
+}
+
+fn normalize_optional_peer_id(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    PeerId::from_str(trimmed).map_err(|err| format!("invalid relayPeerId: {err}"))?;
+    Ok(Some(trimmed.to_string()))
+}
+
+fn normalize_multiaddr_strings(values: &[String]) -> Vec<String> {
+    let mut out = values
+        .iter()
+        .filter_map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            trimmed.parse::<Multiaddr>().ok().map(|addr| addr.to_string())
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect::<String>()
+}
+
 fn default_capabilities(agent_wallet: &str) -> Vec<String> {
     let wallet_suffix = agent_wallet.trim_start_matches("0x");
     vec![format!("agent-{wallet_suffix}")]
@@ -444,6 +624,12 @@ fn validate_mesh_join_request(request: &MeshJoinRequest) -> Result<MeshJoinReque
     }
     if request.announce_topic.trim().is_empty() {
         return Err("announceTopic is required".to_string());
+    }
+    if request.manifest_topic.trim().is_empty() {
+        return Err("manifestTopic is required".to_string());
+    }
+    if request.conclave_topic.trim().is_empty() {
+        return Err("conclaveTopic is required".to_string());
     }
     if request.heartbeat_ms < 1_000 || request.heartbeat_ms > 300_000 {
         return Err("heartbeatMs must be between 1000 and 300000".to_string());
@@ -472,6 +658,8 @@ fn validate_mesh_join_request(request: &MeshJoinRequest) -> Result<MeshJoinReque
         chain_id: request.chain_id,
         gossip_topic: request.gossip_topic.trim().to_string(),
         announce_topic: request.announce_topic.trim().to_string(),
+        manifest_topic: request.manifest_topic.trim().to_string(),
+        conclave_topic: request.conclave_topic.trim().to_string(),
         heartbeat_ms: request.heartbeat_ms,
         kad_protocol: request.kad_protocol.trim().to_string(),
         capabilities,
@@ -491,6 +679,113 @@ fn validate_mesh_join_request(request: &MeshJoinRequest) -> Result<MeshJoinReque
             .map(|addr| addr.trim().to_string())
             .filter(|addr| !addr.is_empty())
             .collect(),
+    })
+}
+
+fn unsigned_manifest_bytes(value: &MeshManifestUnsigned) -> Result<Vec<u8>, String> {
+    serde_cbor::to_vec(value)
+    .map_err(|err| format!("failed to encode unsigned manifest: {err}"))
+}
+
+fn sign_mesh_manifest(local_key: &identity::Keypair, manifest: &MeshManifest) -> Result<MeshManifest, String> {
+    let unsigned = MeshManifestUnsigned {
+        agent_wallet: manifest.agent_wallet.clone(),
+        user_wallet: manifest.user_wallet.clone(),
+        device_id: manifest.device_id.clone(),
+        peer_id: manifest.peer_id.clone(),
+        chain_id: manifest.chain_id,
+        state_version: manifest.state_version,
+        state_root_hash: manifest.state_root_hash.clone(),
+        pdp_piece_cid: manifest.pdp_piece_cid.clone(),
+        pdp_anchored_at: manifest.pdp_anchored_at,
+        name: manifest.name.clone(),
+        description: manifest.description.clone(),
+        model: manifest.model.clone(),
+        framework: manifest.framework.clone(),
+        headline: manifest.headline.clone(),
+        status_line: manifest.status_line.clone(),
+        skills: manifest.skills.clone(),
+        mcp_servers: manifest.mcp_servers.clone(),
+        a2a_endpoints: manifest.a2a_endpoints.clone(),
+        capabilities: manifest.capabilities.clone(),
+        agent_card_uri: manifest.agent_card_uri.clone(),
+        listen_multiaddrs: manifest.listen_multiaddrs.clone(),
+        relay_peer_id: manifest.relay_peer_id.clone(),
+        reputation_score: manifest.reputation_score,
+        total_conclaves: manifest.total_conclaves,
+        successful_conclaves: manifest.successful_conclaves,
+        signed_at: manifest.signed_at,
+    };
+    let sign_bytes = unsigned_manifest_bytes(&unsigned)?;
+    let sig = local_key
+        .sign(&sign_bytes)
+        .map_err(|err| format!("failed to sign manifest: {err}"))?;
+
+    Ok(MeshManifest {
+        signature: hex_encode(&sig),
+        ..manifest.clone()
+    })
+}
+
+fn validate_mesh_manifest(manifest: MeshManifest, status: &MeshRuntimeStatus) -> Result<MeshManifest, String> {
+    let agent_wallet = normalize_wallet(&manifest.agent_wallet)
+        .ok_or_else(|| "manifest.agentWallet must be a valid wallet address".to_string())?;
+    let user_wallet = normalize_wallet(&manifest.user_wallet)
+        .ok_or_else(|| "manifest.userWallet must be a valid wallet address".to_string())?;
+    let device_id = normalize_device_id(&manifest.device_id)
+        .ok_or_else(|| "manifest.deviceId format is invalid".to_string())?;
+
+    if status.agent_wallet.as_deref() != Some(agent_wallet.as_str()) {
+        return Err("manifest agentWallet does not match the running mesh agent".to_string());
+    }
+    if status.device_id.as_deref() != Some(device_id.as_str()) {
+        return Err("manifest deviceId does not match the running mesh device".to_string());
+    }
+    if manifest.chain_id == 0 {
+        return Err("manifest.chainId must be positive".to_string());
+    }
+    if manifest.state_version == 0 {
+        return Err("manifest.stateVersion must be positive".to_string());
+    }
+
+    let peer_id = status
+        .peer_id
+        .clone()
+        .ok_or_else(|| "mesh runtime does not have a live peerId yet".to_string())?;
+    PeerId::from_str(&peer_id).map_err(|err| format!("mesh runtime returned invalid peerId: {err}"))?;
+
+    Ok(MeshManifest {
+        agent_wallet,
+        user_wallet,
+        device_id,
+        peer_id,
+        chain_id: manifest.chain_id,
+        state_version: manifest.state_version,
+        state_root_hash: normalize_optional_hex_32(manifest.state_root_hash)?,
+        pdp_piece_cid: normalize_optional_cid(manifest.pdp_piece_cid),
+        pdp_anchored_at: manifest.pdp_anchored_at,
+        name: truncate_string(manifest.name, 80),
+        description: truncate_string(manifest.description, 240),
+        model: truncate_string(manifest.model, 120),
+        framework: truncate_string(manifest.framework, 80),
+        headline: truncate_string(manifest.headline, 120),
+        status_line: truncate_string(manifest.status_line, 180),
+        skills: normalize_manifest_atoms(&manifest.skills, 128, 96),
+        mcp_servers: normalize_manifest_atoms(&manifest.mcp_servers, 64, 128),
+        a2a_endpoints: normalize_manifest_urls(&manifest.a2a_endpoints, 16),
+        capabilities: normalize_manifest_atoms(&manifest.capabilities, 128, 96),
+        agent_card_uri: truncate_string(manifest.agent_card_uri, 512),
+        listen_multiaddrs: normalize_multiaddr_strings(&status.listen_multiaddrs),
+        relay_peer_id: normalize_optional_peer_id(manifest.relay_peer_id)?,
+        reputation_score: if manifest.reputation_score.is_finite() {
+            manifest.reputation_score.clamp(0.0, 1.0)
+        } else {
+            0.0
+        },
+        total_conclaves: manifest.total_conclaves,
+        successful_conclaves: manifest.successful_conclaves,
+        signed_at: now_ms(),
+        signature: String::new(),
     })
 }
 
@@ -1033,7 +1328,7 @@ fn emit_peer_index(app: &tauri::AppHandle, peer_cache: &HashMap<String, PeerCach
 fn build_mesh_swarm(
     local_key: identity::Keypair,
     request: &MeshJoinRequest,
-) -> Result<(Swarm<MeshBehaviour>, IdentTopic, IdentTopic, HashSet<PeerId>), String> {
+) -> Result<(Swarm<MeshBehaviour>, IdentTopic, IdentTopic, IdentTopic, IdentTopic, HashSet<PeerId>), String> {
     let local_peer_id = PeerId::from(local_key.public());
 
     let gossipsub_config = gossipsub::ConfigBuilder::default()
@@ -1049,12 +1344,20 @@ fn build_mesh_swarm(
 
     let global_topic = IdentTopic::new(request.gossip_topic.clone());
     let announce_topic = IdentTopic::new(request.announce_topic.clone());
+    let manifest_topic = IdentTopic::new(request.manifest_topic.clone());
+    let conclave_topic = IdentTopic::new(request.conclave_topic.clone());
     gossipsub
         .subscribe(&global_topic)
         .map_err(|err| format!("failed to subscribe gossipsub global topic: {err}"))?;
     gossipsub
         .subscribe(&announce_topic)
         .map_err(|err| format!("failed to subscribe gossipsub announce topic: {err}"))?;
+    gossipsub
+        .subscribe(&manifest_topic)
+        .map_err(|err| format!("failed to subscribe gossipsub manifest topic: {err}"))?;
+    gossipsub
+        .subscribe(&conclave_topic)
+        .map_err(|err| format!("failed to subscribe gossipsub conclave topic: {err}"))?;
 
     let kad_stream_protocol = StreamProtocol::try_from_owned(request.kad_protocol.clone())
         .map_err(|_| format!("invalid kadProtocol '{}'", request.kad_protocol))?;
@@ -1137,10 +1440,15 @@ fn build_mesh_swarm(
         eprintln!("[mesh] initial kad bootstrap failed: {}", err);
     }
 
-    Ok((swarm, global_topic, announce_topic, rendezvous_peers))
+    Ok((swarm, global_topic, announce_topic, manifest_topic, conclave_topic, rendezvous_peers))
 }
 
-async fn run_mesh_loop(app: tauri::AppHandle, request: MeshJoinRequest, mut stop_rx: oneshot::Receiver<()>) {
+async fn run_mesh_loop(
+    app: tauri::AppHandle,
+    request: MeshJoinRequest,
+    mut stop_rx: oneshot::Receiver<()>,
+    mut command_rx: mpsc::UnboundedReceiver<MeshLoopCommand>,
+) {
     let local_key = match load_or_create_mesh_identity(&app) {
         Ok(value) => value,
         Err(err) => {
@@ -1150,7 +1458,7 @@ async fn run_mesh_loop(app: tauri::AppHandle, request: MeshJoinRequest, mut stop
     };
     let local_peer_id = PeerId::from(local_key.public()).to_string();
 
-    let (mut swarm, global_topic, announce_topic, rendezvous_peers) =
+    let (mut swarm, global_topic, announce_topic, manifest_topic, _conclave_topic, rendezvous_peers) =
         match build_mesh_swarm(local_key.clone(), &request) {
             Ok(value) => value,
             Err(err) => {
@@ -1200,6 +1508,32 @@ async fn run_mesh_loop(app: tauri::AppHandle, request: MeshJoinRequest, mut stop
                 }
                 mark_mesh_status(&app, &request, "dormant");
                 break;
+            }
+            Some(command) = command_rx.recv() => {
+                match command {
+                    MeshLoopCommand::PublishManifest { manifest, reply } => {
+                        let result = serde_cbor::to_vec(&manifest)
+                            .map_err(|err| format!("failed to encode signed manifest: {err}"))
+                            .and_then(|payload| swarm
+                                .behaviour_mut()
+                                .gossipsub
+                                .publish(manifest_topic.clone(), payload)
+                                .map_err(|err| format!("manifest publish failed: {err}")))
+                            .map(|_| manifest.clone());
+
+                        if let Err(err) = &result {
+                            let _ = with_mesh_status(&app, |status| {
+                                status.last_error = Some(err.clone());
+                                status.updated_at = now_ms();
+                            });
+                        } else {
+                            let _ = with_mesh_status(&app, |status| {
+                                status.updated_at = now_ms();
+                            });
+                        }
+                        let _ = reply.send(result);
+                    }
+                }
             }
             _ = kad_refresh_interval.tick() => {
                 if let Err(err) = swarm.behaviour_mut().kad.bootstrap() {
@@ -1336,58 +1670,60 @@ async fn run_mesh_loop(app: tauri::AppHandle, request: MeshJoinRequest, mut stop
                     }
                     SwarmEvent::Behaviour(MeshBehaviourEvent::Gossipsub(event)) => {
                         if let gossipsub::Event::Message { message, .. } = event {
-                            match decode_and_validate_envelope(&message.data, &mut seen_nonces) {
-                                Ok(envelope) => {
-                                    let entry = peer_cache.entry(envelope.peer_id.clone()).or_insert(PeerCacheEntry {
-                                        last_seen_ms: envelope.ts_ms,
-                                        stale: false,
-                                        agent_wallet: envelope.agent_wallet.clone(),
-                                        device_id: envelope.device_id.clone(),
-                                        caps: envelope.caps.clone(),
-                                        listen_addrs: envelope.listen_addrs.clone(),
-                                        card: envelope.card.clone(),
-                                        signal_count: 0,
-                                        announce_count: 0,
-                                        last_msg_type: envelope.msg_type.clone(),
-                                    });
-                                    entry.last_seen_ms = envelope.ts_ms;
-                                    entry.stale = false;
-                                    entry.agent_wallet = envelope.agent_wallet.clone();
-                                    entry.device_id = envelope.device_id.clone();
-                                    entry.caps = envelope.caps;
-                                    entry.listen_addrs = envelope.listen_addrs.clone();
-                                    entry.card = envelope.card.clone();
-                                    entry.signal_count = entry.signal_count.saturating_add(1);
-                                    if envelope.msg_type == "announce" {
-                                        entry.announce_count = entry.announce_count.saturating_add(1);
-                                    }
-                                    entry.last_msg_type = envelope.msg_type.clone();
+                            if message.topic == global_topic.hash() || message.topic == announce_topic.hash() {
+                                match decode_and_validate_envelope(&message.data, &mut seen_nonces) {
+                                    Ok(envelope) => {
+                                        let entry = peer_cache.entry(envelope.peer_id.clone()).or_insert(PeerCacheEntry {
+                                            last_seen_ms: envelope.ts_ms,
+                                            stale: false,
+                                            agent_wallet: envelope.agent_wallet.clone(),
+                                            device_id: envelope.device_id.clone(),
+                                            caps: envelope.caps.clone(),
+                                            listen_addrs: envelope.listen_addrs.clone(),
+                                            card: envelope.card.clone(),
+                                            signal_count: 0,
+                                            announce_count: 0,
+                                            last_msg_type: envelope.msg_type.clone(),
+                                        });
+                                        entry.last_seen_ms = envelope.ts_ms;
+                                        entry.stale = false;
+                                        entry.agent_wallet = envelope.agent_wallet.clone();
+                                        entry.device_id = envelope.device_id.clone();
+                                        entry.caps = envelope.caps;
+                                        entry.listen_addrs = envelope.listen_addrs.clone();
+                                        entry.card = envelope.card.clone();
+                                        entry.signal_count = entry.signal_count.saturating_add(1);
+                                        if envelope.msg_type == "announce" {
+                                            entry.announce_count = entry.announce_count.saturating_add(1);
+                                        }
+                                        entry.last_msg_type = envelope.msg_type.clone();
 
-                                    for raw_addr in envelope.listen_addrs {
-                                        if let Ok(addr) = raw_addr.parse::<Multiaddr>() {
-                                            if let Some(peer) = extract_peer_id_from_multiaddr(&addr) {
-                                                swarm.behaviour_mut().kad.add_address(&peer, addr);
+                                        for raw_addr in envelope.listen_addrs {
+                                            if let Ok(addr) = raw_addr.parse::<Multiaddr>() {
+                                                if let Some(peer) = extract_peer_id_from_multiaddr(&addr) {
+                                                    swarm.behaviour_mut().kad.add_address(&peer, addr);
+                                                }
                                             }
                                         }
-                                    }
 
-                                    let active = recompute_peer_cache_status(&mut peer_cache);
-                                    emit_peer_index(&app, &peer_cache);
-                                    let _ = with_mesh_status(&app, |status| {
-                                        status.peers_discovered = active as u32;
-                                        status.status = if active > 0 || !connected_peers.is_empty() {
-                                            "online".to_string()
-                                        } else {
-                                            "connecting".to_string()
-                                        };
-                                        status.updated_at = now_ms();
-                                    });
-                                }
-                                Err(err) => {
-                                    let _ = with_mesh_status(&app, |status| {
-                                        status.last_error = Some(format!("invalid gossip envelope: {err}"));
-                                        status.updated_at = now_ms();
-                                    });
+                                        let active = recompute_peer_cache_status(&mut peer_cache);
+                                        emit_peer_index(&app, &peer_cache);
+                                        let _ = with_mesh_status(&app, |status| {
+                                            status.peers_discovered = active as u32;
+                                            status.status = if active > 0 || !connected_peers.is_empty() {
+                                                "online".to_string()
+                                            } else {
+                                                "connecting".to_string()
+                                            };
+                                            status.updated_at = now_ms();
+                                        });
+                                    }
+                                    Err(err) => {
+                                        let _ = with_mesh_status(&app, |status| {
+                                            status.last_error = Some(format!("invalid gossip envelope: {err}"));
+                                            status.updated_at = now_ms();
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -1451,6 +1787,10 @@ async fn run_mesh_loop(app: tauri::AppHandle, request: MeshJoinRequest, mut stop
                 }
             }
         }
+    }
+
+    if let Ok(mut guard) = app.state::<MeshRuntimeState>().command_tx.lock() {
+        *guard = None;
     }
 }
 
@@ -2018,6 +2358,7 @@ async fn desktop_network_join(
     mark_mesh_status(&app, &request, "connecting");
 
     let (stop_tx, stop_rx) = oneshot::channel();
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
     {
         let mut stop_guard = state
             .stop_tx
@@ -2025,10 +2366,17 @@ async fn desktop_network_join(
             .map_err(|_| "failed to update mesh stop channel".to_string())?;
         *stop_guard = Some(stop_tx);
     }
+    {
+        let mut command_guard = state
+            .command_tx
+            .lock()
+            .map_err(|_| "failed to update mesh command channel".to_string())?;
+        *command_guard = Some(command_tx);
+    }
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        run_mesh_loop(app_handle, request, stop_rx).await;
+        run_mesh_loop(app_handle, request, stop_rx, command_rx).await;
     });
 
     desktop_network_status(state)
@@ -2044,12 +2392,54 @@ async fn desktop_network_leave(
             let _ = stop_tx.send(());
         }
     }
+    if let Ok(mut command_guard) = state.command_tx.lock() {
+        *command_guard = None;
+    }
 
     let _ = with_mesh_status(&app, |status| {
         *status = MeshRuntimeStatus::default();
     });
 
     desktop_network_status(state)
+}
+
+#[tauri::command]
+async fn desktop_mesh_publish_manifest(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MeshRuntimeState>,
+    manifest: MeshManifest,
+) -> Result<MeshManifest, String> {
+    let live_status = state
+        .status
+        .lock()
+        .map_err(|_| "failed to read mesh runtime status".to_string())?
+        .clone();
+    if !live_status.running {
+        return Err("mesh runtime is not running".to_string());
+    }
+
+    let local_key = load_or_create_mesh_identity(&app)?;
+    let validated = validate_mesh_manifest(manifest, &live_status)?;
+    let signed = sign_mesh_manifest(&local_key, &validated)?;
+
+    let command_tx = state
+        .command_tx
+        .lock()
+        .map_err(|_| "failed to read mesh command channel".to_string())?
+        .clone()
+        .ok_or_else(|| "mesh runtime command channel is unavailable".to_string())?;
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    command_tx
+        .send(MeshLoopCommand::PublishManifest {
+            manifest: signed.clone(),
+            reply: reply_tx,
+        })
+        .map_err(|_| "mesh runtime is no longer accepting commands".to_string())?;
+
+    reply_rx
+        .await
+        .map_err(|_| "mesh runtime dropped the manifest publish response".to_string())?
 }
 
 fn normalize_api_base(api_url: &str) -> Result<String, String> {
@@ -2177,6 +2567,7 @@ fn main() {
             desktop_network_status,
             desktop_network_join,
             desktop_network_leave,
+            desktop_mesh_publish_manifest,
             daemon_install_agent,
             daemon_start_agent,
             daemon_stop_agent,
