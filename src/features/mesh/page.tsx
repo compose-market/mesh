@@ -1,14 +1,11 @@
-import { useId, useMemo, useState } from "react";
-import { Activity, Radio, Radar, Wallet } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Activity, Minus, Radio, Wallet, Waypoints, X } from "lucide-react";
+import { ComposableMap, Geographies, Geography, Line, Marker, ZoomableGroup } from "react-simple-maps";
+import worldAtlas from "world-atlas/countries-110m.json";
 import { ShellPageHeader, ShellPill, ShellPanel } from "@compose-market/theme/shell";
 import type { InstalledAgent, MeshPeerSignal } from "../../lib/types";
-import {
-  buildMeshScene,
-  projectMeshCoordinate,
-  type MeshAnchorNode,
-  type MeshBootstrapResolution,
-  type MeshScenePeerNode,
-} from "./model";
+import { buildMeshScene, type MeshBootstrapResolution } from "./model";
+import { buildMeshStageModel } from "./stage-model";
 
 interface MeshPageProps {
   agent: InstalledAgent | null;
@@ -16,182 +13,52 @@ interface MeshPageProps {
   bootstrapResolution: MeshBootstrapResolution;
 }
 
-const LATITUDE_LINES = [-45, -15, 15, 45];
-const LONGITUDE_LINES = [-150, -90, -30, 30, 90, 150];
-const LANDMASSES: Array<{ id: string; points: Array<[number, number]> }> = [
-  {
-    id: "americas",
-    points: [
-      [62, -164],
-      [72, -142],
-      [60, -118],
-      [50, -108],
-      [36, -95],
-      [17, -82],
-      [-8, -76],
-      [-32, -69],
-      [-53, -74],
-      [-48, -92],
-      [-12, -118],
-      [18, -138],
-      [45, -154],
-      [62, -164],
-    ],
-  },
-  {
-    id: "eurafrica",
-    points: [
-      [70, -12],
-      [62, 18],
-      [55, 42],
-      [44, 40],
-      [34, 26],
-      [8, 10],
-      [-24, 16],
-      [-35, 4],
-      [-8, -12],
-      [28, -14],
-      [48, -18],
-      [70, -12],
-    ],
-  },
-  {
-    id: "asiapacific",
-    points: [
-      [66, 42],
-      [60, 78],
-      [52, 110],
-      [34, 132],
-      [12, 126],
-      [-12, 112],
-      [-34, 132],
-      [-44, 156],
-      [-18, 170],
-      [10, 154],
-      [34, 122],
-      [54, 96],
-      [66, 42],
-    ],
-  },
-];
-
-function formatProvider(value: string | null): string {
+function shortWallet(value: string | null): string {
   if (!value) {
-    return "Unknown";
+    return "No local agent";
   }
-  return value.slice(0, 1).toUpperCase() + value.slice(1);
-}
-
-function describePeer(peer: MeshPeerSignal): string {
-  return peer.card?.statusLine || peer.card?.headline || peer.agentWallet || peer.peerId;
-}
-
-function describePeerAnchor(peer: MeshPeerSignal): string {
-  if (peer.anchorRegion && peer.anchorProvider) {
-    return `${peer.anchorRegion.toUpperCase()} · ${formatProvider(peer.anchorProvider)}`;
-  }
-  if (peer.anchorHost) {
-    return peer.anchorHost;
-  }
-  if (peer.relayPeerId) {
-    return `Relay ${peer.relayPeerId.slice(0, 8)}...`;
-  }
-  return "Unanchored";
-}
-
-function anchorTitle(anchor: MeshAnchorNode): string {
-  return anchor.city || anchor.region?.toUpperCase() || anchor.host || "Bootstrap relay";
-}
-
-function anchorSubtitle(anchor: MeshAnchorNode): string {
-  const parts = [
-    anchor.region?.toUpperCase() || null,
-    anchor.provider ? formatProvider(anchor.provider) : null,
-  ].filter(Boolean);
-  return parts.length > 0 ? parts.join(" · ") : (anchor.host || "Rendezvous relay");
-}
-
-function formatSeen(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function buildGeoPath(points: Array<[number, number]>): string {
-  return points
-    .map(([lat, lon], index) => {
-      const point = projectMeshCoordinate(lat, lon);
-      return `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
-    })
-    .join(" ");
-}
-
-function buildCurvePath(from: { x: number; y: number }, to: { x: number; y: number }, lift = 0): string {
-  const midpointX = (from.x + to.x) / 2;
-  const arcHeight = Math.max(5, Math.abs(from.x - to.x) * 0.14) + lift;
-  const midpointY = Math.min(from.y, to.y) - arcHeight;
-  return `M ${from.x.toFixed(2)} ${from.y.toFixed(2)} Q ${midpointX.toFixed(2)} ${midpointY.toFixed(2)} ${to.x.toFixed(2)} ${to.y.toFixed(2)}`;
-}
-
-function Preview({ title, subtitle, detail }: { title: string; subtitle: string; detail: string }) {
-  return (
-    <span className="mesh-peer-preview">
-      <strong>{title}</strong>
-      <span>{subtitle}</span>
-      <span>{detail}</span>
-    </span>
-  );
-}
-
-function MetaRow({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="mesh-selection-card__row">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
+  return `${value.slice(0, 8)}...${value.slice(-4)}`;
 }
 
 export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
-  const clipId = useId().replace(/:/g, "");
-  const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
-  const [selectedAnchorId, setSelectedAnchorId] = useState<string | null>(null);
-  const [hoveredPeerId, setHoveredPeerId] = useState<string | null>(null);
-  const [hoveredAnchorId, setHoveredAnchorId] = useState<string | null>(null);
-  const scene = useMemo(() => buildMeshScene({ peers, resolution: bootstrapResolution }), [bootstrapResolution, peers]);
-  const selectedPeerNode = scene.peers.find((node) => node.peer.peerId === selectedPeerId) || null;
-  const hoveredPeerNode = scene.peers.find((node) => node.peer.peerId === hoveredPeerId) || null;
-  const selectedAnchor = scene.anchors.find((anchor) => anchor.id === selectedAnchorId) || null;
-  const hoveredAnchor = scene.anchors.find((anchor) => anchor.id === hoveredAnchorId) || null;
-  const focusPeerNode = selectedPeerNode || hoveredPeerNode || null;
-  const focusAnchor = (
-    focusPeerNode
-      ? scene.anchors.find((anchor) => anchor.id === focusPeerNode.anchorNodeId) || null
-      : selectedAnchor || hoveredAnchor || scene.anchors[0] || null
-  );
-  const centerStatus = agent ? agent.network.status : `bootstrap ${bootstrapResolution.source}`;
-  const activeWallet = agent ? `${agent.agentWallet.slice(0, 8)}...${agent.agentWallet.slice(-4)}` : "No local agent";
-  const backboneEdges = useMemo(() => {
-    const ordered = [...scene.anchors].sort((left, right) => (left.lon ?? left.x) - (right.lon ?? right.x));
-    if (ordered.length <= 1) {
-      return [];
-    }
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
+  const [cardOpen, setCardOpen] = useState(false);
+  const [cardCollapsed, setCardCollapsed] = useState(false);
 
-    return ordered.map((anchor, index) => ({
-      from: anchor,
-      to: ordered[(index + 1) % ordered.length],
-      wrap: index === ordered.length - 1,
-    }));
-  }, [scene.anchors]);
-  const graticuleLatitudePaths = useMemo(
-    () => LATITUDE_LINES.map((lat) => buildGeoPath(Array.from({ length: 13 }, (_, index) => [lat, -180 + (index * 30)] as [number, number]))),
-    [],
+  const scene = useMemo(() => buildMeshScene({ peers, resolution: bootstrapResolution }), [bootstrapResolution, peers]);
+  const stage = useMemo(
+    () => buildMeshStageModel({ agent, peers, scene, selectedNodeId, selectedRegionId }),
+    [agent, peers, scene, selectedNodeId, selectedRegionId],
   );
-  const graticuleLongitudePaths = useMemo(
-    () => LONGITUDE_LINES.map((lon) => buildGeoPath(Array.from({ length: 12 }, (_, index) => [65 - (index * 11), lon] as [number, number]))),
-    [],
+
+  const nodesById = useMemo(() => new Map(stage.nodes.map((node) => [node.id, node])), [stage.nodes]);
+  const focusedRegion = (
+    stage.regions.find((region) => region.id === selectedRegionId)
+    || (selectedNodeId ? stage.regions.find((region) => region.id === nodesById.get(selectedNodeId)?.regionId) : null)
+    || null
   );
+  const mapCenter = focusedRegion && focusedRegion.lon !== null && focusedRegion.lat !== null
+    ? [focusedRegion.lon, focusedRegion.lat] as [number, number]
+    : [8, 18] as [number, number];
+  const mapZoom = focusedRegion ? 2.25 : 1.05;
+  const localNode = stage.nodes.find((node) => node.kind === "local") || null;
+  const selectedManifest = stage.selectedManifest;
+
+  const handleSelectRegion = (regionId: string) => {
+    setSelectedRegionId((current) => (current === regionId ? null : regionId));
+    if (selectedNodeId && nodesById.get(selectedNodeId)?.regionId !== regionId) {
+      setSelectedNodeId(null);
+      setCardOpen(false);
+    }
+  };
+
+  const handleSelectNode = (nodeId: string, regionId: string | null) => {
+    setSelectedNodeId(nodeId);
+    setSelectedRegionId(regionId);
+    setCardOpen(true);
+    setCardCollapsed(false);
+  };
 
   return (
     <section className="mesh-page">
@@ -199,7 +66,7 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
         className="mesh-page-header"
         eyebrow="Network"
         title="Global Mesh Topology"
-        subtitle="Let your local agents discover & connect with their peers."
+        subtitle="Select a region to expand the mesh footprint. Select an agent signal to inspect its latest broadcast manifest."
         actions={(
           <div className="mesh-toolbar">
             <ShellPill className="mesh-stat-pill">
@@ -208,15 +75,15 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
             </ShellPill>
             <ShellPill className="mesh-stat-pill">
               <Radio size={14} />
-              <span>{scene.anchors.length} rendezvous regions</span>
+              <span>{stage.regions.length} rendezvous regions</span>
             </ShellPill>
             <ShellPill className="mesh-stat-pill">
-              <Radar size={14} />
-              <span>{centerStatus}</span>
+              <Waypoints size={14} />
+              <span>{agent?.network.status || "No local agent"}</span>
             </ShellPill>
             <ShellPill className="mesh-stat-pill">
               <Wallet size={14} />
-              <span>{activeWallet}</span>
+              <span>{shortWallet(agent?.agentWallet || null)}</span>
             </ShellPill>
           </div>
         )}
@@ -227,162 +94,168 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
           <div className="mesh-stage__aurora" aria-hidden="true" />
           <div className="mesh-stage__noise" aria-hidden="true" />
 
-          <svg className="mesh-map" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-            <defs>
-              <clipPath id={clipId}>
-                <rect x="4" y="6" width="92" height="88" rx="8" ry="8" />
-              </clipPath>
-              <linearGradient id={`${clipId}-backbone`} x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="hsl(var(--primary) / 0.12)" />
-                <stop offset="55%" stopColor="hsl(var(--primary) / 0.32)" />
-                <stop offset="100%" stopColor="hsl(var(--accent) / 0.18)" />
-              </linearGradient>
-            </defs>
+          <div className="mesh-map-world">
+            <ComposableMap
+              projection="geoEqualEarth"
+              projectionConfig={{ scale: 170 }}
+              className="mesh-map"
+              aria-label="Compose mesh world map"
+            >
+              <ZoomableGroup center={mapCenter} zoom={mapZoom}>
+                <Geographies geography={worldAtlas}>
+                  {({ geographies }: { geographies: any[] }) => geographies.map((geography: any) => (
+                    <Geography
+                      key={geography.rsmKey}
+                      geography={geography}
+                      className="mesh-map__geography"
+                    />
+                  ))}
+                </Geographies>
 
-            <rect className="mesh-map__frame" x="4" y="6" width="92" height="88" rx="8" ry="8" />
-            <g clipPath={`url(#${clipId})`}>
-              <rect className="mesh-map__ocean" x="4" y="6" width="92" height="88" />
+                {stage.routes.map((route) => {
+                  const from = nodesById.get(route.fromNodeId);
+                  const to = nodesById.get(route.toNodeId);
+                  if (!from || !to || from.lon === null || from.lat === null || to.lon === null || to.lat === null) {
+                    return null;
+                  }
 
-              {graticuleLatitudePaths.map((path, index) => (
-                <path key={`lat-${index}`} d={path} className="mesh-map__graticule mesh-map__graticule--lat" />
-              ))}
+                  return (
+                    <Line
+                      key={`${route.fromNodeId}-${route.toNodeId}`}
+                      from={[from.lon, from.lat]}
+                      to={[to.lon, to.lat]}
+                      className="mesh-map__route"
+                    />
+                  );
+                })}
 
-              {graticuleLongitudePaths.map((path, index) => (
-                <path key={`lon-${index}`} d={path} className="mesh-map__graticule mesh-map__graticule--lon" />
-              ))}
+                {stage.regions.map((region) => {
+                  if (region.lon === null || region.lat === null) {
+                    return null;
+                  }
 
-              {LANDMASSES.map((landmass) => (
-                <path key={landmass.id} d={buildGeoPath(landmass.points)} className="mesh-map__landmass" />
-              ))}
+                  const selected = selectedRegionId === region.id;
+                  const activeCount = region.peerCount + (region.localNodeId ? 1 : 0);
 
-              {backboneEdges.map(({ from, to, wrap }) => (
-                <path
-                  key={`${from.id}-${to.id}`}
-                  d={buildCurvePath(from, to, wrap ? 14 : 8)}
-                  className={`mesh-map__backbone ${focusAnchor && (focusAnchor.id === from.id || focusAnchor.id === to.id) ? "active" : ""}`}
-                  stroke={wrap ? "hsl(var(--primary) / 0.12)" : `url(#${clipId}-backbone)`}
-                />
-              ))}
+                  return (
+                    <Marker key={region.id} coordinates={[region.lon, region.lat]}>
+                      <g
+                        className={`mesh-region-marker ${selected ? "selected" : ""}`}
+                        onClick={() => handleSelectRegion(region.id)}
+                      >
+                        <circle className="mesh-region-marker__halo" r={selected ? 8.2 : 6.8} />
+                        <circle className="mesh-region-marker__core" r={selected ? 3.8 : 3.2} />
+                        <text className="mesh-region-marker__label" y={selected ? -12 : -10}>
+                          {region.city}
+                        </text>
+                        {activeCount > 0 ? (
+                          <text className="mesh-region-marker__count" y={selected ? 16 : 14}>
+                            {activeCount}
+                          </text>
+                        ) : null}
+                      </g>
+                    </Marker>
+                  );
+                })}
 
-              {scene.peers.map((node) => {
-                const anchor = scene.anchors.find((item) => item.id === node.anchorNodeId);
-                if (!anchor) {
-                  return null;
-                }
+                {stage.nodes.map((node) => {
+                  if (node.lon === null || node.lat === null) {
+                    return null;
+                  }
 
-                return (
-                  <path
-                    key={`peer-edge-${node.peer.peerId}`}
-                    d={buildCurvePath(anchor, node, 2)}
-                    className={`mesh-map__peer-edge ${focusPeerNode?.peer.peerId === node.peer.peerId ? "active" : ""}`}
-                  />
-                );
-              })}
-            </g>
-          </svg>
+                  const selected = selectedNodeId === node.id;
+                  return (
+                    <Marker key={node.id} coordinates={[node.lon, node.lat]}>
+                      <g
+                        className={`mesh-agent-marker mesh-agent-marker--${node.kind} ${selected ? "selected" : ""}`}
+                        onClick={() => handleSelectNode(node.id, node.regionId)}
+                      >
+                        <circle className="mesh-agent-marker__halo" r={node.kind === "local" ? 7 : 5.5} />
+                        <circle className="mesh-agent-marker__core" r={node.kind === "local" ? 3.5 : 2.7} />
+                        {selected ? (
+                          <text className="mesh-agent-marker__label" y={node.kind === "local" ? -12 : -10}>
+                            {node.title}
+                          </text>
+                        ) : null}
+                      </g>
+                    </Marker>
+                  );
+                })}
+              </ZoomableGroup>
+            </ComposableMap>
+          </div>
 
           <div className="mesh-stage__legend">
             <span><i className="mesh-stage__legend-dot anchor" /> Rendezvous region</span>
+            <span><i className="mesh-stage__legend-dot local" /> Local agent</span>
             <span><i className="mesh-stage__legend-dot peer" /> Live peer signal</span>
-            <span><i className="mesh-stage__legend-dot route" /> Active mesh backbone</span>
+            <span><i className="mesh-stage__legend-dot route" /> Selected route</span>
           </div>
 
-          {scene.anchors.map((anchor, index) => {
-            const isSelected = focusAnchor?.id === anchor.id;
-            const labelSide = anchor.x > 74 ? "west" : anchor.x < 24 ? "east" : anchor.y > 60 ? "north" : "south";
-
-            return (
-              <button
-                key={anchor.id}
-                type="button"
-                className={`mesh-anchor-node ${isSelected ? "selected" : ""}`}
-                data-side={labelSide}
-                style={{ left: `${anchor.x}%`, top: `${anchor.y}%`, animationDelay: `${index * 90}ms` }}
-                onMouseEnter={() => setHoveredAnchorId(anchor.id)}
-                onMouseLeave={() => setHoveredAnchorId((current) => (current === anchor.id ? null : current))}
-                onClick={() => {
-                  setSelectedAnchorId(anchor.id);
-                  setSelectedPeerId(null);
-                }}
-              >
-                <span className="mesh-anchor-node__halo" />
-                <span className="mesh-anchor-node__core" />
-                <span className="mesh-anchor-node__label">
-                  <strong>{anchorTitle(anchor)}</strong>
-                  <span>{anchorSubtitle(anchor)}</span>
-                </span>
-                {hoveredAnchorId === anchor.id ? (
-                  <Preview
-                    title={anchorTitle(anchor)}
-                    subtitle={anchorSubtitle(anchor)}
-                    detail={`${anchor.peerIds.length} relay ids`}
-                  />
-                ) : null}
-              </button>
-            );
-          })}
-
-          {scene.peers.map((node, index) => (
-            <button
-              key={node.peer.peerId}
-              type="button"
-              className={`mesh-peer-node ${focusPeerNode?.peer.peerId === node.peer.peerId ? "selected" : ""} ${node.peer.stale ? "stale" : ""}`}
-              style={{ left: `${node.x}%`, top: `${node.y}%`, animationDelay: `${index * 100}ms` }}
-              onMouseEnter={() => setHoveredPeerId(node.peer.peerId)}
-              onMouseLeave={() => setHoveredPeerId((current) => (current === node.peer.peerId ? null : current))}
-              onClick={() => {
-                setSelectedPeerId(node.peer.peerId);
-                setSelectedAnchorId(node.anchorNodeId);
-              }}
-            >
-              <span className="mesh-peer-node__pulse" />
-              <span className="mesh-peer-node__dot" />
-              {hoveredPeerId === node.peer.peerId ? (
-                <Preview
-                  title={node.peer.card?.name || node.peer.peerId}
-                  subtitle={describePeer(node.peer)}
-                  detail={describePeerAnchor(node.peer)}
-                />
-              ) : null}
-            </button>
-          ))}
-
-          <div className="mesh-selection-card">
-            <div className="mesh-selection-card__eyebrow">
-              {focusPeerNode ? "Live peer" : "Bootstrap region"}
+          {!localNode ? (
+            <div className="mesh-stage__empty">
+              <strong>No local mesh broadcaster</strong>
+              <span>Start a local agent to publish its manifest and draw peer routes across the map.</span>
             </div>
-            <h3>{focusPeerNode ? (focusPeerNode.peer.card?.name || "Selected peer") : (focusAnchor ? anchorTitle(focusAnchor) : "Mesh topology")}</h3>
-            <p>
-              {focusPeerNode
-                ? describePeer(focusPeerNode.peer)
-                : focusAnchor
-                  ? `${anchorSubtitle(focusAnchor)} seeded as a rendezvous lane for Compose desktop bootstrap and relay discovery.`
-                  : "Bootstrap topology is always available, even before a local agent joins the network."}
-            </p>
+          ) : null}
 
-            {focusPeerNode ? (
-              <>
-                <MetaRow label="Peer ID" value={focusPeerNode.peer.peerId} />
-                <MetaRow label="Anchor" value={describePeerAnchor(focusPeerNode.peer)} />
-                <MetaRow label="Signals" value={focusPeerNode.peer.signalCount} />
-                <MetaRow label="Last seen" value={formatSeen(focusPeerNode.peer.lastSeenAt)} />
-                {focusPeerNode.peer.caps.length > 0 ? (
-                  <div className="mesh-selection-card__tags">
-                    {focusPeerNode.peer.caps.map((cap) => (
-                      <span key={`${focusPeerNode.peer.peerId}-${cap}`} className="plugin-tag">{cap}</span>
+          {cardOpen && selectedManifest ? (
+            <div className={`mesh-manifest-card ${cardCollapsed ? "collapsed" : ""}`}>
+              <div className="mesh-manifest-card__header">
+                <div>
+                  <div className="mesh-manifest-card__eyebrow">
+                    {selectedManifest.kind === "local" ? "Local agent manifest" : "Peer manifest"}
+                  </div>
+                  <strong>{selectedManifest.title}</strong>
+                </div>
+                <div className="mesh-manifest-card__actions">
+                  <button
+                    type="button"
+                    className="cm-icon-btn"
+                    aria-label={cardCollapsed ? "Expand manifest card" : "Collapse manifest card"}
+                    onClick={() => setCardCollapsed((current) => !current)}
+                  >
+                    <Minus size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="cm-icon-btn"
+                    aria-label="Close manifest card"
+                    onClick={() => {
+                      setCardOpen(false);
+                      setSelectedNodeId(null);
+                    }}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {!cardCollapsed ? (
+                <div className="mesh-manifest-card__body">
+                  <p>{selectedManifest.description}</p>
+                  <div className="mesh-manifest-card__subtitle">{selectedManifest.subtitle}</div>
+
+                  <div className="mesh-manifest-card__rows">
+                    {selectedManifest.rows.map((row) => (
+                      <div key={`${selectedManifest.nodeId}-${row.label}`} className="mesh-manifest-card__row">
+                        <span>{row.label}</span>
+                        <strong>{row.value}</strong>
+                      </div>
                     ))}
                   </div>
-                ) : null}
-              </>
-            ) : focusAnchor ? (
-              <>
-                <MetaRow label="Region" value={focusAnchor.region?.toUpperCase() || "Unknown"} />
-                <MetaRow label="Provider" value={formatProvider(focusAnchor.provider)} />
-                <MetaRow label="Relay IDs" value={focusAnchor.peerIds.length} />
-                <MetaRow label="Host" value={focusAnchor.host || "Peer-mapped relay"} />
-              </>
-            ) : null}
-          </div>
+
+                  {selectedManifest.tags.length > 0 ? (
+                    <div className="mesh-manifest-card__tags">
+                      {selectedManifest.tags.map((tag) => (
+                        <span key={`${selectedManifest.nodeId}-${tag}`} className="plugin-tag">{tag}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </ShellPanel>
     </section>

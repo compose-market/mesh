@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { DesktopIdentityContext, DesktopRuntimeState, InstalledAgent, MeshAgentCard, MeshPeerSignal } from "../../lib/types";
+import type { DesktopIdentityContext, DesktopRuntimeState, InstalledAgent, InstalledSkill, MeshAgentCard, MeshManifest, MeshPeerSignal } from "../../lib/types";
 import { buildMeshAgentCard, listPluginIds, recordMeshPeerSignal } from "../agents/model";
+import { buildManifestPayload, canonicalManifestPayload, hydrateManifestNetworkFields, signAndPublishManifest } from "./manifest";
 import {
   deriveBootstrapAnchors,
   derivePeerAnchor,
@@ -21,6 +22,8 @@ interface MeshJoinRequest {
   capabilitiesHash?: string;
   gossipTopic: string;
   announceTopic: string;
+  manifestTopic: string;
+  conclaveTopic: string;
   kadProtocol: string;
   heartbeatMs: number;
   capabilities: string[];
@@ -34,6 +37,8 @@ interface MeshBootstrapConfig {
   relayMultiaddrs: string[];
   gossipTopic: string;
   announceTopic: string;
+  manifestTopic: string;
+  conclaveTopic: string;
   kadProtocol: string;
   heartbeatMs: number;
   anchorsByPeerId: Record<string, MeshBootstrapAnchor>;
@@ -62,6 +67,7 @@ export interface MeshDesiredState {
   dnaHash?: string;
   capabilitiesHash?: string;
   publicCard?: MeshAgentCard;
+  manifest: MeshManifest;
 }
 
 export interface MeshPeerIndexPayload {
@@ -95,6 +101,8 @@ function normalizeBootstrap(resolution: MeshBootstrapResolution): MeshBootstrapC
     relayMultiaddrs: [...resolution.relayMultiaddrs],
     gossipTopic: resolution.gossipTopic,
     announceTopic: resolution.announceTopic,
+    manifestTopic: resolution.manifestTopic,
+    conclaveTopic: resolution.conclaveTopic,
     kadProtocol: resolution.kadProtocol,
     heartbeatMs: resolution.heartbeatMs,
     anchorsByPeerId: deriveBootstrapAnchors(resolution),
@@ -154,6 +162,7 @@ export function buildMeshDesiredState(
   agent: InstalledAgent | null,
   identity: DesktopIdentityContext | null,
   deviceId: string,
+  installedSkills: InstalledSkill[],
 ): MeshDesiredState | null {
   if (!agent || !identity || !agent.running || !agent.network.enabled) {
     return null;
@@ -168,6 +177,17 @@ export function buildMeshDesiredState(
     dnaHash: agent.lock.dnaHash || "",
     capabilitiesHash: listPluginIds(agent.metadata.plugins).join("|"),
     publicCard: agent.network.publicCard || buildMeshAgentCard(agent),
+    manifest: buildManifestPayload({
+      agent,
+      skills: installedSkills,
+      userAddress: identity.userAddress,
+      deviceId,
+      chainId: identity.chainId,
+      previousManifest: agent.network.manifest,
+      stateRootHash: agent.network.manifest?.stateRootHash ?? null,
+      pdpPieceCid: agent.network.manifest?.pdpPieceCid ?? null,
+      pdpAnchoredAt: agent.network.manifest?.pdpAnchoredAt ?? null,
+    }),
   };
 }
 
@@ -251,6 +271,40 @@ export function mergePeerIndexIntoState(
     : current;
 }
 
+export function mergeManifestIntoState(
+  current: DesktopRuntimeState,
+  manifest: MeshManifest,
+): DesktopRuntimeState {
+  let changed = false;
+
+  const installedAgents = current.installedAgents.map((agent) => {
+    if (agent.agentWallet !== manifest.agentWallet.toLowerCase()) {
+      return agent;
+    }
+
+    changed = true;
+    return {
+      ...agent,
+      network: {
+        ...agent.network,
+        manifest,
+        publicCard: {
+          name: manifest.name,
+          description: manifest.description,
+          model: manifest.model,
+          framework: manifest.framework,
+          headline: manifest.headline,
+          statusLine: manifest.statusLine,
+          capabilities: [...manifest.capabilities],
+          updatedAt: manifest.signedAt || Date.now(),
+        },
+      },
+    };
+  });
+
+  return changed ? { ...current, installedAgents } : current;
+}
+
 class DesktopMeshService {
   private desired: MeshDesiredState | null = null;
   private syncTimer: number | null = null;
@@ -258,10 +312,12 @@ class DesktopMeshService {
   private bootstrap: MeshBootstrapConfig | null = null;
   private bootstrapResolvedAt = 0;
   private lastJoinFingerprint: string | null = null;
+  private lastManifestFingerprint: string | null = null;
   private lastStatus: MeshRuntimeStatus = createDormantStatus();
   private onStatus: ((status: MeshRuntimeStatus) => void) | null = null;
   private peerUnlisten: UnlistenFn | null = null;
   private onPeerIndex: ((payload: MeshPeerIndexPayload) => void) | null = null;
+  private onManifest: ((manifest: MeshManifest) => void) | null = null;
 
   private desiredKey(state: MeshDesiredState | null): string {
     return state
@@ -282,6 +338,8 @@ class DesktopMeshService {
       this.desiredKey(state),
       bootstrap.gossipTopic,
       bootstrap.announceTopic,
+      bootstrap.manifestTopic,
+      bootstrap.conclaveTopic,
       bootstrap.kadProtocol,
       String(bootstrap.heartbeatMs),
       bootstrap.bootstrapMultiaddrs.join(","),
@@ -327,6 +385,7 @@ class DesktopMeshService {
       this.bootstrap = null;
       this.bootstrapResolvedAt = 0;
       this.lastJoinFingerprint = null;
+      this.lastManifestFingerprint = null;
       return;
     }
 
@@ -342,7 +401,27 @@ class DesktopMeshService {
       this.bootstrap = null;
       this.bootstrapResolvedAt = 0;
       this.lastJoinFingerprint = null;
+      this.lastManifestFingerprint = null;
     }
+  }
+
+  private async publishManifestIfNeeded(status: MeshRuntimeStatus): Promise<void> {
+    if (!this.desired || !status.running || !status.peerId) {
+      return;
+    }
+
+    const manifest = hydrateManifestNetworkFields(this.desired.manifest, {
+      peerId: status.peerId,
+      listenMultiaddrs: status.listenMultiaddrs,
+    });
+    const fingerprint = canonicalManifestPayload(manifest);
+    if (this.lastManifestFingerprint === fingerprint) {
+      return;
+    }
+
+    const signed = await signAndPublishManifest(manifest);
+    this.lastManifestFingerprint = fingerprint;
+    this.onManifest?.(signed);
   }
 
   private async syncOnce(): Promise<void> {
@@ -377,6 +456,8 @@ class DesktopMeshService {
           capabilitiesHash: this.desired.capabilitiesHash,
           gossipTopic: this.bootstrap.gossipTopic,
           announceTopic: this.bootstrap.announceTopic,
+          manifestTopic: this.bootstrap.manifestTopic,
+          conclaveTopic: this.bootstrap.conclaveTopic,
           kadProtocol: this.bootstrap.kadProtocol,
           heartbeatMs: this.bootstrap.heartbeatMs,
           capabilities: [`agent-${this.desired.agentWallet.toLowerCase().replace(/^0x/, "")}`],
@@ -386,9 +467,18 @@ class DesktopMeshService {
         })
         : runtimeStatus;
 
+      let manifestError: string | null = null;
+      try {
+        await this.publishManifestIfNeeded(status);
+      } catch (error) {
+        this.lastManifestFingerprint = null;
+        manifestError = error instanceof Error ? error.message : String(error);
+      }
+
       this.lastJoinFingerprint = joinFingerprint;
       this.publishStatus({
         ...status,
+        lastError: manifestError || status.lastError,
         updatedAt: Date.now(),
       });
     } catch (error) {
@@ -409,6 +499,10 @@ class DesktopMeshService {
     if (listener) {
       listener(this.lastStatus);
     }
+  }
+
+  public configureManifest(listener: ((manifest: MeshManifest) => void) | null): void {
+    this.onManifest = listener;
   }
 
   public async configurePeerIndex(listener: ((payload: MeshPeerIndexPayload) => void) | null): Promise<void> {

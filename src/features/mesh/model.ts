@@ -2,6 +2,8 @@ import type { MeshPeerSignal } from "../../lib/types";
 
 const DEFAULT_GOSSIP_TOPIC = "compose/global/v1";
 const DEFAULT_ANNOUNCE_TOPIC = "compose/announce/v1";
+const DEFAULT_MANIFEST_TOPIC = "compose/manifest/v1";
+const DEFAULT_CONCLAVE_TOPIC = "compose/conclave/v1";
 const DEFAULT_KAD_PROTOCOL = "/compose-market/desktop/kad/1.0.0";
 const DEFAULT_HEARTBEAT_MS = 30_000;
 const DEFAULT_BOOTSTRAP_DNS_ROOTS = ["_dnsaddr.compose.market"];
@@ -34,6 +36,8 @@ export interface MeshBootstrapResolution {
   topics: string[];
   gossipTopic: string;
   announceTopic: string;
+  manifestTopic: string;
+  conclaveTopic: string;
   kadProtocol: string;
   heartbeatMs: number;
   source: "dns" | "local";
@@ -273,6 +277,8 @@ export function resolveLocalMeshBootstrap(): MeshBootstrapResolution {
   ]);
   const gossipTopic = env.VITE_LIBP2P_GOSSIP_TOPIC?.trim() || DEFAULT_GOSSIP_TOPIC;
   const announceTopic = env.VITE_LIBP2P_ANNOUNCE_TOPIC?.trim() || DEFAULT_ANNOUNCE_TOPIC;
+  const manifestTopic = env.VITE_LIBP2P_MANIFEST_TOPIC?.trim() || DEFAULT_MANIFEST_TOPIC;
+  const conclaveTopic = env.VITE_LIBP2P_CONCLAVE_TOPIC?.trim() || DEFAULT_CONCLAVE_TOPIC;
   const kadProtocol = env.VITE_LIBP2P_KAD_PROTOCOL?.trim() || DEFAULT_KAD_PROTOCOL;
   const heartbeatMs = parsePositiveInt(env.VITE_LIBP2P_HEARTBEAT_MS, DEFAULT_HEARTBEAT_MS, 1_000, 300_000);
 
@@ -281,9 +287,11 @@ export function resolveLocalMeshBootstrap(): MeshBootstrapResolution {
     fallbackMultiaddrs,
     bootstrapMultiaddrs: fallbackMultiaddrs,
     relayMultiaddrs: fallbackMultiaddrs,
-    topics: [gossipTopic, announceTopic],
+    topics: [gossipTopic, announceTopic, manifestTopic, conclaveTopic],
     gossipTopic,
     announceTopic,
+    manifestTopic,
+    conclaveTopic,
     kadProtocol,
     heartbeatMs,
     source: "local",

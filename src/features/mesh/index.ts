@@ -16,9 +16,19 @@ export {
 export {
   buildMeshDesiredState,
   desktopMeshService,
+  mergeManifestIntoState,
   mergeMeshStatusIntoState,
   mergePeerIndexIntoState,
   type MeshDesiredState,
   type MeshPeerIndexPayload,
   type MeshRuntimeStatus,
 } from "./runtime";
+export {
+  buildManifestPayload,
+  canonicalManifestPayload,
+  hydrateManifestNetworkFields,
+  signAndPublishManifest,
+  broadcastAgentManifest,
+  type BuildManifestInput,
+} from "./manifest";
+export type { MeshManifest as DesktopMeshManifest } from "../../lib/types";
