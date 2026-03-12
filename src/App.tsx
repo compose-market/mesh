@@ -9,7 +9,6 @@ import {
   ShellNotice,
   ShellPageHeader,
   ShellPanel,
-  ShellPill,
   ShellTab,
   ShellTabStrip,
 } from "@compose-market/theme/shell";
@@ -24,6 +23,7 @@ import {
 } from "./features/agents/model";
 import {
   buildMeshDesiredState,
+  mergeManifestIntoState,
   desktopMeshService,
   mergeMeshStatusIntoState,
   mergePeerIndexIntoState,
@@ -33,14 +33,14 @@ import {
   type MeshBootstrapResolution,
 } from "./features/mesh";
 import { callAgent, getActiveSessionStatus } from "./lib/api";
-import { daemonInstallLaunchAgent, daemonLaunchAgentStatus, daemonUpdatePermissions } from "./lib/daemon";
 import { heartbeatService } from "./lib/heartbeat";
 import { deriveLinkedDeploymentIntent } from "./lib/local-deploy";
-import { queryMediaPermission, requestMediaPermission } from "./lib/permissions";
+import { queryMediaPermission } from "./lib/permissions";
 import {
   applyDesktopUpdateCheck,
   checkForDesktopUpdates,
   createDesktopUpdateState,
+  DesktopUpdateState,
   installDesktopUpdate,
   setDesktopUpdateError,
   setDesktopUpdatePhase,
@@ -52,12 +52,9 @@ import {
   saveRuntimeState,
 } from "./lib/storage";
 import type {
-  AgentPermissionPolicy,
   DesktopIdentityContext,
   DesktopRuntimeState,
   MeshPeerSignal,
-  OsPermissionStatus,
-  PermissionDecision,
   RedeemedDesktopContext,
   SessionState,
 } from "./lib/types";
@@ -383,6 +380,25 @@ export default function App() {
     };
   }, [deviceId]);
 
+  useEffect(() => {
+    desktopMeshService.configureManifest((manifest) => {
+      setState((current) => {
+        if (!current) {
+          return current;
+        }
+        const next = mergeManifestIntoState(current, manifest);
+        if (next !== current) {
+          void saveRuntimeState(next);
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      desktopMeshService.configureManifest(null);
+    };
+  }, []);
+
   const runningNetworkAgent = (
     state?.installedAgents.find((agent) => agent.agentWallet === activeAgentWallet && agent.running && agent.network.enabled) ||
     state?.installedAgents.find((agent) => agent.running && agent.network.enabled) ||
@@ -396,8 +412,8 @@ export default function App() {
   }, [runningNetworkAgent?.agentWallet]);
 
   useEffect(() => {
-    void desktopMeshService.setDesiredState(buildMeshDesiredState(runningNetworkAgent, state?.identity || null, deviceId));
-  }, [deviceId, runningNetworkAgent, state?.identity]);
+    void desktopMeshService.setDesiredState(buildMeshDesiredState(runningNetworkAgent, state?.identity || null, deviceId, state?.installedSkills || []));
+  }, [deviceId, runningNetworkAgent, state?.identity, state?.installedSkills]);
 
   const handleSessionUpdate = useCallback((active: boolean, expiresAt: number | null, budget: string | null, sessionId?: string, duration?: number) => {
     setSession((prev) => ({
@@ -660,7 +676,7 @@ export default function App() {
             <ShellPageHeader
               eyebrow="Compose Desktop"
               title="A P2P Network of autonomous agents."
-              subtitle="Customize your local agent, and let it collaborate with a Network of its peers."              
+              subtitle="Customize your local agent, and let it collaborate with a Network of its peers."
               actions={(
                 <>
                   {state.identity ? (
@@ -674,19 +690,12 @@ export default function App() {
                   ) : null}
                   <ShellButton tone="secondary" className="connect-btn" onClick={openConnectModal}>
                     <Link2 size={14} />
-                    {wallet ? "Reconnect" : "Connect"}
+                    Connect
                   </ShellButton>
                   <ShellButton tone="secondary" className="connect-btn" onClick={() => setSettingsOpen(true)}>
                     <Settings2 size={14} />
                     Settings
                   </ShellButton>
-                  <ShellPill>
-                    {wallet ? (
-                      <span>{wallet.slice(0, 6)}...{wallet.slice(-4)}</span>
-                    ) : (
-                      <span>Not connected</span>
-                    )}
-                  </ShellPill>
                 </>
               )}
             />
@@ -787,14 +796,31 @@ export default function App() {
           <ShellModal
             open={settingsOpen}
             title="Desktop Settings"
-            subtitle="Runtime endpoints, per-agent defaults, always-on launch behavior, and managed local paths."
+            subtitle="Updater, macOS permissions, and managed local storage."
             onClose={() => setSettingsOpen(false)}
             className="settings-modal-shell"
           >
             <SettingsPanel
               state={state}
               paths={paths}
+              appUpdate={appUpdate}
               onStateChange={persistState}
+              onCheckForUpdates={() => refreshDesktopUpdate({ showChecking: true, showErrors: true })}
+              onInstallUpdate={handleInstallUpdate}
+              onOpenSystemPermissions={async () => {
+                try {
+                  await openUrl("x-help-action://openPrefPane?bundleId=com.apple.settings.PrivacySecurity.extension");
+                } catch (error) {
+                  showNotification("error", error instanceof Error ? error.message : "Failed to open macOS Privacy & Security");
+                }
+              }}
+              onOpenPath={async (path) => {
+                try {
+                  await openUrl(path);
+                } catch (error) {
+                  showNotification("error", error instanceof Error ? error.message : "Failed to open local path");
+                }
+              }}
               onNotify={showNotification}
             />
           </ShellModal>
@@ -810,370 +836,159 @@ export default function App() {
   );
 }
 
-function permissionStatusText(status: OsPermissionStatus): string {
-  if (status === "granted") return "Granted";
-  if (status === "denied") return "Denied";
-  if (status === "unsupported") return "Unsupported";
-  return "Unknown";
-}
-
-const PERMISSION_ORDER: PermissionDecision[] = ["deny", "ask", "allow"];
-
-function nextDecision(value: PermissionDecision): PermissionDecision {
-  const index = PERMISSION_ORDER.indexOf(value);
-  return PERMISSION_ORDER[(index + 1) % PERMISSION_ORDER.length];
-}
-
-function decisionLabel(value: PermissionDecision): string {
-  if (value === "allow") return "Allow";
-  if (value === "ask") return "Ask";
-  return "Deny";
-}
-
 function SettingsPanel({
   state,
   paths,
+  appUpdate,
   onStateChange,
+  onCheckForUpdates,
+  onInstallUpdate,
+  onOpenSystemPermissions,
+  onOpenPath,
   onNotify,
 }: {
   state: DesktopRuntimeState;
   paths: Awaited<ReturnType<typeof getDesktopPaths>>;
+  appUpdate: DesktopUpdateState;
   onStateChange: (next: DesktopRuntimeState) => Promise<void>;
+  onCheckForUpdates: () => Promise<void>;
+  onInstallUpdate: () => Promise<void>;
+  onOpenSystemPermissions: () => Promise<void>;
+  onOpenPath: (path: string) => Promise<void>;
   onNotify: (type: "success" | "error", message: string) => void;
 }) {
-  const [apiUrl, setApiUrl] = useState(state.settings.apiUrl);
-  const [runtimeUrl, setRuntimeUrl] = useState(state.settings.runtimeUrl);
-  const [permissionBusy, setPermissionBusy] = useState<null | keyof AgentPermissionPolicy>(null);
-  const [permissionTarget, setPermissionTarget] = useState<string>("default");
-  const [launchAgentInstalled, setLaunchAgentInstalled] = useState<boolean>(false);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const installed = await daemonLaunchAgentStatus();
-        setLaunchAgentInstalled(installed);
-      } catch {
-        setLaunchAgentInstalled(false);
-      }
-    })();
-  }, []);
-
-  useEffect(() => {
-    if (permissionTarget === "default") {
-      return;
-    }
-    const stillExists = state.installedAgents.some((agent) => agent.agentWallet === permissionTarget);
-    if (!stillExists) {
-      setPermissionTarget("default");
-    }
-  }, [permissionTarget, state.installedAgents]);
-
-  const selectedAgent = permissionTarget === "default"
-    ? null
-    : state.installedAgents.find((agent) => agent.agentWallet === permissionTarget) || null;
-  const activePermissions = selectedAgent?.permissions || state.permissionDefaults;
-
-  const updatePermissionState = async (
-    nextPermissions: AgentPermissionPolicy,
-    nextOsPermissions: DesktopRuntimeState["osPermissions"],
-  ) => {
-    if (selectedAgent) {
-      try {
-        await daemonUpdatePermissions(selectedAgent.agentWallet, nextPermissions);
-      } catch (error) {
-        onNotify("error", error instanceof Error ? error.message : "Failed to update daemon permissions");
-      }
-      const nextAgents = state.installedAgents.map((agent) => (
-        agent.agentWallet === selectedAgent.agentWallet
-          ? { ...agent, permissions: nextPermissions }
-          : agent
-      ));
-      await onStateChange({
-        ...state,
-        installedAgents: nextAgents,
-        osPermissions: nextOsPermissions,
-      });
-      return;
-    }
-
-    await onStateChange({
-      ...state,
-      permissionDefaults: nextPermissions,
-      osPermissions: nextOsPermissions,
-    });
-  };
-
-  const save = async () => {
-    const next: DesktopRuntimeState = {
-      ...state,
-      settings: {
-        apiUrl: apiUrl.trim(),
-        runtimeUrl: runtimeUrl.trim(),
-      },
-    };
-    await onStateChange(next);
-    onNotify("success", "Desktop settings saved");
-  };
+  const [refreshingPermissions, setRefreshingPermissions] = useState(false);
 
   const refreshMacPermissions = async () => {
-    setPermissionBusy("camera");
+    setRefreshingPermissions(true);
     try {
       const [camera, microphone] = await Promise.all([
         queryMediaPermission("camera"),
         queryMediaPermission("microphone"),
       ]);
 
-      const nextPermissions: AgentPermissionPolicy = {
-        ...activePermissions,
-        camera: camera === "granted" ? activePermissions.camera : "deny",
-        microphone: microphone === "granted" ? activePermissions.microphone : "deny",
-      };
-      await updatePermissionState(nextPermissions, {
-        camera,
-        microphone,
+      await onStateChange({
+        ...state,
+        osPermissions: {
+          camera,
+          microphone,
+        },
       });
       onNotify("success", "macOS permission status refreshed");
     } finally {
-      setPermissionBusy(null);
+      setRefreshingPermissions(false);
     }
   };
-
-  const togglePermission = async (key: keyof AgentPermissionPolicy) => {
-    if (permissionBusy) return;
-    setPermissionBusy(key);
-
-    try {
-      const nextDecisionValue = nextDecision(activePermissions[key]);
-      let nextPermissions: AgentPermissionPolicy = { ...activePermissions, [key]: nextDecisionValue };
-      let nextOsPermissions = { ...state.osPermissions };
-
-      if (key === "camera" && nextDecisionValue === "allow") {
-        const status = await requestMediaPermission("camera");
-        nextOsPermissions = { ...nextOsPermissions, camera: status };
-        if (status !== "granted") {
-          nextPermissions = { ...nextPermissions, camera: "deny" };
-          onNotify("error", "Camera permission was not granted by macOS");
-        } else {
-          onNotify("success", "Camera permission granted");
-        }
-      }
-
-      if (key === "microphone" && nextDecisionValue === "allow") {
-        const status = await requestMediaPermission("microphone");
-        nextOsPermissions = { ...nextOsPermissions, microphone: status };
-        if (status !== "granted") {
-          nextPermissions = { ...nextPermissions, microphone: "deny" };
-          onNotify("error", "Microphone permission was not granted by macOS");
-        } else {
-          onNotify("success", "Microphone permission granted");
-        }
-      }
-
-      await updatePermissionState(nextPermissions, nextOsPermissions);
-    } finally {
-      setPermissionBusy(null);
-    }
-  };
+  const checkedAt = appUpdate.checkedAt ? new Date(appUpdate.checkedAt).toLocaleString() : "Never";
+  const currentVersion = appUpdate.currentVersion || "Unknown";
+  const availableVersion = appUpdate.available?.version || "Latest";
 
   return (
-    <div className="settings">
-      <h2>Settings</h2>
-
+    <div className="settings settings--compact">
       <div className="settings-section">
-        <h3>API</h3>
-        <div className="form-group">
-          <label>API URL</label>
-          <input type="text" value={apiUrl} onChange={(event) => setApiUrl(event.target.value)} />
+        <h3>Updates</h3>
+        <p className="settings-hint">
+          Compose Desktop checks a signed updater manifest through the first-party Compose API route at
+          {" "}
+          <code>{state.settings.apiUrl}/api/desktop/updates</code>.
+        </p>
+        <div className="detail-stat-stack">
+          <div className="detail-stat-card">
+            <span>Current Version</span>
+            <strong>{currentVersion}</strong>
+          </div>
+          <div className="detail-stat-card">
+            <span>Available</span>
+            <strong>{availableVersion}</strong>
+          </div>
+          <div className="detail-stat-card">
+            <span>Last Checked</span>
+            <strong>{checkedAt}</strong>
+          </div>
         </div>
-        <div className="form-group">
-          <label>Runtime URL</label>
-          <input type="text" value={runtimeUrl} onChange={(event) => setRuntimeUrl(event.target.value)} />
+        <div className="settings-actions">
+          <ShellButton tone="secondary" onClick={() => void onCheckForUpdates()}>
+            <RefreshCw size={14} />
+            Check Now
+          </ShellButton>
+          {appUpdate.available ? (
+            <ShellButton tone="primary" onClick={() => void onInstallUpdate()}>
+              <RefreshCw size={14} />
+              Install {appUpdate.available.version}
+            </ShellButton>
+          ) : null}
         </div>
       </div>
 
       <div className="settings-section">
-        <h3>Identity</h3>
-        <div className="form-group">
-          <label>User Wallet</label>
-          <input type="text" value={state.identity?.userAddress || "Not linked"} disabled />
+        <h3>Permissions</h3>
+        <p className="settings-hint">
+          Per-agent authority lives on each agent page. Use this shortcut to open macOS Privacy & Security and
+          grant Compose Desktop Full System Access.
+        </p>
+        <div className="detail-stat-stack">
+          <div className="detail-stat-card">
+            <span>Camera</span>
+            <strong>{state.osPermissions.camera}</strong>
+          </div>
+          <div className="detail-stat-card">
+            <span>Microphone</span>
+            <strong>{state.osPermissions.microphone}</strong>
+          </div>
+          <div className="detail-stat-card">
+            <span>Agent Controls</span>
+            <strong>Scoped per selected agent</strong>
+          </div>
         </div>
-        <div className="form-group">
-          <label>Compose Key</label>
-          <input type="text" value={state.identity?.composeKeyId || "Not linked"} disabled />
+        <div className="settings-actions">
+          <ShellButton tone="primary" onClick={() => void onOpenSystemPermissions()}>
+            <Shield size={14} />
+            Give Full Permissions
+          </ShellButton>
+          <ShellButton tone="secondary" disabled={refreshingPermissions} onClick={() => void refreshMacPermissions()}>
+            <RefreshCw size={14} className={refreshingPermissions ? "cm-spinner" : undefined} />
+            Refresh Local Status
+          </ShellButton>
         </div>
-      </div>
-
-      <div className="settings-section">
-        <h3>Agent Permissions</h3>
-        <p className="settings-hint">Permissions are scoped per-agent. Defaults apply to newly deployed agents.</p>
-        <div className="form-group">
-          <label>Permission Target</label>
-          <select
-            value={permissionTarget}
-            onChange={(event) => setPermissionTarget(event.target.value)}
-          >
-            <option value="default">Defaults (new agents)</option>
-            {state.installedAgents.map((agent) => (
-              <option key={agent.agentWallet} value={agent.agentWallet}>
-                {agent.metadata.name} ({agent.agentWallet.slice(0, 6)}...{agent.agentWallet.slice(-4)})
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="permissions-grid">
-          <PermissionToggle
-            label="Shell Execution"
-            description="Allow local command execution for local skills."
-            decision={activePermissions.shell}
-            busy={permissionBusy === "shell"}
-            onToggle={() => {
-              void togglePermission("shell");
-            }}
-          />
-          <PermissionToggle
-            label="Filesystem Read"
-            description="Allow agents to read local files in managed workspace."
-            decision={activePermissions.filesystemRead}
-            busy={permissionBusy === "filesystemRead"}
-            onToggle={() => {
-              void togglePermission("filesystemRead");
-            }}
-          />
-          <PermissionToggle
-            label="Filesystem Write"
-            description="Allow creating new files and folders for skills/runtime."
-            decision={activePermissions.filesystemWrite}
-            busy={permissionBusy === "filesystemWrite"}
-            onToggle={() => {
-              void togglePermission("filesystemWrite");
-            }}
-          />
-          <PermissionToggle
-            label="Filesystem Edit"
-            description="Allow modifying existing files in managed workspace."
-            decision={activePermissions.filesystemEdit}
-            busy={permissionBusy === "filesystemEdit"}
-            onToggle={() => {
-              void togglePermission("filesystemEdit");
-            }}
-          />
-          <PermissionToggle
-            label="Filesystem Delete"
-            description="Allow deleting local files and installed skills."
-            decision={activePermissions.filesystemDelete}
-            busy={permissionBusy === "filesystemDelete"}
-            onToggle={() => {
-              void togglePermission("filesystemDelete");
-            }}
-          />
-          <PermissionToggle
-            label="Network"
-            description="Allow network calls for MCP/GOAT tool execution."
-            decision={activePermissions.network}
-            busy={permissionBusy === "network"}
-            onToggle={() => {
-              void togglePermission("network");
-            }}
-          />
-          <PermissionToggle
-            label="Camera"
-            description={`macOS status: ${permissionStatusText(state.osPermissions.camera)}`}
-            decision={activePermissions.camera}
-            busy={permissionBusy === "camera"}
-            onToggle={() => {
-              void togglePermission("camera");
-            }}
-          />
-          <PermissionToggle
-            label="Microphone"
-            description={`macOS status: ${permissionStatusText(state.osPermissions.microphone)}`}
-            decision={activePermissions.microphone}
-            busy={permissionBusy === "microphone"}
-            onToggle={() => {
-              void togglePermission("microphone");
-            }}
-          />
-        </div>
-        <ShellButton tone="secondary" className="permission-refresh-btn" onClick={() => void refreshMacPermissions()}>
-          <RefreshCw size={14} />
-          Refresh macOS Permission Status
-        </ShellButton>
-      </div>
-
-      <div className="settings-section">
-        <h3>Daemon</h3>
-        <div className="form-group">
-          <label>LaunchAgent</label>
-          <input type="text" value={launchAgentInstalled ? "Installed" : "Not installed"} disabled />
-        </div>
-        <ShellButton
-          tone="secondary"
-          onClick={() => {
-            void (async () => {
-              try {
-                await daemonInstallLaunchAgent();
-                setLaunchAgentInstalled(true);
-                onNotify("success", "LaunchAgent installed for always-on runtime");
-              } catch (error) {
-                onNotify("error", error instanceof Error ? error.message : "Failed to install LaunchAgent");
-              }
-            })();
-          }}
-        >
-          Install LaunchAgent
-        </ShellButton>
       </div>
 
       <div className="settings-section">
         <h3>Storage</h3>
-        <div className="form-group">
-          <label>Runtime Directory</label>
-          <input type="text" value={paths?.base_dir || "Browser fallback mode"} disabled />
+        <p className="settings-hint">
+          Compose Desktop stores runtime state, local agent workspaces, and shared skill installs inside the managed
+          desktop runtime root.
+        </p>
+        <div className="settings-path-list">
+          <div className="settings-path-row">
+            <span>Runtime Root</span>
+            <strong>{paths?.base_dir || "Browser fallback mode"}</strong>
+          </div>
+          <div className="settings-path-row">
+            <span>State File</span>
+            <strong>{paths?.state_file || "Browser fallback mode"}</strong>
+          </div>
+          <div className="settings-path-row">
+            <span>Agents Directory</span>
+            <strong>{paths?.agents_dir || "Browser fallback mode"}</strong>
+          </div>
+          <div className="settings-path-row">
+            <span>Skills Directory</span>
+            <strong>{paths?.skills_dir || "Browser fallback mode"}</strong>
+          </div>
         </div>
-        <div className="form-group">
-          <label>Skills Directory</label>
-          <input type="text" value={paths?.skills_dir || "Browser fallback mode"} disabled />
+        <div className="settings-actions">
+          {paths?.base_dir ? (
+            <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.base_dir)}>
+              Open Runtime Folder
+            </ShellButton>
+          ) : null}
+          {paths?.skills_dir ? (
+            <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.skills_dir)}>
+              Open Skills Folder
+            </ShellButton>
+          ) : null}
         </div>
       </div>
-
-      <ShellButton tone="primary" onClick={() => void save()}>Save Settings</ShellButton>
-    </div>
-  );
-}
-
-function PermissionToggle({
-  label,
-  description,
-  decision,
-  busy,
-  onToggle,
-}: {
-  label: string;
-  description: string;
-  decision: PermissionDecision;
-  busy: boolean;
-  onToggle: () => void;
-}) {
-  const active = decision === "allow";
-  const asking = decision === "ask";
-
-  return (
-    <div className={`permission-toggle ${active ? "enabled" : asking ? "ask" : ""}`}>
-      <div className="permission-copy">
-        <div className="permission-label">
-          <Shield size={14} />
-          {label}
-        </div>
-        <p>{description}</p>
-      </div>
-      <ShellButton
-        tone={active ? "primary" : asking ? "ghost" : "secondary"}
-        className={`permission-btn ${active ? "enabled" : asking ? "ask" : ""}`}
-        onClick={onToggle}
-        disabled={busy}
-      >
-        {decisionLabel(decision)}
-      </ShellButton>
     </div>
   );
 }
@@ -1204,13 +1019,13 @@ function ConnectModal({
       <div className="connect-modal-copy">
         Click the button below to open the Compose web app and authorize this desktop application.
       </div>
-        <div className="connect-modal-actions">
-          <ShellButton tone="secondary" onClick={onClose}>Cancel</ShellButton>
-          <ShellButton tone="primary" onClick={handleConnect}>
-            <Link2 size={14} style={{ marginRight: "8px" }} />
-            Authorize in Browser
-          </ShellButton>
-        </div>
+      <div className="connect-modal-actions">
+        <ShellButton tone="secondary" onClick={onClose}>Cancel</ShellButton>
+        <ShellButton tone="primary" onClick={handleConnect}>
+          <Link2 size={14} style={{ marginRight: "8px" }} />
+          Authorize in Browser
+        </ShellButton>
+      </div>
     </ShellModal>
   );
 }
