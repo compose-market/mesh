@@ -197,6 +197,7 @@ export function createInstalledAgent(input: CreateInstalledAgentInput): Installe
       publicCard: null,
       recentPings: [],
       interactions: [],
+      manifest: null,
     },
     skillStates: {},
     reports: [],

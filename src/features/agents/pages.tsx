@@ -435,7 +435,7 @@ export function AgentManagerPage({
                         void toggleAgentNetwork(agent.agentWallet);
                       }}
                       disabled={loading !== null}
-                      title={agent.network.enabled ? "Disable mesh networking" : "Enable mesh networking (--network)"}
+                      title={agent.network.enabled ? "Disable mesh networking" : "Enable mesh networking (--mesh)"}
                     >
                       <Globe size={16} />
                     </ShellButton>
