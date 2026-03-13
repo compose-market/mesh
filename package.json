@@ -13,25 +13,28 @@
     "tauri:build": "node scripts/tauri-cli.mjs build"
   },
   "dependencies": {
-    "@compose-market/theme": "^0.0.80",
+    "@compose-market/theme": "^0.0.82",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-deep-link": "^2.4.7",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "lucide-react": "^0.577.0",
+    "prop-types": "^15.8.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-simple-maps": "^1.0.0",
+    "world-atlas": "^2.0.2",
     "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1",
-    "@types/node": "^25.4.0",
+    "@types/node": "^25.5.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.4",
-    "@vitest/coverage-v8": "^4.0.18",
+    "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "^4.1.0",
     "jsdom": "^28.1.0",
     "typescript": "^5.9.3",
-    "vite": "^7.3.1",
-    "vitest": "^4.0.18"
+    "vite": "^8.0.0",
+    "vitest": "^4.1.0"
   }
 }

@@ -1,9 +1,30 @@
-import type { LinkedDeploymentIntent, RedeemedDesktopContext } from "./types";
+import type {
+  DesktopIdentityContext,
+  DesktopRuntimeState,
+  LinkedDeploymentIntent,
+  RedeemedDesktopContext,
+} from "./types";
 
 const ETH_ADDRESS_REGEX = /^0x[a-f0-9]{40}$/;
+const DESKTOP_CHAIN_ACCENT_BY_ID: Record<number, "red" | "blue" | "cyan" | "yellow"> = {
+  43113: "red",
+  43114: "red",
+  338: "blue",
+  25: "blue",
+  421614: "cyan",
+  42161: "cyan",
+  97: "yellow",
+  56: "yellow",
+};
 
 export interface RecentValueGate {
   claim: (value: string, now?: number) => boolean;
+}
+
+export interface DesktopWalletDisplay {
+  shortAddress: string;
+  chainLabel: string;
+  accentTone: "red" | "blue" | "cyan" | "yellow" | "default";
 }
 
 function normalizeWallet(value: string | null | undefined): string | null {
@@ -51,6 +72,20 @@ export function createRecentValueGate(windowMs = 15_000): RecentValueGate {
   };
 }
 
+export function createDesktopWalletDisplay(
+  identity: Pick<DesktopIdentityContext, "userAddress" | "chainId">,
+): DesktopWalletDisplay {
+  return {
+    shortAddress: `${identity.userAddress.slice(0, 6)}...${identity.userAddress.slice(-4)}`,
+    chainLabel: `Chain ID ${identity.chainId}`,
+    accentTone: DESKTOP_CHAIN_ACCENT_BY_ID[identity.chainId] || "default",
+  };
+}
+
+export function resolveInheritedDesktopChainId(identityChainId: number, _sessionChainId?: number): number {
+  return identityChainId;
+}
+
 export function deriveLinkedDeploymentIntent(context: RedeemedDesktopContext): LinkedDeploymentIntent | null {
   const agentWallet = normalizeWallet(context.market?.agentWallet);
   if (!agentWallet || !Number.isFinite(context.chainId) || context.chainId <= 0) {
@@ -68,4 +103,12 @@ export function deriveLinkedDeploymentIntent(context: RedeemedDesktopContext): L
 
 export function hasDeployableLinkedIntent(intent: LinkedDeploymentIntent | null | undefined): intent is LinkedDeploymentIntent & { agentCardCid: string } {
   return Boolean(intent?.agentWallet && intent.agentCardCid);
+}
+
+export function clearDesktopConnectionState(state: DesktopRuntimeState): DesktopRuntimeState {
+  return {
+    ...state,
+    identity: null,
+    linkedDeployment: null,
+  };
 }

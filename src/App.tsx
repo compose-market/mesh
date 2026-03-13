@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Link2, RefreshCw, Settings2, Shield, Waypoints } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Copy, Link2, LogOut, RefreshCw, Settings2, Shield, Waypoints } from "lucide-react";
 import { ComposeAppShell } from "@compose-market/theme/app";
 import {
   ShellBanner,
@@ -34,7 +34,12 @@ import {
 } from "./features/mesh";
 import { callAgent, getActiveSessionStatus } from "./lib/api";
 import { heartbeatService } from "./lib/heartbeat";
-import { deriveLinkedDeploymentIntent } from "./lib/local-deploy";
+import {
+  clearDesktopConnectionState,
+  createDesktopWalletDisplay,
+  deriveLinkedDeploymentIntent,
+  resolveInheritedDesktopChainId,
+} from "./lib/local-deploy";
 import { queryMediaPermission } from "./lib/permissions";
 import {
   applyDesktopUpdateCheck,
@@ -561,7 +566,7 @@ export default function App() {
     const budgetLimit = response.budgetLimit || "0";
     const budgetUsed = response.budgetUsed || "0";
     const budgetRemaining = response.budgetRemaining || "0";
-    const chainId = response.chainId || latestIdentity.chainId;
+    const chainId = resolveInheritedDesktopChainId(latestIdentity.chainId, response.chainId);
     const duration = Math.max(0, response.expiresAt - Date.now());
     const active = response.expiresAt > Date.now() && BigInt(budgetRemaining) > 0n;
 
@@ -677,6 +682,18 @@ export default function App() {
     setConnectModalOpen(true);
   }, []);
 
+  const disconnectDesktopWallet = useCallback(() => {
+    const current = stateRef.current;
+    if (!current?.identity) {
+      return;
+    }
+
+    setSession({ ...defaultSessionState });
+    setConnectModalOpen(false);
+    void persistState((runtime) => clearDesktopConnectionState(runtime));
+    showNotification("success", "Desktop wallet disconnected");
+  }, [persistState, showNotification]);
+
   const activateAgent = useCallback((agentWallet: string | null) => {
     setActiveAgentWallet(agentWallet);
   }, []);
@@ -762,10 +779,18 @@ export default function App() {
                       onNotify={showNotification}
                     />
                   ) : null}
-                  <ShellButton tone="secondary" className="connect-btn" onClick={openConnectModal}>
-                    <Link2 size={14} />
-                    Connect
-                  </ShellButton>
+                  {state.identity ? (
+                    <DesktopWalletMenu
+                      identity={state.identity}
+                      onSwitch={openConnectModal}
+                      onDisconnect={disconnectDesktopWallet}
+                      onNotify={showNotification}
+                    />
+                  ) : (
+                    <button type="button" className="desktop-wallet-connect-btn" onClick={openConnectModal}>
+                      CONNECT
+                    </button>
+                  )}
                   <ShellButton tone="secondary" className="connect-btn" onClick={() => setSettingsOpen(true)}>
                     <Settings2 size={14} />
                     Settings
@@ -1063,6 +1088,115 @@ function SettingsPanel({
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+function DesktopWalletMenu({
+  identity,
+  onSwitch,
+  onDisconnect,
+  onNotify,
+}: {
+  identity: DesktopIdentityContext;
+  onSwitch: () => void;
+  onDisconnect: () => void;
+  onNotify: (type: "success" | "error", message: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const { shortAddress, chainLabel, accentTone } = createDesktopWalletDisplay(identity);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [open]);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(identity.userAddress);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      onNotify("error", error instanceof Error ? error.message : "Failed to copy wallet address");
+    }
+  };
+
+  return (
+    <div className="desktop-wallet-menu" ref={rootRef}>
+      <button
+        type="button"
+        className="desktop-wallet-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className={`desktop-wallet-trigger__indicator desktop-wallet-trigger__indicator--${accentTone}`} />
+        <span className="desktop-wallet-trigger__address">{shortAddress}</span>
+        <ChevronDown size={12} className={`desktop-wallet-trigger__chevron ${open ? "open" : ""}`} />
+      </button>
+
+      {open ? (
+        <div className="desktop-wallet-dropdown" role="menu">
+          <div className="desktop-wallet-dropdown__header">
+            <div className="desktop-wallet-dropdown__chain-row">
+              <span className={`desktop-wallet-trigger__indicator desktop-wallet-trigger__indicator--${accentTone}`} />
+              <span className="desktop-wallet-dropdown__chain">{chainLabel}</span>
+            </div>
+          </div>
+
+          <div className="desktop-wallet-dropdown__address-row">
+            <span className="desktop-wallet-dropdown__address">{shortAddress}</span>
+            <button
+              type="button"
+              className="desktop-wallet-dropdown__icon"
+              onClick={handleCopy}
+              aria-label="Copy connected wallet address"
+            >
+              {copied ? <Check size={14} className="desktop-wallet-dropdown__icon desktop-wallet-dropdown__icon--success" /> : <Copy size={14} />}
+            </button>
+          </div>
+
+          <button
+            type="button"
+            className="desktop-wallet-dropdown__item"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onSwitch();
+            }}
+          >
+            <Link2 size={16} />
+            Switch
+          </button>
+
+          <button
+            type="button"
+            className="desktop-wallet-dropdown__item desktop-wallet-dropdown__item--danger"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onDisconnect();
+            }}
+          >
+            <LogOut size={16} />
+            Disconnect
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

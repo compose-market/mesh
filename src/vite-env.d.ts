@@ -11,3 +11,4 @@ interface ImportMeta {
 }
 
 declare module "react-simple-maps";
+declare module "world-atlas/countries-110m.json";

@@ -12,6 +12,7 @@ interface DeepLinkHandlerProps {
   deviceId: string;
   onContextRedeemed: (context: RedeemedDesktopContext) => void;
   onSessionUpdate: (active: boolean, expiresAt: number | null, budget: string | null, sessionId?: string, duration?: number) => void;
+  onError: (message: string) => void;
 }
 
 interface DeepLinkEvent {
@@ -119,14 +120,17 @@ export function DeepLinkHandler({
   deviceId,
   onContextRedeemed,
   onSessionUpdate,
+  onError,
 }: DeepLinkHandlerProps) {
   const sourceRef = useRef<EventSource | null>(null);
   const redeemSequenceRef = useRef(0);
   const onContextRedeemedRef = useRef(onContextRedeemed);
   const onSessionUpdateRef = useRef(onSessionUpdate);
+  const onErrorRef = useRef(onError);
 
   onContextRedeemedRef.current = onContextRedeemed;
   onSessionUpdateRef.current = onSessionUpdate;
+  onErrorRef.current = onError;
 
   const connectSessionStream = useCallback(
     (wallet: string, chain: number) => {
@@ -205,6 +209,8 @@ export function DeepLinkHandler({
         return;
       }
       console.error("[deep-link] Failed to redeem desktop link token", error);
+      const msg = error instanceof Error ? error.message : "Failed to redeem desktop link token";
+      onErrorRef.current(msg);
     }
   }, [connectSessionStream, deviceId, apiUrl]);
 
@@ -256,6 +262,8 @@ export function DeepLinkHandler({
         return;
       }
       console.error("[deep-link] Failed to redeem signed install payload", error);
+      const msg = error instanceof Error ? error.message : "Failed to redeem signed install payload";
+      onErrorRef.current(msg);
     }
   }, [deviceId]);
 
@@ -307,6 +315,12 @@ export function DeepLinkHandler({
   useEffect(() => {
     if (activeWallet && chainId) {
       connectSessionStream(activeWallet, chainId);
+      return;
+    }
+
+    if (sourceRef.current) {
+      sourceRef.current.close();
+      sourceRef.current = null;
     }
   }, [activeWallet, chainId, connectSessionStream]);
 
