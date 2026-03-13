@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Check, Link2, RefreshCw, Settings2, Shield, Waypoints } from "lucide-react";
 import { ComposeAppShell } from "@compose-market/theme/app";
 import {
@@ -76,7 +76,7 @@ const defaultSessionState: SessionState = {
   chainId: null,
 };
 
-function toIdentityContext(context: RedeemedDesktopContext): DesktopIdentityContext | null {
+function identityFromRedeemedDesktopContext(context: RedeemedDesktopContext): DesktopIdentityContext {
   if (!context.hasSession) {
     return {
       agentWallet: context.agentWallet.toLowerCase(),
@@ -103,6 +103,50 @@ function toIdentityContext(context: RedeemedDesktopContext): DesktopIdentityCont
     chainId: context.chainId,
     expiresAt: context.composeKey.expiresAt,
     deviceId: context.deviceId,
+  };
+}
+
+function applyRedeemedDesktopContext(
+  current: DesktopRuntimeState,
+  context: RedeemedDesktopContext,
+): DesktopRuntimeState {
+  return {
+    ...current,
+    identity: identityFromRedeemedDesktopContext(context),
+  };
+}
+
+function applyDesktopSessionUpdate(
+  current: DesktopRuntimeState,
+  update: {
+    active: boolean;
+    expiresAt: number | null;
+    budget: string | null;
+    sessionId?: string;
+    duration?: number;
+  },
+): DesktopRuntimeState {
+  if (!current.identity) {
+    return current;
+  }
+
+  const nextIdentity = {
+    ...current.identity,
+    expiresAt: update.expiresAt ?? 0,
+    budget: update.budget ?? "0",
+    sessionId: update.sessionId || "",
+    composeKeyId: update.sessionId || "",
+    duration: update.duration ?? 0,
+    composeKeyToken: !update.active
+      ? ""
+      : update.sessionId && update.sessionId !== current.identity.composeKeyId
+        ? ""
+        : current.identity.composeKeyToken,
+  };
+
+  return {
+    ...current,
+    identity: nextIdentity,
   };
 }
 
@@ -152,6 +196,7 @@ function microsBigIntToUsd(value: bigint): string {
 
 export default function App() {
   const [state, setState] = useState<DesktopRuntimeState | null>(null);
+  const stateRef = useRef<DesktopRuntimeState | null>(null);
   const [activePage, setActivePage] = useState<BasePage>("agents");
   const [session, setSession] = useState<SessionState>({ ...defaultSessionState });
   const [activeAgentWallet, setActiveAgentWallet] = useState<string | null>(null);
@@ -173,10 +218,32 @@ export default function App() {
     window.setTimeout(() => setNotification(null), 4000);
   }, []);
 
-  const persistState = useCallback(async (next: DesktopRuntimeState) => {
+  const persistState = useCallback(async (
+    nextOrUpdater: DesktopRuntimeState | ((current: DesktopRuntimeState) => DesktopRuntimeState),
+  ) => {
+    const current = stateRef.current;
+    if (!current) {
+      if (typeof nextOrUpdater === "function") {
+        return;
+      }
+      stateRef.current = nextOrUpdater;
+      setState(nextOrUpdater);
+      await saveRuntimeState(nextOrUpdater);
+      return;
+    }
+
+    const next = typeof nextOrUpdater === "function"
+      ? nextOrUpdater(current)
+      : nextOrUpdater;
+
+    stateRef.current = next;
     setState(next);
     await saveRuntimeState(next);
   }, []);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     void (async () => {
@@ -185,6 +252,7 @@ export default function App() {
       const resolvedPaths = await getDesktopPaths();
       setPaths(resolvedPaths);
 
+      stateRef.current = loaded;
       setState(loaded);
       setSession(sessionFromIdentity(loaded.identity));
 
@@ -426,33 +494,40 @@ export default function App() {
       reason: active ? undefined : "session-inactive",
     }));
 
-    if (!state || !state.identity) return;
-    const nextIdentity = {
-      ...state.identity,
-      expiresAt: expiresAt ?? 0,
-      budget: budget ?? "0",
-      sessionId: sessionId || "",
-      composeKeyId: sessionId || "",
-      duration: duration ?? 0,
-      composeKeyToken: !active
-        ? ""
-        : sessionId && sessionId !== state.identity.composeKeyId
-          ? ""
-          : state.identity.composeKeyToken,
-    };
-    void persistState({ ...state, identity: nextIdentity });
-  }, [persistState, state]);
+    void persistState((current) => applyDesktopSessionUpdate(current, {
+      active,
+      expiresAt,
+      budget,
+      sessionId,
+      duration,
+    }));
+  }, [persistState]);
 
   const refreshSessionFromBackend = useCallback(async () => {
-    if (!state?.identity?.userAddress) {
+    const current = stateRef.current;
+    if (!current?.identity?.userAddress) {
       return;
     }
 
+    const requestUserAddress = current.identity.userAddress;
+    const requestChainId = current.identity.chainId;
+    const currentApiUrl = current.settings.apiUrl;
+
     const response = await getActiveSessionStatus({
-      apiUrl,
-      userAddress: state.identity.userAddress,
-      chainId: state.identity.chainId,
+      apiUrl: currentApiUrl,
+      userAddress: requestUserAddress,
+      chainId: requestChainId,
     });
+
+    const latest = stateRef.current;
+    if (
+      !latest?.identity
+      || latest.identity.userAddress !== requestUserAddress
+      || latest.identity.chainId !== requestChainId
+    ) {
+      return;
+    }
+    const latestIdentity = latest.identity;
 
     if (!response || !response.hasSession || !response.keyId || !response.expiresAt) {
       setSession((prev) => ({
@@ -464,13 +539,13 @@ export default function App() {
         budgetRemaining: "0",
         sessionId: null,
         duration: null,
-        chainId: state.identity?.chainId || null,
+        chainId: latestIdentity.chainId,
         reason: "session-inactive",
       }));
 
-      if (state.identity.composeKeyId || state.identity.composeKeyToken || state.identity.sessionId || state.identity.expiresAt > 0) {
+      if (latestIdentity.composeKeyId || latestIdentity.composeKeyToken || latestIdentity.sessionId || latestIdentity.expiresAt > 0) {
         const nextIdentity = {
-          ...state.identity,
+          ...latestIdentity,
           composeKeyId: "",
           composeKeyToken: "",
           sessionId: "",
@@ -478,7 +553,7 @@ export default function App() {
           expiresAt: 0,
           duration: 0,
         };
-        await persistState({ ...state, identity: nextIdentity });
+        await persistState({ ...latest, identity: nextIdentity });
       }
       return;
     }
@@ -486,7 +561,7 @@ export default function App() {
     const budgetLimit = response.budgetLimit || "0";
     const budgetUsed = response.budgetUsed || "0";
     const budgetRemaining = response.budgetRemaining || "0";
-    const chainId = response.chainId || state.identity.chainId;
+    const chainId = response.chainId || latestIdentity.chainId;
     const duration = Math.max(0, response.expiresAt - Date.now());
     const active = response.expiresAt > Date.now() && BigInt(budgetRemaining) > 0n;
 
@@ -503,9 +578,9 @@ export default function App() {
     });
 
     const nextIdentity = {
-      ...state.identity,
+      ...latestIdentity,
       composeKeyId: response.keyId,
-      composeKeyToken: response.token || state.identity.composeKeyToken,
+      composeKeyToken: response.token || latestIdentity.composeKeyToken,
       sessionId: response.keyId,
       budget: budgetRemaining,
       duration,
@@ -513,24 +588,24 @@ export default function App() {
       chainId,
     };
     const identityChanged = (
-      nextIdentity.composeKeyId !== state.identity.composeKeyId ||
-      nextIdentity.composeKeyToken !== state.identity.composeKeyToken ||
-      nextIdentity.sessionId !== state.identity.sessionId ||
-      nextIdentity.budget !== state.identity.budget ||
-      nextIdentity.duration !== state.identity.duration ||
-      nextIdentity.expiresAt !== state.identity.expiresAt ||
-      nextIdentity.chainId !== state.identity.chainId
+      nextIdentity.composeKeyId !== latestIdentity.composeKeyId ||
+      nextIdentity.composeKeyToken !== latestIdentity.composeKeyToken ||
+      nextIdentity.sessionId !== latestIdentity.sessionId ||
+      nextIdentity.budget !== latestIdentity.budget ||
+      nextIdentity.duration !== latestIdentity.duration ||
+      nextIdentity.expiresAt !== latestIdentity.expiresAt ||
+      nextIdentity.chainId !== latestIdentity.chainId
     );
-    const previousBudget = BigInt(state.identity.budget || "0");
+    const previousBudget = BigInt(latestIdentity.budget || "0");
     const nextBudget = BigInt(budgetRemaining || "0");
     const spentMicros = previousBudget > nextBudget ? previousBudget - nextBudget : 0n;
 
-    let nextState = { ...state, identity: nextIdentity };
+    let nextState: DesktopRuntimeState = { ...latest, identity: nextIdentity };
     if (spentMicros > 0n) {
       nextState = {
         ...nextState,
         installedAgents: nextState.installedAgents.map((agent) => (
-          agent.agentWallet === state.identity?.agentWallet
+          agent.agentWallet === latestIdentity.agentWallet
             ? appendAgentReport(agent, {
               kind: "economics",
               title: "Session spend recorded",
@@ -543,10 +618,10 @@ export default function App() {
       };
     }
 
-    if (identityChanged || nextState.installedAgents !== state.installedAgents) {
+    if (identityChanged || nextState.installedAgents !== latest.installedAgents) {
       await persistState(nextState);
     }
-  }, [apiUrl, persistState, state]);
+  }, [persistState]);
 
   useEffect(() => {
     if (!state?.identity?.userAddress) {
@@ -577,15 +652,13 @@ export default function App() {
   }, [refreshSessionFromBackend, state?.identity?.chainId, state?.identity?.userAddress]);
 
   const handleContextRedeemed = useCallback((context: RedeemedDesktopContext) => {
-    if (!state) return;
-    const identity = toIdentityContext(context);
+    const identity = identityFromRedeemedDesktopContext(context);
     const linkedDeployment = deriveLinkedDeploymentIntent(context);
-    const next = {
-      ...state,
-      identity,
-      linkedDeployment: linkedDeployment || state.linkedDeployment,
-    };
-    void persistState(next);
+
+    void persistState((current) => ({
+      ...applyRedeemedDesktopContext(current, context),
+      linkedDeployment: linkedDeployment || current.linkedDeployment,
+    }));
     setSession(sessionFromIdentity(identity));
     if (identity) {
       window.setTimeout(() => {
@@ -598,7 +671,7 @@ export default function App() {
     } else {
       showNotification("success", "Desktop app connected. Create a session to get started.");
     }
-  }, [persistState, refreshSessionFromBackend, showNotification, state]);
+  }, [persistState, refreshSessionFromBackend, showNotification]);
 
   const openConnectModal = useCallback(() => {
     setConnectModalOpen(true);
@@ -670,6 +743,7 @@ export default function App() {
             deviceId={deviceId}
             onContextRedeemed={handleContextRedeemed}
             onSessionUpdate={handleSessionUpdate}
+            onError={(message) => showNotification("error", message)}
           />
 
           <ShellPanel className="header-shell" padded={false}>
