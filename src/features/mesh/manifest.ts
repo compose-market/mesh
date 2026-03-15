@@ -106,9 +106,14 @@ export function buildManifestPayload(input: BuildManifestInput): MeshManifest {
   const { agent, previousManifest } = input;
   const capabilities = dedupeSorted(agent.network.publicCard?.capabilities ?? []);
   const skills = dedupeSorted(
-    input.skills
-      .filter((skill) => skill.enabled)
-      .map((skill) => skill.id),
+    [
+      ...input.skills
+        .filter((skill) => skill.enabled)
+        .map((skill) => skill.id),
+      ...Object.values(agent.skillStates)
+        .filter((skillState) => skillState.enabled && skillState.eligible)
+        .map((skillState) => skillState.skillId),
+    ],
   );
   const a2aEndpoints = dedupeSorted(
     [agent.metadata.endpoints?.chat, agent.metadata.endpoints?.stream].filter((endpoint): endpoint is string => typeof endpoint === "string"),
