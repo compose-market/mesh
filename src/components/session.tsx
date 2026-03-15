@@ -209,6 +209,7 @@ function SessionBudgetDialog({
           budgetLimit: Number.parseInt(selectedBudget, 10),
           expiresAt,
           chainId: identity.chainId,
+          purpose: "session",
           name: `Desktop Session ${new Date().toISOString().slice(0, 10)}`,
         },
       });
@@ -268,7 +269,10 @@ function SessionManageDialog({
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
 
-  const activeKeys = useMemo(() => keys.filter((key) => isActiveKey(key)), [keys]);
+  const activeKeys = useMemo(
+    () => keys.filter((key) => key.purpose === "api" && isActiveKey(key)),
+    [keys],
+  );
 
   const fetchKeys = useCallback(async () => {
     setLoading(true);
@@ -422,6 +426,7 @@ function ComposeKeyDialog({
           budgetLimit: Number.parseInt(session.budgetRemaining || "0", 10),
           expiresAt: session.expiresAt,
           chainId: identity.chainId,
+          purpose: "api",
           name: keyName.trim() || "Desktop",
         },
       });
