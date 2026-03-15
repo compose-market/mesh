@@ -25,11 +25,7 @@ const GITHUB_HEADERS = {
   Accept: "application/vnd.github+json",
   "User-Agent": "compose-desktop/1.0",
 };
-const IPFS_GATEWAYS = [
-  "https://compose.mypinata.cloud/ipfs",
-  "https://gateway.pinata.cloud/ipfs",
-  "https://ipfs.io/ipfs",
-];
+const PINATA_GATEWAY_URL = "https://compose.mypinata.cloud";
 
 export const SESSION_HEADERS = {
   userAddress: "x-session-user-address",
@@ -150,9 +146,9 @@ function normalizeWalletAddress(value: string): string {
 async function fetchAgentMetadataFromIpfs(agentCardCid: string, expectedWallet: string): Promise<AgentMetadata> {
   let lastError: Error | null = null;
 
-  for (const gateway of IPFS_GATEWAYS) {
+  for (const pinataGateway of PINATA_GATEWAY_URL) {
     try {
-      const response = await fetch(`${gateway}/${agentCardCid}`, {
+      const response = await fetch(`${pinataGateway}/${agentCardCid}`, {
         headers: {
           Accept: "application/json",
         },
@@ -744,6 +740,7 @@ export async function createDesktopLinkToken(params: {
 export interface CreateSessionRequest {
   budgetLimit: number | string;
   expiresAt: number;
+  purpose: "session" | "api";
   name?: string;
   chainId?: number;
 }
@@ -751,6 +748,7 @@ export interface CreateSessionRequest {
 export interface CreateSessionResponse {
   keyId: string;
   token: string;
+  purpose?: "session" | "api";
   budgetLimit: string;
   budgetUsed: string;
   budgetRemaining: string;
@@ -762,6 +760,7 @@ export interface CreateSessionResponse {
 
 export interface ComposeKeyRecord {
   keyId: string;
+  purpose?: "session" | "api";
   budgetLimit: string;
   budgetUsed: string;
   budgetRemaining: string;
@@ -816,6 +815,7 @@ export async function createSession(params: {
   const response = await requestJson<{
     keyId: string;
     token: string;
+    purpose?: "session" | "api";
     budgetLimit: number | string;
     budgetUsed?: number | string;
     budgetRemaining?: number | string;
@@ -846,6 +846,7 @@ export async function createSession(params: {
   return {
     keyId: response.keyId,
     token: response.token,
+    purpose: response.purpose,
     budgetLimit,
     budgetUsed,
     budgetRemaining,
@@ -863,6 +864,7 @@ export async function listComposeKeys(params: {
   const response = await requestJson<{
     keys?: Array<{
       keyId: string;
+      purpose?: "session" | "api";
       budgetLimit: number | string;
       budgetUsed: number | string;
       budgetRemaining?: number | string;
@@ -891,6 +893,7 @@ export async function listComposeKeys(params: {
       : (BigInt(budgetLimit) - BigInt(budgetUsed)).toString();
     return {
       keyId: item.keyId,
+      purpose: item.purpose,
       budgetLimit,
       budgetUsed,
       budgetRemaining,
