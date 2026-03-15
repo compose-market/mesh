@@ -4,6 +4,7 @@ import type {
   AgentMeshInteraction,
   AgentMetadata,
   AgentPermissionPolicy,
+  AgentSkillState,
   AgentTaskReport,
   InstalledAgent,
   MeshAgentCard,
@@ -11,6 +12,13 @@ import type {
 } from "../../lib/types";
 
 const BASE_RUNTIME_GRANTS = ["runtime.main", "runtime.cron", "runtime.subagent"];
+const DEFAULT_AGENT_SKILL_PACK = [
+  "conclave",
+  "manifest-structure",
+  "ping-network",
+  "reputation-query",
+  "sandbox-spin",
+] as const;
 const REPORT_LIMIT = 128;
 const SIGNAL_LIMIT = 32;
 const INTERACTION_LIMIT = 64;
@@ -50,6 +58,22 @@ function clampList<T>(items: T[], limit: number): T[] {
 
 function normalizeList(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+
+function buildDefaultAgentSkillStates(updatedAt: number): Record<string, AgentSkillState> {
+  return Object.fromEntries(
+    DEFAULT_AGENT_SKILL_PACK.map((skillId) => [
+      skillId,
+      {
+        skillId,
+        enabled: true,
+        eligible: true,
+        source: "agent" as const,
+        revision: "mesh-v1",
+        updatedAt,
+      },
+    ]),
+  );
 }
 
 function grantedPermissions(policy: AgentPermissionPolicy): string[] {
@@ -171,11 +195,12 @@ export async function validateAgentLock(agent: InstalledAgent, runtimeUrl: strin
 }
 
 export function createInstalledAgent(input: CreateInstalledAgentInput): InstalledAgent {
+  const createdAt = input.addedAt || Date.now();
   const agent: InstalledAgent = {
     agentWallet: input.lock.agentWallet,
     metadata: input.metadata,
     lock: input.lock,
-    addedAt: input.addedAt || Date.now(),
+    addedAt: createdAt,
     running: false,
     runtimeId: input.runtimeId || crypto.randomUUID(),
     heartbeat: {
@@ -199,7 +224,7 @@ export function createInstalledAgent(input: CreateInstalledAgentInput): Installe
       interactions: [],
       manifest: null,
     },
-    skillStates: {},
+    skillStates: buildDefaultAgentSkillStates(createdAt),
     reports: [],
   };
 
