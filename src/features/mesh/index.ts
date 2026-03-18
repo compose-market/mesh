@@ -15,7 +15,7 @@ export {
 } from "./model";
 export {
   buildMeshDesiredState,
-  desktopMeshService,
+  localMeshService,
   mergeManifestIntoState,
   mergeMeshStatusIntoState,
   mergePeerIndexIntoState,
@@ -27,8 +27,6 @@ export {
   buildManifestPayload,
   canonicalManifestPayload,
   hydrateManifestNetworkFields,
-  signAndPublishManifest,
-  broadcastAgentManifest,
   type BuildManifestInput,
 } from "./manifest";
-export type { MeshManifest as DesktopMeshManifest } from "../../lib/types";
+export type { MeshManifest as LocalMeshManifest } from "../../lib/types";

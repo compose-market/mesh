@@ -595,41 +595,41 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
 
           <div className="mesh-map">
             <MapView
-            ref={mapRef}
-            mapLib={maplibregl}
-            reuseMaps
-            mapStyle={MAP_STYLE}
-            initialViewState={INITIAL_VIEW_STATE}
-            maxZoom={6}
-            minZoom={0.8}
-            attributionControl={false}
-            renderWorldCopies={false}
-            style={{ width: "100%", height: "100%" }}
-          >
-            <DeckGLOverlay layers={layers} />
+              ref={mapRef}
+              mapLib={maplibregl}
+              reuseMaps
+              mapStyle={MAP_STYLE}
+              initialViewState={INITIAL_VIEW_STATE}
+              maxZoom={6}
+              minZoom={0.8}
+              attributionControl={false}
+              renderWorldCopies={false}
+              style={{ width: "100%", height: "100%" }}
+            >
+              <DeckGLOverlay layers={layers} />
 
-            {regionPoints.map((region) => (
-              <Marker key={region.id} longitude={region.longitude} latitude={region.latitude} anchor="center">
-                <div className={`mesh-region-label ${region.selected ? "selected" : ""}`} data-side={labelSide(regionsById.get(region.id) || { x: 50, y: 50 })}>
-                  <strong>{region.city}</strong>
-                  <span>{formatRegionMeta(region)}</span>
-                </div>
-              </Marker>
-            ))}
+              {regionPoints.map((region) => (
+                <Marker key={region.id} longitude={region.longitude} latitude={region.latitude} anchor="center">
+                  <div className={`mesh-region-label ${region.selected ? "selected" : ""}`} data-side={labelSide(regionsById.get(region.id) || { x: 50, y: 50 })}>
+                    <strong>{region.city}</strong>
+                    <span>{formatRegionMeta(region)}</span>
+                  </div>
+                </Marker>
+              ))}
             </MapView>
           </div>
 
           <div className="mesh-stage__hud">
             <div className="mesh-stage__titleblock">
-              <div className="mesh-stage__eyebrow">Network / Geo-Topology</div>
-              <h1>Global Mesh Topology</h1>
-              <p>Real relay regions, real peer visibility, and actual observed mesh relationships rendered directly inside the stage.</p>
+              <div className="mesh-stage__eyebrow">Network</div>
+              <h1>Mesh Topology</h1>
+              <p>Let your agent <i>mesh</i> with its peers, in real time.</p>
             </div>
 
             <div className="mesh-toolbar">
               <ShellPill className="mesh-stat-pill">
                 <Activity size={14} />
-                <span>{peers.length} peers visible</span>
+                <span>{peers.length} peers available</span>
               </ShellPill>
               <ShellPill className="mesh-stat-pill">
                 <Radio size={14} />
@@ -658,7 +658,7 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
               </div>
               <div className="mesh-viewer-node__label">
                 <strong>This Device</strong>
-                <span>{agent ? "Resolving mesh coordinates" : "Awaiting local mesh registration"}</span>
+                <span>{agent ? "Locating..." : "Waiting for Mesh activation"}</span>
               </div>
             </div>
           ) : null}
@@ -745,13 +745,13 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
 
           {!localNode ? (
             <div className="mesh-stage__status">
-              <strong>No local mesh broadcaster yet.</strong>
-              <span>The topology is already live with relay geography; start a local agent to paint observed peer corridors from this device.</span>
+              <strong>No agent broadcasting.</strong>
+              <span>Enable "Mesh" in your Agent's Settings to join the network.</span>
             </div>
           ) : peers.length === 0 ? (
             <div className="mesh-stage__status">
-              <strong>Mesh online. Scanning for peers.</strong>
-              <span>Your local agent is registered; the stage will bleep and widen as soon as remote peers publish presence into the mesh.</span>
+              <strong>Online. Scanning for peers.</strong>
+              <span>Your agent is <i>meshing</i>. Peers will appear here as they come online.</span>
             </div>
           ) : null}
         </div>

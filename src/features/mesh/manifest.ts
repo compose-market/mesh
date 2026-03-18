@@ -157,12 +157,3 @@ export function buildManifestPayload(input: BuildManifestInput): MeshManifest {
     stateVersion: nextStateVersion(previousManifest, draft),
   };
 }
-
-export async function signAndPublishManifest(manifest: MeshManifest): Promise<MeshManifest> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<MeshManifest>("desktop_mesh_publish_manifest", { manifest });
-}
-
-export async function broadcastAgentManifest(input: BuildManifestInput): Promise<MeshManifest> {
-  return signAndPublishManifest(buildManifestPayload(input));
-}

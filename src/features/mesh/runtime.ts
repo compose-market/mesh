@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { DesktopIdentityContext, DesktopRuntimeState, InstalledAgent, InstalledSkill, MeshAgentCard, MeshManifest, MeshPeerSignal } from "../../lib/types";
+import type { LocalIdentityContext, LocalRuntimeState, InstalledAgent, InstalledSkill, MeshAgentCard, MeshManifest, MeshPeerSignal } from "../../lib/types";
 import { buildMeshAgentCard, listPluginIds, recordMeshPeerSignal } from "../agents/model";
-import { buildManifestPayload, canonicalManifestPayload, hydrateManifestNetworkFields, signAndPublishManifest } from "./manifest";
+import { buildManifestPayload } from "./manifest";
 import {
   deriveBootstrapAnchors,
   derivePeerAnchor,
@@ -60,12 +60,16 @@ export interface MeshRuntimeStatus {
 
 export interface MeshDesiredState {
   enabled: boolean;
-  identity: DesktopIdentityContext;
+  apiUrl: string;
+  identity: LocalIdentityContext;
   agentWallet: string;
   deviceId: string;
   sessionId?: string;
   dnaHash?: string;
   capabilitiesHash?: string;
+  modelId: string;
+  agentCardCid: string;
+  mcpToolsHash: string;
   publicCard?: MeshAgentCard;
   manifest: MeshManifest;
 }
@@ -140,7 +144,7 @@ async function getMeshStatusFromRuntime(): Promise<MeshRuntimeStatus> {
     return createDormantStatus();
   }
   try {
-    return await invoke<MeshRuntimeStatus>("desktop_network_status");
+    return await invoke<MeshRuntimeStatus>("local_network_status");
   } catch (error) {
     return {
       ...createDormantStatus(),
@@ -151,18 +155,19 @@ async function getMeshStatusFromRuntime(): Promise<MeshRuntimeStatus> {
 }
 
 async function joinMeshRuntime(request: MeshJoinRequest): Promise<MeshRuntimeStatus> {
-  return invoke<MeshRuntimeStatus>("desktop_network_join", { request });
+  return invoke<MeshRuntimeStatus>("local_network_join", { request });
 }
 
 async function leaveMeshRuntime(): Promise<MeshRuntimeStatus> {
-  return invoke<MeshRuntimeStatus>("desktop_network_leave");
+  return invoke<MeshRuntimeStatus>("local_network_leave");
 }
 
 export function buildMeshDesiredState(
   agent: InstalledAgent | null,
-  identity: DesktopIdentityContext | null,
+  identity: LocalIdentityContext | null,
   deviceId: string,
   installedSkills: InstalledSkill[],
+  apiUrl: string,
 ): MeshDesiredState | null {
   if (!agent || !identity || !agent.running || !agent.network.enabled) {
     return null;
@@ -170,12 +175,16 @@ export function buildMeshDesiredState(
 
   return {
     enabled: true,
+    apiUrl,
     identity,
     agentWallet: agent.agentWallet,
     deviceId,
     sessionId: identity.sessionId || "",
     dnaHash: agent.lock.dnaHash || "",
     capabilitiesHash: listPluginIds(agent.metadata.plugins).join("|"),
+    modelId: agent.lock.modelId,
+    agentCardCid: agent.lock.agentCardCid,
+    mcpToolsHash: agent.lock.mcpToolsHash,
     publicCard: agent.network.publicCard || buildMeshAgentCard(agent),
     manifest: buildManifestPayload({
       agent,
@@ -192,10 +201,10 @@ export function buildMeshDesiredState(
 }
 
 export function mergeMeshStatusIntoState(
-  current: DesktopRuntimeState,
+  current: LocalRuntimeState,
   status: MeshRuntimeStatus,
   deviceId: string,
-): DesktopRuntimeState {
+): LocalRuntimeState {
   const updatedAt = status.updatedAt || Date.now();
   const targetWallet = status.agentWallet?.toLowerCase() || null;
 
@@ -228,10 +237,10 @@ export function mergeMeshStatusIntoState(
 }
 
 export function mergePeerIndexIntoState(
-  current: DesktopRuntimeState,
+  current: LocalRuntimeState,
   incoming: MeshPeerSignal[],
   deviceId: string,
-): DesktopRuntimeState {
+): LocalRuntimeState {
   const targetAgent = current.installedAgents.find((agent) => agent.running && agent.network.enabled);
   if (!targetAgent || incoming.length === 0) {
     return current;
@@ -272,9 +281,9 @@ export function mergePeerIndexIntoState(
 }
 
 export function mergeManifestIntoState(
-  current: DesktopRuntimeState,
+  current: LocalRuntimeState,
   manifest: MeshManifest,
-): DesktopRuntimeState {
+): LocalRuntimeState {
   let changed = false;
 
   const installedAgents = current.installedAgents.map((agent) => {
@@ -305,17 +314,17 @@ export function mergeManifestIntoState(
   return changed ? { ...current, installedAgents } : current;
 }
 
-class DesktopMeshService {
+class LocalMeshService {
   private desired: MeshDesiredState | null = null;
   private syncTimer: number | null = null;
   private syncInFlight = false;
   private bootstrap: MeshBootstrapConfig | null = null;
   private bootstrapResolvedAt = 0;
   private lastJoinFingerprint: string | null = null;
-  private lastManifestFingerprint: string | null = null;
   private lastStatus: MeshRuntimeStatus = createDormantStatus();
   private onStatus: ((status: MeshRuntimeStatus) => void) | null = null;
   private peerUnlisten: UnlistenFn | null = null;
+  private manifestUnlisten: UnlistenFn | null = null;
   private onPeerIndex: ((payload: MeshPeerIndexPayload) => void) | null = null;
   private onManifest: ((manifest: MeshManifest) => void) | null = null;
 
@@ -385,7 +394,6 @@ class DesktopMeshService {
       this.bootstrap = null;
       this.bootstrapResolvedAt = 0;
       this.lastJoinFingerprint = null;
-      this.lastManifestFingerprint = null;
       return;
     }
 
@@ -401,27 +409,7 @@ class DesktopMeshService {
       this.bootstrap = null;
       this.bootstrapResolvedAt = 0;
       this.lastJoinFingerprint = null;
-      this.lastManifestFingerprint = null;
     }
-  }
-
-  private async publishManifestIfNeeded(status: MeshRuntimeStatus): Promise<void> {
-    if (!this.desired || !status.running || !status.peerId) {
-      return;
-    }
-
-    const manifest = hydrateManifestNetworkFields(this.desired.manifest, {
-      peerId: status.peerId,
-      listenMultiaddrs: status.listenMultiaddrs,
-    });
-    const fingerprint = canonicalManifestPayload(manifest);
-    if (this.lastManifestFingerprint === fingerprint) {
-      return;
-    }
-
-    const signed = await signAndPublishManifest(manifest);
-    this.lastManifestFingerprint = fingerprint;
-    this.onManifest?.(signed);
   }
 
   private async syncOnce(): Promise<void> {
@@ -467,18 +455,9 @@ class DesktopMeshService {
         })
         : runtimeStatus;
 
-      let manifestError: string | null = null;
-      try {
-        await this.publishManifestIfNeeded(status);
-      } catch (error) {
-        this.lastManifestFingerprint = null;
-        manifestError = error instanceof Error ? error.message : String(error);
-      }
-
       this.lastJoinFingerprint = joinFingerprint;
       this.publishStatus({
         ...status,
-        lastError: manifestError || status.lastError,
         updatedAt: Date.now(),
       });
     } catch (error) {
@@ -503,6 +482,25 @@ class DesktopMeshService {
 
   public configureManifest(listener: ((manifest: MeshManifest) => void) | null): void {
     this.onManifest = listener;
+    if (this.manifestUnlisten) {
+      this.manifestUnlisten();
+      this.manifestUnlisten = null;
+    }
+    if (!listener || !isTauriRuntime()) {
+      return;
+    }
+
+    void listen<MeshManifest>("mesh-manifest-updated", (event) => {
+      this.onManifest?.(event.payload);
+    }).then((unlisten) => {
+      if (this.onManifest === listener) {
+        this.manifestUnlisten = unlisten;
+      } else {
+        unlisten();
+      }
+    }).catch(() => {
+      this.manifestUnlisten = null;
+    });
   }
 
   public async configurePeerIndex(listener: ((payload: MeshPeerIndexPayload) => void) | null): Promise<void> {
@@ -560,4 +558,4 @@ class DesktopMeshService {
   }
 }
 
-export const desktopMeshService = new DesktopMeshService();
+export const localMeshService = new LocalMeshService();
