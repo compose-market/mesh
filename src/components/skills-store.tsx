@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Download, ExternalLink, Filter, Loader2, RefreshCw, Search, X } from "lucide-react";
 import { discoverSkills, installSkill } from "../lib/api";
 import { permissionAllows } from "../lib/storage";
-import type { DesktopRuntimeState, Skill } from "../lib/types";
+import type { LocalRuntimeState, Skill } from "../lib/types";
 
 interface SkillsMarketplaceProps {
-  state: DesktopRuntimeState;
-  onStateChange: (next: DesktopRuntimeState) => Promise<void>;
+  state: LocalRuntimeState;
+  onStateChange: (next: LocalRuntimeState) => Promise<void>;
 }
 
 export function SkillsMarketplace({ state, onStateChange }: SkillsMarketplaceProps) {

@@ -3,9 +3,11 @@
 <plist version="1.0">
 <dict>
   <key>NSCameraUsageDescription</key>
-  <string>Compose Desktop needs camera access when an enabled local agent skill requires video input.</string>
+  <string>Compose Mesh needs camera access when an enabled local agent skill requires video input.</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Compose Desktop needs microphone access when an enabled local agent skill requires audio input.</string>
+  <string>Compose Mesh needs microphone access when an enabled local agent skill requires audio input.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Compose Mesh needs screen recording access when an enabled local agent skill requires screen capture.</string>
   <key>CFBundleURLTypes</key>
   <array>
     <dict>

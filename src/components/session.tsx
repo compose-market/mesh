@@ -14,7 +14,7 @@ import {
   revokeComposeKey,
   type ComposeKeyRecord,
 } from "../lib/api";
-import type { DesktopIdentityContext, SessionState } from "../lib/types";
+import type { LocalIdentityContext, SessionState } from "../lib/types";
 
 const BUDGET_PRESETS = [
   { label: "$1", value: "1000000" },
@@ -28,7 +28,7 @@ const USDC_DECIMALS = 1_000_000n;
 
 interface SessionIndicatorProps {
   apiUrl: string;
-  identity: DesktopIdentityContext | null;
+  identity: LocalIdentityContext | null;
   session: SessionState;
   onRefreshSession: () => Promise<void>;
   onNotify: (type: "success" | "error", message: string) => void;
@@ -37,7 +37,7 @@ interface SessionIndicatorProps {
 interface SessionBudgetDialogProps {
   open: boolean;
   apiUrl: string;
-  identity: DesktopIdentityContext;
+  identity: LocalIdentityContext;
   onClose: () => void;
   onRefreshSession: () => Promise<void>;
   onNotify: (type: "success" | "error", message: string) => void;
@@ -46,7 +46,7 @@ interface SessionBudgetDialogProps {
 interface SessionManageDialogProps {
   open: boolean;
   apiUrl: string;
-  identity: DesktopIdentityContext;
+  identity: LocalIdentityContext;
   session: SessionState;
   onClose: () => void;
   onRefreshSession: () => Promise<void>;
@@ -56,7 +56,7 @@ interface SessionManageDialogProps {
 interface ComposeKeyDialogProps {
   open: boolean;
   apiUrl: string;
-  identity: DesktopIdentityContext;
+  identity: LocalIdentityContext;
   session: SessionState;
   onClose: () => void;
   onRefreshSession: () => Promise<void>;
@@ -204,13 +204,13 @@ function SessionBudgetDialog({
       const expiresAt = Date.now() + durationHours * 60 * 60 * 1000;
       await createSession({
         apiUrl,
-        userAddress: identity.userAddress,
+        identity,
         payload: {
           budgetLimit: Number.parseInt(selectedBudget, 10),
           expiresAt,
           chainId: identity.chainId,
           purpose: "session",
-          name: `Desktop Session ${new Date().toISOString().slice(0, 10)}`,
+          name: `Local Session ${new Date().toISOString().slice(0, 10)}`,
         },
       });
       await onRefreshSession();
@@ -279,7 +279,7 @@ function SessionManageDialog({
     try {
       const response = await listComposeKeys({
         apiUrl,
-        userAddress: identity.userAddress,
+        identity,
       });
       setKeys(response);
     } catch (error) {
@@ -299,7 +299,7 @@ function SessionManageDialog({
   const handleRevoke = async (keyId: string) => {
     const success = await revokeComposeKey({
       apiUrl,
-      userAddress: identity.userAddress,
+      identity,
       keyId,
     });
 
@@ -399,13 +399,13 @@ function ComposeKeyDialog({
   onRefreshSession,
   onNotify,
 }: ComposeKeyDialogProps) {
-  const [keyName, setKeyName] = useState("Desktop");
+  const [keyName, setKeyName] = useState("Local");
   const [generating, setGenerating] = useState(false);
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   const handleClose = () => {
-    setKeyName("Desktop");
+    setKeyName("Local");
     setGeneratedKey(null);
     setCopied(false);
     onClose();
@@ -421,13 +421,13 @@ function ComposeKeyDialog({
     try {
       const response = await createSession({
         apiUrl,
-        userAddress: identity.userAddress,
+        identity,
         payload: {
           budgetLimit: Number.parseInt(session.budgetRemaining || "0", 10),
           expiresAt: session.expiresAt,
           chainId: identity.chainId,
           purpose: "api",
-          name: keyName.trim() || "Desktop",
+          name: keyName.trim() || "Local",
         },
       });
       setGeneratedKey(response.token);

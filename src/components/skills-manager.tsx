@@ -4,11 +4,11 @@ import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { uninstallSkill } from "../lib/api";
 import { daemonUpdateSkill } from "../lib/daemon";
 import { permissionAllows } from "../lib/storage";
-import type { DesktopRuntimeState } from "../lib/types";
+import type { LocalRuntimeState } from "../lib/types";
 
 interface SkillsManagerProps {
-  state: DesktopRuntimeState;
-  onStateChange: (next: DesktopRuntimeState) => Promise<void>;
+  state: LocalRuntimeState;
+  onStateChange: (next: LocalRuntimeState) => Promise<void>;
   agentWallet?: string | null;
 }
 

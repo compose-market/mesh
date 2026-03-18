@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Compose Desktop",
-  "version": "1.0.0",
-  "identifier": "compose.market.desktop",
+  "productName": "Compose Mesh",
+  "version": "0.9.0",
+  "identifier": "compose.market.mesh",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Compose Desktop",
+        "title": "Compose Mesh",
         "width": 1320,
         "height": 900,
         "minWidth": 980,
@@ -33,8 +33,8 @@
       "app"
     ],
     "category": "public.app-category.productivity",
-    "shortDescription": "Compose Desktop - Agent Gateway",
-    "longDescription": "Compose Desktop provides a local runtime for autonomous agents with real-time session management, skills marketplace, and OpenClaw-style self-learning capabilities.",
+    "shortDescription": "Compose Mesh - Agent Gateway",
+    "longDescription": "Compose Mesh provides a local runtime for autonomous agents with real-time session management, skills marketplace, and OpenClaw-style self-learning capabilities.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -53,7 +53,7 @@
   },
   "plugins": {
     "deep-link": {
-      "desktop": {
+      "local": {
         "schemes": [
           "manowar"
         ]
@@ -65,8 +65,10 @@
       }
     },
     "updater": {
-      "pubkey": "runtime-configured-updater-key",
-      "endpoints": []
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGNkU1QTdEQzlBQjgyQjgKUldTNGdxdkpmVnB1N3o2ZWljR1hvTkdHcEJ0L2xobUVOUDRCdWl4czA1RUc5RWdPYzM0czhCVEUK",
+      "endpoints": [
+        "https://github.com/compose-market/mesh/releases/latest/download/latest.json"
+      ]
     },
     "shell": {
       "open": true
