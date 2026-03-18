@@ -24,7 +24,7 @@ import {
 import {
   buildMeshDesiredState,
   mergeManifestIntoState,
-  desktopMeshService,
+  localMeshService,
   mergeMeshStatusIntoState,
   mergePeerIndexIntoState,
   MeshPage,
@@ -35,39 +35,38 @@ import {
 import { callAgent, getActiveSessionStatus } from "./lib/api";
 import { heartbeatService } from "./lib/heartbeat";
 import {
-  clearDesktopConnectionState,
-  createDesktopWalletDisplay,
+  clearLocalConnectionState,
+  createLocalWalletDisplay,
   deriveLinkedDeploymentIntent,
-  resolveInheritedDesktopChainId,
-} from "./lib/local-deploy";
-import { queryMediaPermission } from "./lib/permissions";
+  resolveInheritedLocalChainId,
+} from "./lib/deploy";
+import { queryOsPermissions } from "./lib/permissions";
+import { GlobalPermissionsSection } from "./features/permissions";
 import {
-  applyDesktopUpdateCheck,
-  checkForDesktopUpdates,
-  createDesktopUpdateState,
-  DesktopUpdateState,
-  installDesktopUpdate,
-  setDesktopUpdateError,
-  setDesktopUpdatePhase,
+  checkForLocalUpdates,
+  createLocalUpdateState,
+  LocalUpdateState,
+  installLocalUpdate,
+  setLocalUpdateError,
+  setLocalUpdatePhase,
 } from "./lib/updater";
 import {
   ensureSkillsRoot,
-  getDesktopPaths,
+  getLocalPaths,
   loadRuntimeState,
   saveRuntimeState,
 } from "./lib/storage";
 import type {
-  DesktopIdentityContext,
-  DesktopRuntimeState,
+  LocalIdentityContext,
+  LocalRuntimeState,
   MeshPeerSignal,
-  RedeemedDesktopContext,
+  RedeemedLocalContext,
   SessionState,
 } from "./lib/types";
 import "./styles.css";
 
 const WEB_APP_URL = "https://compose.market";
-const WEB_MARKET_URL = `${WEB_APP_URL}/market`;
-const CONNECT_DESKTOP_PATH = "/connect-desktop";
+const CONNECT_LOCAL_PATH = "/connect-local";
 type BasePage = "agents" | "network";
 
 const defaultSessionState: SessionState = {
@@ -81,7 +80,7 @@ const defaultSessionState: SessionState = {
   chainId: null,
 };
 
-function identityFromRedeemedDesktopContext(context: RedeemedDesktopContext): DesktopIdentityContext {
+function identityFromRedeemedLocalContext(context: RedeemedLocalContext): LocalIdentityContext {
   if (!context.hasSession) {
     return {
       agentWallet: context.agentWallet.toLowerCase(),
@@ -111,18 +110,18 @@ function identityFromRedeemedDesktopContext(context: RedeemedDesktopContext): De
   };
 }
 
-function applyRedeemedDesktopContext(
-  current: DesktopRuntimeState,
-  context: RedeemedDesktopContext,
-): DesktopRuntimeState {
+function applyRedeemedLocalContext(
+  current: LocalRuntimeState,
+  context: RedeemedLocalContext,
+): LocalRuntimeState {
   return {
     ...current,
-    identity: identityFromRedeemedDesktopContext(context),
+    identity: identityFromRedeemedLocalContext(context),
   };
 }
 
-function applyDesktopSessionUpdate(
-  current: DesktopRuntimeState,
+function applyLocalSessionUpdate(
+  current: LocalRuntimeState,
   update: {
     active: boolean;
     expiresAt: number | null;
@@ -130,23 +129,23 @@ function applyDesktopSessionUpdate(
     sessionId?: string;
     duration?: number;
   },
-): DesktopRuntimeState {
+): LocalRuntimeState {
   if (!current.identity) {
     return current;
   }
 
-  const nextIdentity = {
-    ...current.identity,
+    const nextIdentity = {
+      ...current.identity,
     expiresAt: update.expiresAt ?? 0,
     budget: update.budget ?? "0",
     sessionId: update.sessionId || "",
     composeKeyId: update.sessionId || "",
     duration: update.duration ?? 0,
-    composeKeyToken: !update.active
-      ? ""
-      : update.sessionId && update.sessionId !== current.identity.composeKeyId
+      composeKeyToken: !update.active
         ? ""
-        : current.identity.composeKeyToken,
+        : update.sessionId && update.sessionId !== current.identity.composeKeyId
+          ? ""
+          : current.identity.composeKeyToken,
   };
 
   return {
@@ -155,7 +154,7 @@ function applyDesktopSessionUpdate(
   };
 }
 
-function sessionFromIdentity(identity: DesktopIdentityContext | null): SessionState {
+function sessionFromIdentity(identity: LocalIdentityContext | null): SessionState {
   if (!identity) {
     return { ...defaultSessionState };
   }
@@ -182,7 +181,7 @@ function sessionFromIdentity(identity: DesktopIdentityContext | null): SessionSt
 }
 
 function getOrCreateDeviceId(): string {
-  const key = "compose_desktop_device_id";
+  const key = "compose_mesh_device_id";
   const existing = localStorage.getItem(key);
   if (existing) return existing;
   const created = crypto.randomUUID();
@@ -200,20 +199,20 @@ function microsBigIntToUsd(value: bigint): string {
 }
 
 export default function App() {
-  const [state, setState] = useState<DesktopRuntimeState | null>(null);
-  const stateRef = useRef<DesktopRuntimeState | null>(null);
+  const [state, setState] = useState<LocalRuntimeState | null>(null);
+  const stateRef = useRef<LocalRuntimeState | null>(null);
   const [activePage, setActivePage] = useState<BasePage>("agents");
   const [session, setSession] = useState<SessionState>({ ...defaultSessionState });
   const [activeAgentWallet, setActiveAgentWallet] = useState<string | null>(null);
   const [selectedAgentWallet, setSelectedAgentWallet] = useState<string | null>(null);
   const [meshPeers, setMeshPeers] = useState<MeshPeerSignal[]>([]);
   const [meshBootstrap, setMeshBootstrap] = useState<MeshBootstrapResolution>(() => resolveLocalMeshBootstrap());
-  const [paths, setPaths] = useState<Awaited<ReturnType<typeof getDesktopPaths>>>(null);
+  const [paths, setPaths] = useState<Awaited<ReturnType<typeof getLocalPaths>>>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [deviceId] = useState(getOrCreateDeviceId);
   const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [appUpdate, setAppUpdate] = useState(() => createDesktopUpdateState());
+  const [appUpdate, setAppUpdate] = useState(() => createLocalUpdateState());
 
   const wallet = state?.identity?.userAddress || null;
   const apiUrl = state?.settings.apiUrl || "https://api.compose.market";
@@ -224,7 +223,7 @@ export default function App() {
   }, []);
 
   const persistState = useCallback(async (
-    nextOrUpdater: DesktopRuntimeState | ((current: DesktopRuntimeState) => DesktopRuntimeState),
+    nextOrUpdater: LocalRuntimeState | ((current: LocalRuntimeState) => LocalRuntimeState),
   ) => {
     const current = stateRef.current;
     if (!current) {
@@ -254,7 +253,7 @@ export default function App() {
     void (async () => {
       const loaded = await loadRuntimeState();
       await ensureSkillsRoot();
-      const resolvedPaths = await getDesktopPaths();
+      const resolvedPaths = await getLocalPaths();
       setPaths(resolvedPaths);
 
       stateRef.current = loaded;
@@ -299,41 +298,36 @@ export default function App() {
     };
   }, []);
 
-  const refreshDesktopUpdate = useCallback(async (options?: { showChecking?: boolean; showErrors?: boolean }) => {
-    if (!state?.settings.apiUrl) {
-      return;
-    }
-
+  const refreshLocalUpdate = useCallback(async (options?: { showChecking?: boolean; showErrors?: boolean }) => {
     if (options?.showChecking) {
-      setAppUpdate((current) => setDesktopUpdatePhase(current, "checking"));
+      setAppUpdate((current) => setLocalUpdatePhase(current, "checking"));
     }
 
     try {
-      const checkedAt = Date.now();
-      const result = await checkForDesktopUpdates(state.settings.apiUrl);
-      setAppUpdate((current) => applyDesktopUpdateCheck(current, result, checkedAt));
+      const result = await checkForLocalUpdates();
+      setAppUpdate(result);
     } catch (error) {
-      console.error("[updater] Failed to check for desktop updates", error);
+      console.error("[updater] Failed to check for local updates", error);
       if (!options?.showErrors) {
         return;
       }
-      const message = error instanceof Error ? error.message : "Failed to check for desktop updates.";
-      setAppUpdate((current) => setDesktopUpdateError(current, message));
+      const message = error instanceof Error ? error.message : "Failed to check for local updates.";
+      setAppUpdate((current) => setLocalUpdateError(current, message));
     }
-  }, [state?.settings.apiUrl]);
+  }, []);
 
   useEffect(() => {
     if (!state?.settings.apiUrl) {
       return;
     }
 
-    void refreshDesktopUpdate();
+    void refreshLocalUpdate();
     const intervalId = window.setInterval(() => {
-      void refreshDesktopUpdate();
+      void refreshLocalUpdate();
     }, 30 * 60_000);
 
     return () => window.clearInterval(intervalId);
-  }, [refreshDesktopUpdate, state?.settings.apiUrl]);
+  }, [refreshLocalUpdate, state?.settings.apiUrl]);
 
   useEffect(() => {
     if (!state || !selectedAgentWallet) {
@@ -418,7 +412,7 @@ export default function App() {
   }, [activeAgentWallet, persistState, showNotification, state]);
 
   useEffect(() => {
-    desktopMeshService.configure((status) => {
+    localMeshService.configure((status) => {
       setState((current) => {
         if (!current) {
           return current;
@@ -428,13 +422,13 @@ export default function App() {
     });
 
     return () => {
-      desktopMeshService.configure(null);
-      void desktopMeshService.setDesiredState(null);
+      localMeshService.configure(null);
+      void localMeshService.setDesiredState(null);
     };
   }, [deviceId]);
 
   useEffect(() => {
-    void desktopMeshService.configurePeerIndex((payload) => {
+    void localMeshService.configurePeerIndex((payload) => {
       setMeshPeers((current) => mergeMeshPeerSignals(current, payload.peers));
       setState((current) => {
         if (!current) {
@@ -449,12 +443,12 @@ export default function App() {
     });
 
     return () => {
-      void desktopMeshService.configurePeerIndex(null);
+      void localMeshService.configurePeerIndex(null);
     };
   }, [deviceId]);
 
   useEffect(() => {
-    desktopMeshService.configureManifest((manifest) => {
+    localMeshService.configureManifest((manifest) => {
       setState((current) => {
         if (!current) {
           return current;
@@ -468,7 +462,7 @@ export default function App() {
     });
 
     return () => {
-      desktopMeshService.configureManifest(null);
+      localMeshService.configureManifest(null);
     };
   }, []);
 
@@ -485,7 +479,13 @@ export default function App() {
   }, [runningNetworkAgent?.agentWallet]);
 
   useEffect(() => {
-    void desktopMeshService.setDesiredState(buildMeshDesiredState(runningNetworkAgent, state?.identity || null, deviceId, state?.installedSkills || []));
+    void localMeshService.setDesiredState(buildMeshDesiredState(
+      runningNetworkAgent,
+      state?.identity || null,
+      deviceId,
+      state?.installedSkills || [],
+      state?.settings.apiUrl || "",
+    ));
   }, [deviceId, runningNetworkAgent, state?.identity, state?.installedSkills]);
 
   const handleSessionUpdate = useCallback((active: boolean, expiresAt: number | null, budget: string | null, sessionId?: string, duration?: number) => {
@@ -499,7 +499,7 @@ export default function App() {
       reason: active ? undefined : "session-inactive",
     }));
 
-    void persistState((current) => applyDesktopSessionUpdate(current, {
+    void persistState((current) => applyLocalSessionUpdate(current, {
       active,
       expiresAt,
       budget,
@@ -520,8 +520,7 @@ export default function App() {
 
     const response = await getActiveSessionStatus({
       apiUrl: currentApiUrl,
-      userAddress: requestUserAddress,
-      chainId: requestChainId,
+      identity: current.identity,
     });
 
     const latest = stateRef.current;
@@ -566,7 +565,7 @@ export default function App() {
     const budgetLimit = response.budgetLimit || "0";
     const budgetUsed = response.budgetUsed || "0";
     const budgetRemaining = response.budgetRemaining || "0";
-    const chainId = resolveInheritedDesktopChainId(latestIdentity.chainId, response.chainId);
+    const chainId = resolveInheritedLocalChainId(latestIdentity.chainId, response.chainId);
     const duration = Math.max(0, response.expiresAt - Date.now());
     const active = response.expiresAt > Date.now() && BigInt(budgetRemaining) > 0n;
 
@@ -605,7 +604,7 @@ export default function App() {
     const nextBudget = BigInt(budgetRemaining || "0");
     const spentMicros = previousBudget > nextBudget ? previousBudget - nextBudget : 0n;
 
-    let nextState: DesktopRuntimeState = { ...latest, identity: nextIdentity };
+    let nextState: LocalRuntimeState = { ...latest, identity: nextIdentity };
     if (spentMicros > 0n) {
       nextState = {
         ...nextState,
@@ -656,14 +655,16 @@ export default function App() {
     };
   }, [refreshSessionFromBackend, state?.identity?.chainId, state?.identity?.userAddress]);
 
-  const handleContextRedeemed = useCallback((context: RedeemedDesktopContext) => {
-    const identity = identityFromRedeemedDesktopContext(context);
+  const handleContextRedeemed = useCallback((context: RedeemedLocalContext) => {
+    const identity = identityFromRedeemedLocalContext(context);
     const linkedDeployment = deriveLinkedDeploymentIntent(context);
 
     void persistState((current) => ({
-      ...applyRedeemedDesktopContext(current, context),
-      linkedDeployment: linkedDeployment || current.linkedDeployment,
+      ...applyRedeemedLocalContext(current, context),
+      linkedDeployment,
     }));
+    setActivePage("agents");
+    setSelectedAgentWallet(null);
     setSession(sessionFromIdentity(identity));
     if (identity) {
       window.setTimeout(() => {
@@ -672,9 +673,9 @@ export default function App() {
     }
     setConnectModalOpen(false);
     if (context.hasSession) {
-      showNotification("success", "Desktop app connected with active session");
+      showNotification("success", "Local app connected with active session");
     } else {
-      showNotification("success", "Desktop app connected. Create a session to get started.");
+      showNotification("success", "Local app connected. Create a session to get started.");
     }
   }, [persistState, refreshSessionFromBackend, showNotification]);
 
@@ -682,7 +683,7 @@ export default function App() {
     setConnectModalOpen(true);
   }, []);
 
-  const disconnectDesktopWallet = useCallback(() => {
+  const disconnectLocalWallet = useCallback(() => {
     const current = stateRef.current;
     if (!current?.identity) {
       return;
@@ -690,8 +691,8 @@ export default function App() {
 
     setSession({ ...defaultSessionState });
     setConnectModalOpen(false);
-    void persistState((runtime) => clearDesktopConnectionState(runtime));
-    showNotification("success", "Desktop wallet disconnected");
+    void persistState((runtime) => clearLocalConnectionState(runtime));
+    showNotification("success", "Local wallet disconnected");
   }, [persistState, showNotification]);
 
   const activateAgent = useCallback((agentWallet: string | null) => {
@@ -707,25 +708,19 @@ export default function App() {
     setSelectedAgentWallet(null);
   }, []);
 
-  const browseMarket = useCallback(() => {
-    void openUrl(WEB_MARKET_URL);
-  }, []);
-
   const handleInstallUpdate = useCallback(async () => {
-    if (!state?.settings.apiUrl) {
-      return;
-    }
-
-    setAppUpdate((current) => setDesktopUpdatePhase(current, "installing"));
+    setAppUpdate((current) => setLocalUpdatePhase(current, "installing"));
     try {
-      await installDesktopUpdate(state.settings.apiUrl);
+      await installLocalUpdate((percent) => {
+        setAppUpdate((current) => ({ ...current, phase: "downloading", downloadProgress: percent }));
+      });
     } catch (error) {
-      console.error("[updater] Failed to install desktop update", error);
-      const message = error instanceof Error ? error.message : "Failed to install desktop update.";
-      setAppUpdate((current) => setDesktopUpdateError(current, message));
+      console.error("[updater] Failed to install local update", error);
+      const message = error instanceof Error ? error.message : "Failed to install local update.";
+      setAppUpdate((current) => setLocalUpdateError(current, message));
       showNotification("error", message);
     }
-  }, [showNotification, state?.settings.apiUrl]);
+  }, [showNotification]);
 
   const dismissUpdateBanner = useCallback(() => {
     setAppUpdate((current) => ({
@@ -747,7 +742,7 @@ export default function App() {
       {!stateReady ? (
         <div className="main">
           <ShellEmptyState
-            title="Loading Desktop Runtime"
+            title="Loading Local Runtime"
             description="Restoring local state, runtime paths, permissions, and mesh identity for this device."
           />
         </div>
@@ -765,7 +760,7 @@ export default function App() {
 
           <ShellPanel className="header-shell" padded={false}>
             <ShellPageHeader
-              eyebrow="Compose Desktop"
+              eyebrow="Compose Local"
               title="A P2P Network of autonomous agents."
               subtitle="Customize your local agent, and let it collaborate with a Network of its peers."
               actions={(
@@ -780,14 +775,14 @@ export default function App() {
                     />
                   ) : null}
                   {state.identity ? (
-                    <DesktopWalletMenu
+                    <LocalWalletMenu
                       identity={state.identity}
                       onSwitch={openConnectModal}
-                      onDisconnect={disconnectDesktopWallet}
+                      onDisconnect={disconnectLocalWallet}
                       onNotify={showNotification}
                     />
                   ) : (
-                    <button type="button" className="desktop-wallet-connect-btn" onClick={openConnectModal}>
+                    <button type="button" className="mesh-wallet-connect-btn" onClick={openConnectModal}>
                       CONNECT
                     </button>
                   )}
@@ -811,13 +806,13 @@ export default function App() {
             <ShellBanner
               className="connect-banner update-banner"
               title={appUpdate.phase === "error"
-                ? `Compose Desktop ${appUpdate.available.version} could not be installed.`
+                ? `Compose Local ${appUpdate.available.version} could not be installed.`
                 : appUpdate.phase === "installing"
-                  ? `Installing Compose Desktop ${appUpdate.available.version}...`
-                  : `Compose Desktop ${appUpdate.available.version} is available.`}
+                  ? `Installing Compose Local ${appUpdate.available.version}...`
+                  : `Compose Local ${appUpdate.available.version} is available.`}
               subtitle={appUpdate.phase === "error"
                 ? (appUpdate.error || "The update check succeeded, but installation failed. Retry directly from the app.")
-                : (appUpdate.available.notes || `Current version ${appUpdate.currentVersion || "unknown"} can be upgraded in place from this desktop shell.`)}
+                : (appUpdate.available.notes || `Current version ${appUpdate.currentVersion || "unknown"} can be upgraded in place from this local shell.`)}
               actions={(
                 <>
                   {appUpdate.phase === "installing" ? (
@@ -856,9 +851,9 @@ export default function App() {
           {!wallet ? (
             <ShellBanner
               className="connect-banner"
-              title="Desktop is not connected."
+              title="Local is not connected."
               subtitle="Link the current device from the web app to deploy local agents and refresh the active compose-key."
-              actions={<ShellButton tone="secondary" onClick={openConnectModal}>Connect Desktop</ShellButton>}
+              actions={<ShellButton tone="secondary" onClick={openConnectModal}>Connect Local</ShellButton>}
             />
           ) : null}
 
@@ -880,7 +875,7 @@ export default function App() {
                   onStateChange={persistState}
                   onActivateAgent={activateAgent}
                   onOpenAgent={openAgent}
-                  onBrowseMarket={browseMarket}
+                  onBrowse={() => void openUrl(`${WEB_APP_URL}/market`)}
                 />
               )
             ) : (
@@ -894,7 +889,7 @@ export default function App() {
 
           <ShellModal
             open={settingsOpen}
-            title="Desktop Settings"
+            title="Local Settings"
             subtitle="Updater, macOS permissions, and managed local storage."
             onClose={() => setSettingsOpen(false)}
             className="settings-modal-shell"
@@ -904,7 +899,7 @@ export default function App() {
               paths={paths}
               appUpdate={appUpdate}
               onStateChange={persistState}
-              onCheckForUpdates={() => refreshDesktopUpdate({ showChecking: true, showErrors: true })}
+              onCheckForUpdates={() => refreshLocalUpdate({ showChecking: true, showErrors: true })}
               onInstallUpdate={handleInstallUpdate}
               onOpenSystemPermissions={async () => {
                 try {
@@ -946,31 +941,29 @@ function SettingsPanel({
   onOpenPath,
   onNotify,
 }: {
-  state: DesktopRuntimeState;
-  paths: Awaited<ReturnType<typeof getDesktopPaths>>;
-  appUpdate: DesktopUpdateState;
-  onStateChange: (next: DesktopRuntimeState) => Promise<void>;
+  state: LocalRuntimeState;
+  paths: Awaited<ReturnType<typeof getLocalPaths>>;
+  appUpdate: LocalUpdateState;
+  onStateChange: (next: LocalRuntimeState) => Promise<void>;
   onCheckForUpdates: () => Promise<void>;
   onInstallUpdate: () => Promise<void>;
   onOpenSystemPermissions: () => Promise<void>;
   onOpenPath: (path: string) => Promise<void>;
   onNotify: (type: "success" | "error", message: string) => void;
 }) {
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"permissions" | "storage">("permissions");
   const [refreshingPermissions, setRefreshingPermissions] = useState(false);
 
   const refreshMacPermissions = async () => {
     setRefreshingPermissions(true);
     try {
-      const [camera, microphone] = await Promise.all([
-        queryMediaPermission("camera"),
-        queryMediaPermission("microphone"),
-      ]);
+      const osStatus = await queryOsPermissions();
 
       await onStateChange({
         ...state,
         osPermissions: {
-          camera,
-          microphone,
+          camera: osStatus.camera,
+          microphone: osStatus.microphone,
         },
       });
       onNotify("success", "macOS permission status refreshed");
@@ -978,127 +971,101 @@ function SettingsPanel({
       setRefreshingPermissions(false);
     }
   };
-  const checkedAt = appUpdate.checkedAt ? new Date(appUpdate.checkedAt).toLocaleString() : "Never";
-  const currentVersion = appUpdate.currentVersion || "Unknown";
-  const availableVersion = appUpdate.available?.version || "Latest";
 
   return (
     <div className="settings settings--compact">
-      <div className="settings-section">
-        <h3>Updates</h3>
-        <p className="settings-hint">
-          Compose Desktop checks a signed updater manifest through the first-party Compose API route at
-          {" "}
-          <code>{state.settings.apiUrl}/api/desktop/updates</code>.
-        </p>
-        <div className="detail-stat-stack">
-          <div className="detail-stat-card">
-            <span>Current Version</span>
-            <strong>{currentVersion}</strong>
-          </div>
-          <div className="detail-stat-card">
-            <span>Available</span>
-            <strong>{availableVersion}</strong>
-          </div>
-          <div className="detail-stat-card">
-            <span>Last Checked</span>
-            <strong>{checkedAt}</strong>
-          </div>
-        </div>
-        <div className="settings-actions">
-          <ShellButton tone="secondary" onClick={() => void onCheckForUpdates()}>
-            <RefreshCw size={14} />
-            Check Now
-          </ShellButton>
-          {appUpdate.available ? (
-            <ShellButton tone="primary" onClick={() => void onInstallUpdate()}>
-              <RefreshCw size={14} />
-              Install {appUpdate.available.version}
-            </ShellButton>
-          ) : null}
-        </div>
-      </div>
+      <ShellTabStrip className="settings-tab-row">
+        <ShellTab active={activeSettingsTab === "permissions"} onClick={() => setActiveSettingsTab("permissions")} className={`detail-tab-btn ${activeSettingsTab === "permissions" ? "active" : ""}`}>
+          <Shield size={14} />
+          Permissions
+        </ShellTab>
+        <ShellTab active={activeSettingsTab === "storage"} onClick={() => setActiveSettingsTab("storage")} className={`detail-tab-btn ${activeSettingsTab === "storage" ? "active" : ""}`}>
+          <Settings2 size={14} />
+          Storage
+        </ShellTab>
+      </ShellTabStrip>
 
-      <div className="settings-section">
-        <h3>Permissions</h3>
-        <p className="settings-hint">
-          Per-agent authority lives on each agent page. Use this shortcut to open macOS Privacy & Security and
-          grant Compose Desktop Full System Access.
-        </p>
-        <div className="detail-stat-stack">
-          <div className="detail-stat-card">
-            <span>Camera</span>
-            <strong>{state.osPermissions.camera}</strong>
-          </div>
-          <div className="detail-stat-card">
-            <span>Microphone</span>
-            <strong>{state.osPermissions.microphone}</strong>
-          </div>
-          <div className="detail-stat-card">
-            <span>Agent Controls</span>
-            <strong>Scoped per selected agent</strong>
-          </div>
-        </div>
-        <div className="settings-actions">
-          <ShellButton tone="primary" onClick={() => void onOpenSystemPermissions()}>
-            <Shield size={14} />
-            Give Full Permissions
-          </ShellButton>
-          <ShellButton tone="secondary" disabled={refreshingPermissions} onClick={() => void refreshMacPermissions()}>
-            <RefreshCw size={14} className={refreshingPermissions ? "cm-spinner" : undefined} />
-            Refresh Local Status
-          </ShellButton>
-        </div>
-      </div>
+      {activeSettingsTab === "permissions" ? (
+        <>
+          <GlobalPermissionsSection
+            osPermissions={state.osPermissions}
+            refreshing={refreshingPermissions}
+            onOpenSystemPermissions={() => void onOpenSystemPermissions()}
+            onRefresh={() => void refreshMacPermissions()}
+          />
 
-      <div className="settings-section">
-        <h3>Storage</h3>
-        <p className="settings-hint">
-          Compose Desktop stores runtime state, local agent workspaces, and shared skill installs inside the managed
-          desktop runtime root.
-        </p>
-        <div className="settings-path-list">
-          <div className="settings-path-row">
-            <span>Runtime Root</span>
-            <strong>{paths?.base_dir || "Browser fallback mode"}</strong>
+          {/* Compact update row */}
+          <div className="settings-section settings-update-row">
+            <div className="settings-update-info">
+              <span className="settings-update-version">v{appUpdate.currentVersion || "?"}</span>
+              {appUpdate.available ? (
+                <span className="settings-update-badge">Update available: {appUpdate.available.version}</span>
+              ) : (
+                <span className="settings-update-hint">Up to date</span>
+              )}
+            </div>
+            {appUpdate.available ? (
+              <ShellButton tone="primary" onClick={() => void onInstallUpdate()}>
+                Install {appUpdate.available.version}
+              </ShellButton>
+            ) : (
+              <ShellButton tone="secondary" onClick={() => void onCheckForUpdates()}>
+                <RefreshCw size={14} />
+                Check for Updates
+              </ShellButton>
+            )}
           </div>
-          <div className="settings-path-row">
-            <span>State File</span>
-            <strong>{paths?.state_file || "Browser fallback mode"}</strong>
+        </>
+      ) : null}
+
+      {activeSettingsTab === "storage" ? (
+        <div className="settings-section">
+          <p className="settings-hint">
+            Compose Local stores runtime state, agent workspaces, and shared skill installs inside the managed local runtime root.
+          </p>
+          <div className="settings-path-list">
+            <div className="settings-path-row">
+              <span>Runtime Root</span>
+              <strong>{paths?.base_dir || "Browser fallback mode"}</strong>
+            </div>
+            <div className="settings-path-row">
+              <span>State File</span>
+              <strong>{paths?.state_file || "Browser fallback mode"}</strong>
+            </div>
+            <div className="settings-path-row">
+              <span>Agents Directory</span>
+              <strong>{paths?.agents_dir || "Browser fallback mode"}</strong>
+            </div>
+            <div className="settings-path-row">
+              <span>Skills Directory</span>
+              <strong>{paths?.skills_dir || "Browser fallback mode"}</strong>
+            </div>
           </div>
-          <div className="settings-path-row">
-            <span>Agents Directory</span>
-            <strong>{paths?.agents_dir || "Browser fallback mode"}</strong>
-          </div>
-          <div className="settings-path-row">
-            <span>Skills Directory</span>
-            <strong>{paths?.skills_dir || "Browser fallback mode"}</strong>
+          <div className="settings-actions">
+            {paths?.base_dir ? (
+              <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.base_dir)}>
+                Open Runtime Folder
+              </ShellButton>
+            ) : null}
+            {paths?.skills_dir ? (
+              <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.skills_dir)}>
+                Open Skills Folder
+              </ShellButton>
+            ) : null}
           </div>
         </div>
-        <div className="settings-actions">
-          {paths?.base_dir ? (
-            <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.base_dir)}>
-              Open Runtime Folder
-            </ShellButton>
-          ) : null}
-          {paths?.skills_dir ? (
-            <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.skills_dir)}>
-              Open Skills Folder
-            </ShellButton>
-          ) : null}
-        </div>
-      </div>
+      ) : null}
     </div>
   );
 }
 
-function DesktopWalletMenu({
+function LocalWalletMenu({
   identity,
   onSwitch,
   onDisconnect,
   onNotify,
 }: {
-  identity: DesktopIdentityContext;
+  identity: LocalIdentityContext;
   onSwitch: () => void;
   onDisconnect: () => void;
   onNotify: (type: "success" | "error", message: string) => void;
@@ -1106,7 +1073,7 @@ function DesktopWalletMenu({
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const { shortAddress, chainLabel, accentTone } = createDesktopWalletDisplay(identity);
+  const { shortAddress, chainLabel, accentTone } = createLocalWalletDisplay(identity);
 
   useEffect(() => {
     if (!open) {
@@ -1136,43 +1103,43 @@ function DesktopWalletMenu({
   };
 
   return (
-    <div className="desktop-wallet-menu" ref={rootRef}>
+    <div className="mesh-wallet-menu" ref={rootRef}>
       <button
         type="button"
-        className="desktop-wallet-trigger"
+        className="mesh-wallet-trigger"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
-        <span className={`desktop-wallet-trigger__indicator desktop-wallet-trigger__indicator--${accentTone}`} />
-        <span className="desktop-wallet-trigger__address">{shortAddress}</span>
-        <ChevronDown size={12} className={`desktop-wallet-trigger__chevron ${open ? "open" : ""}`} />
+        <span className={`mesh-wallet-trigger__indicator mesh-wallet-trigger__indicator--${accentTone}`} />
+        <span className="mesh-wallet-trigger__address">{shortAddress}</span>
+        <ChevronDown size={12} className={`mesh-wallet-trigger__chevron ${open ? "open" : ""}`} />
       </button>
 
       {open ? (
-        <div className="desktop-wallet-dropdown" role="menu">
-          <div className="desktop-wallet-dropdown__header">
-            <div className="desktop-wallet-dropdown__chain-row">
-              <span className={`desktop-wallet-trigger__indicator desktop-wallet-trigger__indicator--${accentTone}`} />
-              <span className="desktop-wallet-dropdown__chain">{chainLabel}</span>
+        <div className="mesh-wallet-dropdown" role="menu">
+          <div className="mesh-wallet-dropdown__header">
+            <div className="mesh-wallet-dropdown__chain-row">
+              <span className={`mesh-wallet-trigger__indicator mesh-wallet-trigger__indicator--${accentTone}`} />
+              <span className="mesh-wallet-dropdown__chain">{chainLabel}</span>
             </div>
           </div>
 
-          <div className="desktop-wallet-dropdown__address-row">
-            <span className="desktop-wallet-dropdown__address">{shortAddress}</span>
+          <div className="mesh-wallet-dropdown__address-row">
+            <span className="mesh-wallet-dropdown__address">{shortAddress}</span>
             <button
               type="button"
-              className="desktop-wallet-dropdown__icon"
+              className="mesh-wallet-dropdown__icon"
               onClick={handleCopy}
               aria-label="Copy connected wallet address"
             >
-              {copied ? <Check size={14} className="desktop-wallet-dropdown__icon desktop-wallet-dropdown__icon--success" /> : <Copy size={14} />}
+              {copied ? <Check size={14} className="mesh-wallet-dropdown__icon mesh-wallet-dropdown__icon--success" /> : <Copy size={14} />}
             </button>
           </div>
 
           <button
             type="button"
-            className="desktop-wallet-dropdown__item"
+            className="mesh-wallet-dropdown__item"
             role="menuitem"
             onClick={() => {
               setOpen(false);
@@ -1185,7 +1152,7 @@ function DesktopWalletMenu({
 
           <button
             type="button"
-            className="desktop-wallet-dropdown__item desktop-wallet-dropdown__item--danger"
+            className="mesh-wallet-dropdown__item mesh-wallet-dropdown__item--danger"
             role="menuitem"
             onClick={() => {
               setOpen(false);
@@ -1211,7 +1178,7 @@ function ConnectModal({
   onClose: () => void;
 }) {
   const handleConnect = async () => {
-    const connectUrl = `${WEB_APP_URL}${CONNECT_DESKTOP_PATH}?device_id=${encodeURIComponent(deviceId)}`;
+    const connectUrl = `${WEB_APP_URL}${CONNECT_LOCAL_PATH}?device_id=${encodeURIComponent(deviceId)}`;
     await openUrl(connectUrl);
     onClose();
   };
@@ -1219,13 +1186,13 @@ function ConnectModal({
   return (
     <ShellModal
       open={open}
-      title="Connect Desktop"
-      subtitle="Open the Compose web app and authorize this desktop device from the browser flow."
+      title="Connect Local"
+      subtitle="Open the Compose web app and authorize this local device from the browser flow."
       onClose={onClose}
       className="connect-modal"
     >
       <div className="connect-modal-copy">
-        Click the button below to open the Compose web app and authorize this desktop application.
+        Click the button below to open the Compose web app and authorize this local application.
       </div>
       <div className="connect-modal-actions">
         <ShellButton tone="secondary" onClick={onClose}>Cancel</ShellButton>
