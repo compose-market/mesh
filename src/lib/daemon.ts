@@ -39,13 +39,24 @@ export interface DaemonLogTail {
   cursor: number;
 }
 
+export interface DaemonRuntimeHostStatus {
+  running: boolean;
+  status: string;
+  port: number;
+  baseUrl: string;
+  pid: number | null;
+  startedAt: number | null;
+  lastError: string | null;
+  updatedAt: number;
+}
+
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 function ensureTauriRuntime(): void {
   if (!isTauriRuntime()) {
-    throw new Error("Desktop daemon commands require Tauri runtime");
+    throw new Error("Local daemon commands require Tauri runtime");
   }
 }
 
@@ -129,6 +140,29 @@ export async function daemonInstallLaunchAgent(): Promise<string> {
 export async function daemonLaunchAgentStatus(): Promise<boolean> {
   ensureTauriRuntime();
   return invoke<boolean>("daemon_launch_agent_status");
+}
+
+export async function daemonRuntimeHostStatus(): Promise<DaemonRuntimeHostStatus> {
+  ensureTauriRuntime();
+  return invoke<DaemonRuntimeHostStatus>("daemon_runtime_host_status");
+}
+
+export async function daemonCheckPermission(agentWallet: string, permissionKey: string): Promise<boolean> {
+  ensureTauriRuntime();
+  return invoke<boolean>("daemon_check_permission", { agentWallet, permissionKey });
+}
+
+export interface DaemonOsPermissionSnapshot {
+  camera: string;
+  microphone: string;
+  screen: string;
+  fullDiskAccess: string;
+  accessibility: string;
+}
+
+export async function daemonQueryOsPermissions(): Promise<DaemonOsPermissionSnapshot> {
+  ensureTauriRuntime();
+  return invoke<DaemonOsPermissionSnapshot>("daemon_query_os_permissions");
 }
 
 export function daemonStatusToWorkerState(status: DaemonAgentStatus | null | undefined): AgentWorkerState {
