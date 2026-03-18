@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { extractSkillRequirements, extractSkillSummary } from "./skills";
 import {
   ensureManagedDir,
-  getDesktopPaths,
+  getLocalPaths,
   getGlobalSkillsRelativePath,
   removeManagedPath,
   writeManagedFile,
@@ -11,21 +11,23 @@ import type {
   AgentMetadata,
   BackpackConnectionInfo,
   CreateLinkTokenRequest,
-  DesktopIdentityContext,
+  LocalIdentityContext,
   InstalledSkill,
-  RedeemedDesktopContext,
+  RedeemedLocalContext,
   Skill,
   SkillRequirements,
   SkillsDiscoveryResult,
 } from "./types";
 
+declare const __APP_VERSION__: string;
+
 const DEFAULT_TIMEOUT_MS = 20_000;
 const CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
 const GITHUB_HEADERS = {
   Accept: "application/vnd.github+json",
-  "User-Agent": "compose-desktop/1.0",
+  "User-Agent": `compose-mesh/${__APP_VERSION__}`,
 };
-const PINATA_GATEWAY_URL = "https://compose.mypinata.cloud";
+const PINATA_GATEWAY_URLS = ["https://compose.mypinata.cloud/ipfs"];
 
 export const SESSION_HEADERS = {
   userAddress: "x-session-user-address",
@@ -89,7 +91,7 @@ function withDefaultRequirements(skill: Omit<Skill, "requirements">): Skill {
 
 async function requestJson<T>(url: string, init: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(url, {
@@ -106,7 +108,7 @@ async function requestJson<T>(url: string, init: RequestInit, timeoutMs = DEFAUL
     }
     return (await response.json()) as T;
   } finally {
-    window.clearTimeout(timer);
+    globalThis.clearTimeout(timer);
   }
 }
 
@@ -143,10 +145,103 @@ function normalizeWalletAddress(value: string): string {
   return normalized;
 }
 
+type AgentMetadataSource = Partial<AgentMetadata> & {
+  cid?: string;
+  endpoint?: string;
+};
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Agent metadata response is invalid");
+  }
+  return value as Record<string, unknown>;
+}
+
+function optionalString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function requireAgentField(value: string | null, field: string): string {
+  if (!value) {
+    throw new Error(`Agent metadata is missing ${field}`);
+  }
+  return value;
+}
+
+function normalizeAgentCardUri(value: string | null, fallbackAgentCardCid?: string): string {
+  if (value) {
+    return value.startsWith("ipfs://") ? value : `ipfs://${value.replace(/^\/+/, "")}`;
+  }
+  const fallbackCid = optionalString(fallbackAgentCardCid);
+  if (fallbackCid) {
+    return `ipfs://${fallbackCid}`;
+  }
+  throw new Error("Agent metadata is missing agentCardUri");
+}
+
+function normalizeAgentEndpoints(source: AgentMetadataSource): AgentMetadata["endpoints"] {
+  const chat = optionalString(source.endpoints?.chat);
+  const stream = optionalString(source.endpoints?.stream);
+  if (chat || stream) {
+    return {
+      ...(chat ? { chat } : {}),
+      ...(stream ? { stream } : {}),
+    };
+  }
+
+  const endpoint = optionalString(source.endpoint);
+  if (!endpoint) {
+    return undefined;
+  }
+
+  return {
+    chat: endpoint,
+  };
+}
+
+export function normalizeAgentMetadata(
+  value: unknown,
+  options: {
+    expectedWallet?: string;
+    fallbackAgentCardCid?: string;
+  } = {},
+): AgentMetadata {
+  const source = asRecord(value) as AgentMetadataSource;
+  const walletAddress = normalizeWalletAddress(
+    requireAgentField(optionalString(source.walletAddress), "walletAddress"),
+  );
+  const expectedWallet = optionalString(options.expectedWallet);
+
+  if (expectedWallet && walletAddress !== normalizeWalletAddress(expectedWallet)) {
+    throw new Error("Agent metadata wallet does not match the requested agent wallet");
+  }
+
+  return {
+    name: optionalString(source.name) || "Unnamed Agent",
+    description: optionalString(source.description) || "",
+    agentCardUri: normalizeAgentCardUri(
+      optionalString(source.agentCardUri) || optionalString(source.cid),
+      options.fallbackAgentCardCid || optionalString(source.cid) || undefined,
+    ),
+    creator: optionalString(source.creator) || "",
+    walletAddress,
+    dnaHash: requireAgentField(optionalString(source.dnaHash), "dnaHash"),
+    model: requireAgentField(optionalString(source.model), "model"),
+    framework: optionalString(source.framework) || "openclaw",
+    plugins: Array.isArray(source.plugins) ? source.plugins as AgentMetadata["plugins"] : [],
+    createdAt: optionalString(source.createdAt) || new Date().toISOString(),
+    endpoints: normalizeAgentEndpoints(source),
+  };
+}
+
 async function fetchAgentMetadataFromIpfs(agentCardCid: string, expectedWallet: string): Promise<AgentMetadata> {
   let lastError: Error | null = null;
 
-  for (const pinataGateway of PINATA_GATEWAY_URL) {
+  for (const pinataGateway of PINATA_GATEWAY_URLS) {
     try {
       const response = await fetch(`${pinataGateway}/${agentCardCid}`, {
         headers: {
@@ -157,32 +252,11 @@ async function fetchAgentMetadataFromIpfs(agentCardCid: string, expectedWallet: 
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const data = await response.json() as Partial<AgentMetadata> & {
-        endpoint?: string;
-      };
-      const walletAddress = normalizeWalletAddress(data.walletAddress || "");
-      const normalizedExpectedWallet = normalizeWalletAddress(expectedWallet);
-      if (walletAddress !== normalizedExpectedWallet) {
-        throw new Error("Linked agent card does not match the requested agent wallet");
-      }
-
-      return {
-        name: data.name || "Unnamed Agent",
-        description: data.description || "",
-        agentCardUri: `ipfs://${agentCardCid}`,
-        creator: data.creator || "",
-        walletAddress,
-        dnaHash: data.dnaHash || "",
-        model: data.model || "",
-        framework: data.framework || "openclaw",
-        plugins: Array.isArray(data.plugins) ? data.plugins : [],
-        createdAt: data.createdAt || new Date().toISOString(),
-        endpoints: data.endpoints || (data.endpoint
-          ? {
-            chat: data.endpoint,
-          }
-          : undefined),
-      };
+      const data = await response.json() as unknown;
+      return normalizeAgentMetadata(data, {
+        expectedWallet,
+        fallbackAgentCardCid: agentCardCid,
+      });
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
     }
@@ -195,6 +269,7 @@ export async function fetchSessionInfo(params: {
   apiUrl: string;
   userAddress: string;
   chainId: number;
+  composeKeyToken?: string;
 }): Promise<{
   hasSession: boolean;
   keyId: string;
@@ -206,49 +281,56 @@ export async function fetchSessionInfo(params: {
   try {
     return await requestJson(`${normalizeBase(params.apiUrl)}/api/session`, {
       method: "GET",
-      headers: withSessionHeaders({
-        userAddress: params.userAddress,
-        chainId: params.chainId,
-      }),
+      headers: {
+        ...(params.composeKeyToken
+          ? { Authorization: `Bearer ${params.composeKeyToken}` }
+          : {}),
+        ...withSessionHeaders({
+          userAddress: params.userAddress,
+          chainId: params.chainId,
+        }),
+      },
     });
   } catch {
     return null;
   }
 }
 
-export async function redeemDesktopLinkToken(params: {
+export async function redeemLocalLinkToken(params: {
   apiUrl: string;
-  token: string;
   deviceId: string;
-}): Promise<RedeemedDesktopContext> {
-  const response = await requestJson<{ success: boolean; context: RedeemedDesktopContext }>(
-    `${normalizeBase(params.apiUrl)}/api/desktop/link-token/redeem`,
+  token?: string;
+  connectedUserAddress?: string;
+}): Promise<RedeemedLocalContext> {
+  const response = await requestJson<{ success: boolean; context: RedeemedLocalContext }>(
+    `${normalizeBase(params.apiUrl)}/api/local/link-token/redeem`,
     {
       method: "POST",
       body: JSON.stringify({
-        token: params.token,
+        ...(params.token ? { token: params.token } : {}),
+        ...(params.connectedUserAddress ? { connectedUserAddress: params.connectedUserAddress } : {}),
         deviceId: params.deviceId,
       }),
     },
   );
 
   if (!response.success) {
-    throw new Error("Desktop deep-link redemption failed");
+    throw new Error("Local deep-link redemption failed");
   }
 
   return response.context;
 }
 
-export async function registerDesktopDeployment(params: {
+export async function registerLocalDeployment(params: {
   apiUrl: string;
-  identity: DesktopIdentityContext;
+  identity: LocalIdentityContext;
   agentWallet: string;
   agentCardCid: string;
-  desktopVersion: string;
+  localVersion: string;
   deployedAt: number;
 }): Promise<void> {
   await requestJson(
-    `${normalizeBase(params.apiUrl)}/api/desktop/deployments/register`,
+    `${normalizeBase(params.apiUrl)}/api/local/deployments/register`,
     {
       method: "POST",
       headers: {
@@ -263,7 +345,7 @@ export async function registerDesktopDeployment(params: {
         userAddress: params.identity.userAddress,
         composeKeyId: params.identity.composeKeyId,
         agentCardCid: params.agentCardCid,
-        desktopVersion: params.desktopVersion,
+        localVersion: params.localVersion,
         deployedAt: params.deployedAt,
         chainId: params.identity.chainId,
       }),
@@ -277,10 +359,14 @@ export async function fetchAgentMetadata(params: {
   agentCardCid?: string;
 }): Promise<AgentMetadata> {
   try {
-    return await requestJson<AgentMetadata>(
+    const response = await requestJson<unknown>(
       `${normalizeBase(params.runtimeUrl)}/agent/${walletPath(params.agentWallet)}`,
       { method: "GET" },
     );
+    return normalizeAgentMetadata(response, {
+      expectedWallet: params.agentWallet,
+      fallbackAgentCardCid: params.agentCardCid,
+    });
   } catch (error) {
     if (!params.agentCardCid) {
       throw error;
@@ -291,13 +377,13 @@ export async function fetchAgentMetadata(params: {
 
 export async function callAgent(params: {
   runtimeUrl: string;
-  identity: DesktopIdentityContext;
+  identity: LocalIdentityContext;
   agentWallet: string;
   message: string;
   threadId?: string;
   userId?: string;
   grantedPermissions?: string[];
-  permissionPolicy?: Record<string, "allow" | "ask" | "deny">;
+  permissionPolicy?: Record<string, "allow" | "deny">;
   backpackAccounts?: BackpackConnectionInfo[];
 }): Promise<{ output?: string; success?: boolean; error?: string }> {
   return requestJson(
@@ -651,7 +737,7 @@ export async function installSkill(
   const relativeDir = `${getGlobalSkillsRelativePath()}/${safeDir}`;
   const created = await ensureManagedDir(relativeDir);
   if (!created) {
-    return { success: false, error: "Desktop managed storage is unavailable" };
+    return { success: false, error: "Local managed storage is unavailable" };
   }
 
   const skillMdPath = await writeManagedFile(`${relativeDir}/SKILL.md`, skillMd);
@@ -677,7 +763,7 @@ export async function installSkill(
     return { success: false, error: "Failed to write skill metadata locally" };
   }
 
-  const paths = await getDesktopPaths();
+  const paths = await getLocalPaths();
   const localPath = paths ? `${paths.skills_dir}/${safeDir}` : relativeDir;
   const enabled = requirements.eligible;
 
@@ -717,14 +803,14 @@ export async function getMachineMissingBinaries(binaries: string[]): Promise<str
   }
 }
 
-export async function createDesktopLinkToken(params: {
+export async function createLocalLinkToken(params: {
   apiUrl: string;
   composeKeyToken: string;
   userAddress: string;
   chainId: number;
   payload: CreateLinkTokenRequest;
 }): Promise<{ deepLinkUrl: string; token: string; expiresAt: number }> {
-  return requestJson(`${normalizeBase(params.apiUrl)}/api/desktop/link-token`, {
+  return requestJson(`${normalizeBase(params.apiUrl)}/api/local/link-token`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${params.composeKeyToken}`,
@@ -809,7 +895,7 @@ function normalizeBigintString(value: unknown, fallback = "0"): string {
 
 export async function createSession(params: {
   apiUrl: string;
-  userAddress: string;
+  identity: Pick<LocalIdentityContext, "userAddress" | "chainId" | "composeKeyToken">;
   payload: CreateSessionRequest;
 }): Promise<CreateSessionResponse> {
   const response = await requestJson<{
@@ -828,9 +914,12 @@ export async function createSession(params: {
     {
       method: "POST",
       headers: {
+        ...(params.identity.composeKeyToken
+          ? { Authorization: `Bearer ${params.identity.composeKeyToken}` }
+          : {}),
         ...withSessionHeaders({
-          userAddress: params.userAddress,
-          active: true,
+          userAddress: params.identity.userAddress,
+          chainId: params.identity.chainId,
         }),
       },
       body: JSON.stringify(params.payload),
@@ -859,7 +948,7 @@ export async function createSession(params: {
 
 export async function listComposeKeys(params: {
   apiUrl: string;
-  userAddress: string;
+  identity: Pick<LocalIdentityContext, "userAddress" | "chainId" | "composeKeyToken">;
 }): Promise<ComposeKeyRecord[]> {
   const response = await requestJson<{
     keys?: Array<{
@@ -879,9 +968,15 @@ export async function listComposeKeys(params: {
     `${normalizeBase(params.apiUrl)}/api/keys`,
     {
       method: "GET",
-      headers: withSessionHeaders({
-        userAddress: params.userAddress,
-      }),
+      headers: {
+        ...(params.identity.composeKeyToken
+          ? { Authorization: `Bearer ${params.identity.composeKeyToken}` }
+          : {}),
+        ...withSessionHeaders({
+          userAddress: params.identity.userAddress,
+          chainId: params.identity.chainId,
+        }),
+      },
     },
   );
 
@@ -909,7 +1004,7 @@ export async function listComposeKeys(params: {
 
 export async function revokeComposeKey(params: {
   apiUrl: string;
-  userAddress: string;
+  identity: Pick<LocalIdentityContext, "userAddress" | "chainId" | "composeKeyToken">;
   keyId: string;
 }): Promise<boolean> {
   try {
@@ -917,9 +1012,15 @@ export async function revokeComposeKey(params: {
       `${normalizeBase(params.apiUrl)}/api/keys/${params.keyId}`,
       {
         method: "DELETE",
-        headers: withSessionHeaders({
-          userAddress: params.userAddress,
-        }),
+        headers: {
+          ...(params.identity.composeKeyToken
+            ? { Authorization: `Bearer ${params.identity.composeKeyToken}` }
+            : {}),
+          ...withSessionHeaders({
+            userAddress: params.identity.userAddress,
+            chainId: params.identity.chainId,
+          }),
+        },
       },
     );
     return true;
@@ -930,18 +1031,22 @@ export async function revokeComposeKey(params: {
 
 export async function getActiveSessionStatus(params: {
   apiUrl: string;
-  userAddress: string;
-  chainId: number;
+  identity: Pick<LocalIdentityContext, "userAddress" | "chainId" | "composeKeyToken">;
 }): Promise<ActiveSessionStatusResponse | null> {
   try {
     const response = await requestJson<ActiveSessionStatusResponse>(
       `${normalizeBase(params.apiUrl)}/api/session`,
       {
         method: "GET",
-        headers: withSessionHeaders({
-          userAddress: params.userAddress,
-          chainId: params.chainId,
-        }),
+        headers: {
+          ...(params.identity.composeKeyToken
+            ? { Authorization: `Bearer ${params.identity.composeKeyToken}` }
+            : {}),
+          ...withSessionHeaders({
+            userAddress: params.identity.userAddress,
+            chainId: params.identity.chainId,
+          }),
+        },
       },
     );
 

@@ -87,7 +87,7 @@ export interface InstalledAgent {
   reports: AgentTaskReport[];
 }
 
-export interface DesktopIdentityContext {
+export interface LocalIdentityContext {
   agentWallet: string;
   userAddress: string;
   composeKeyId: string;
@@ -100,12 +100,12 @@ export interface DesktopIdentityContext {
   deviceId: string;
 }
 
-export interface DesktopSettings {
+export interface LocalSettings {
   apiUrl: string;
   runtimeUrl: string;
 }
 
-export type PermissionDecision = "allow" | "ask" | "deny";
+export type PermissionDecision = "allow" | "deny";
 
 export interface AgentPermissionPolicy {
   shell: PermissionDecision;
@@ -232,9 +232,9 @@ export interface OsPermissionSnapshot {
   microphone: OsPermissionStatus;
 }
 
-export interface DesktopRuntimeState {
-  settings: DesktopSettings;
-  identity: DesktopIdentityContext | null;
+export interface LocalRuntimeState {
+  settings: LocalSettings;
+  identity: LocalIdentityContext | null;
   linkedDeployment: LinkedDeploymentIntent | null;
   permissionDefaults: AgentPermissionPolicy;
   osPermissions: OsPermissionSnapshot;
@@ -303,14 +303,14 @@ export interface SkillsDiscoveryResult {
   limit: number;
 }
 
-export interface DesktopPaths {
+export interface LocalPaths {
   base_dir: string;
   state_file: string;
   agents_dir: string;
   skills_dir: string;
 }
 
-export interface RedeemedDesktopContext {
+export interface RedeemedLocalContext {
   agentWallet: string;
   userAddress: string;
   chainId: number;
@@ -338,24 +338,8 @@ export interface LinkedDeploymentIntent {
   agentWallet: string;
   agentCardCid: string | null;
   chainId: number;
-  source: "desktop-link" | "signed-install";
+  source: "local-link";
   receivedAt: number;
-}
-
-export interface SignedDesktopInstallPayload {
-  agentWallet: string;
-  agentCardCid: string;
-  chainId: number;
-  issuedAt: number;
-  expiresAt: number;
-  nonce: string;
-  composeKey?: string;
-}
-
-export interface SignedDesktopInstallEnvelope {
-  payload: SignedDesktopInstallPayload;
-  signature: `0x${string}`;
-  signer: `0x${string}`;
 }
 
 export interface CreateLinkTokenRequest {
