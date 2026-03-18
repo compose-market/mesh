@@ -79,7 +79,7 @@ function detectMissingEnv(envKeys: string[]): string[] {
     return [];
   }
 
-  // Desktop runtime does not expose host env vars like OpenClaw gateway does.
+  // Local runtime does not expose host env vars like OpenClaw gateway does.
   // Surface env requirements as informational and let users configure keys later.
   return envKeys.map((entry) => `env:${entry}`);
 }

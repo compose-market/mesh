@@ -6,8 +6,8 @@ import type {
   AgentPermissionPolicy,
   MeshManifest,
   AgentTaskReport,
-  DesktopPaths,
-  DesktopRuntimeState,
+  LocalPaths,
+  LocalRuntimeState,
   InstalledAgent,
   LinkedDeploymentIntent,
   MeshAgentCard,
@@ -16,7 +16,7 @@ import type {
   PermissionDecision,
 } from "./types";
 
-const STORAGE_FALLBACK_KEY = "compose_desktop_state_v1";
+const STORAGE_FALLBACK_KEY = "compose_mesh_state_v1";
 
 const DEFAULT_API_URL = (
   import.meta.env.VITE_API_URL ||
@@ -25,14 +25,14 @@ const DEFAULT_API_URL = (
 ).replace(/\/+$/, "");
 
 const defaultPermissions: AgentPermissionPolicy = {
-  shell: "ask",
-  filesystemRead: "ask",
-  filesystemWrite: "ask",
-  filesystemEdit: "ask",
-  filesystemDelete: "ask",
-  camera: "ask",
-  microphone: "ask",
-  network: "ask",
+  shell: "deny",
+  filesystemRead: "deny",
+  filesystemWrite: "deny",
+  filesystemEdit: "deny",
+  filesystemDelete: "deny",
+  camera: "deny",
+  microphone: "deny",
+  network: "deny",
 };
 
 const defaultOsPermissions: OsPermissionSnapshot = {
@@ -231,7 +231,7 @@ function normalizeAgentReport(value: Partial<AgentTaskReport> | null | undefined
 
 function normalizePermissionPolicy(value: Partial<AgentPermissionPolicy> | null | undefined): AgentPermissionPolicy {
   const toDecision = (input: unknown, fallback: PermissionDecision): PermissionDecision => {
-    if (input === "allow" || input === "ask" || input === "deny") {
+    if (input === "allow" || input === "deny") {
       return input;
     }
     if (typeof input === "boolean") {
@@ -328,7 +328,7 @@ function normalizeInstalledAgent(
   };
 }
 
-const defaultState: DesktopRuntimeState = {
+const defaultState: LocalRuntimeState = {
   settings: {
     apiUrl: DEFAULT_API_URL,
     runtimeUrl: DEFAULT_API_URL,
@@ -345,7 +345,7 @@ function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-function cloneDefaultState(): DesktopRuntimeState {
+function cloneDefaultState(): LocalRuntimeState {
   return {
     settings: { ...defaultState.settings },
     identity: null,
@@ -362,7 +362,6 @@ function normalizeLinkedDeploymentIntent(value: Partial<LinkedDeploymentIntent> 
     return null;
   }
 
-  const source = value.source === "signed-install" ? "signed-install" : "desktop-link";
   const agentCardCid = typeof value.agentCardCid === "string" && value.agentCardCid.trim().length > 0
     ? value.agentCardCid.trim()
     : null;
@@ -371,12 +370,12 @@ function normalizeLinkedDeploymentIntent(value: Partial<LinkedDeploymentIntent> 
     agentWallet: value.agentWallet.trim().toLowerCase(),
     agentCardCid,
     chainId: Number.isFinite(value.chainId) ? Number(value.chainId) : 0,
-    source,
+    source: "local-link",
     receivedAt: Number.isFinite(value.receivedAt) ? Number(value.receivedAt) : Date.now(),
   };
 }
 
-function normalizeState(state: Partial<DesktopRuntimeState> | null | undefined): DesktopRuntimeState {
+function normalizeState(state: Partial<LocalRuntimeState> | null | undefined): LocalRuntimeState {
   const base = cloneDefaultState();
   if (!state) return base;
 
@@ -408,35 +407,35 @@ function normalizeState(state: Partial<DesktopRuntimeState> | null | undefined):
   };
 }
 
-async function readStateFromTauri(): Promise<DesktopRuntimeState> {
-  const raw = await invoke<string>("load_desktop_state");
-  const parsed = raw ? (JSON.parse(raw) as Partial<DesktopRuntimeState>) : null;
+async function readStateFromTauri(): Promise<LocalRuntimeState> {
+  const raw = await invoke<string>("load_local_state");
+  const parsed = raw ? (JSON.parse(raw) as Partial<LocalRuntimeState>) : null;
   return normalizeState(parsed);
 }
 
-async function writeStateToTauri(state: DesktopRuntimeState): Promise<void> {
-  await invoke("save_desktop_state", {
+async function writeStateToTauri(state: LocalRuntimeState): Promise<void> {
+  await invoke("save_local_state", {
     stateJson: JSON.stringify(state),
   });
 }
 
-function readStateFromFallback(): DesktopRuntimeState {
+function readStateFromFallback(): LocalRuntimeState {
   const raw = localStorage.getItem(STORAGE_FALLBACK_KEY);
   if (!raw) {
     return cloneDefaultState();
   }
   try {
-    return normalizeState(JSON.parse(raw) as Partial<DesktopRuntimeState>);
+    return normalizeState(JSON.parse(raw) as Partial<LocalRuntimeState>);
   } catch {
     return cloneDefaultState();
   }
 }
 
-function writeStateToFallback(state: DesktopRuntimeState): void {
+function writeStateToFallback(state: LocalRuntimeState): void {
   localStorage.setItem(STORAGE_FALLBACK_KEY, JSON.stringify(state));
 }
 
-export async function loadRuntimeState(): Promise<DesktopRuntimeState> {
+export async function loadRuntimeState(): Promise<LocalRuntimeState> {
   if (isTauriRuntime()) {
     try {
       return await readStateFromTauri();
@@ -447,7 +446,7 @@ export async function loadRuntimeState(): Promise<DesktopRuntimeState> {
   return readStateFromFallback();
 }
 
-export async function saveRuntimeState(state: DesktopRuntimeState): Promise<void> {
+export async function saveRuntimeState(state: LocalRuntimeState): Promise<void> {
   const normalized = normalizeState(state);
   if (isTauriRuntime()) {
     try {
@@ -461,22 +460,22 @@ export async function saveRuntimeState(state: DesktopRuntimeState): Promise<void
 }
 
 export async function updateRuntimeState(
-  updater: (current: DesktopRuntimeState) => DesktopRuntimeState,
-): Promise<DesktopRuntimeState> {
+  updater: (current: LocalRuntimeState) => LocalRuntimeState,
+): Promise<LocalRuntimeState> {
   const current = await loadRuntimeState();
   const next = normalizeState(updater(current));
   await saveRuntimeState(next);
   return next;
 }
 
-export async function getDesktopPaths(): Promise<DesktopPaths | null> {
+export async function getLocalPaths(): Promise<LocalPaths | null> {
   if (!isTauriRuntime()) {
     return null;
   }
   try {
-    return await invoke<DesktopPaths>("get_desktop_paths");
+    return await invoke<LocalPaths>("get_local_paths");
   } catch (error) {
-    console.error("[storage] Failed to load desktop paths", error);
+    console.error("[storage] Failed to load local paths", error);
     return null;
   }
 }
@@ -486,7 +485,7 @@ export async function ensureManagedDir(relativePath: string): Promise<string | n
     return null;
   }
   try {
-    return await invoke<string>("ensure_desktop_dir", { relativePath });
+    return await invoke<string>("ensure_local_dir", { relativePath });
   } catch (error) {
     console.error(`[storage] Failed to ensure directory ${relativePath}`, error);
     return null;
@@ -498,7 +497,7 @@ export async function writeManagedFile(relativePath: string, content: string): P
     return null;
   }
   try {
-    return await invoke<string>("write_desktop_file", { relativePath, content });
+    return await invoke<string>("write_local_file", { relativePath, content });
   } catch (error) {
     console.error(`[storage] Failed to write file ${relativePath}`, error);
     return null;
@@ -510,7 +509,7 @@ export async function readManagedFile(relativePath: string): Promise<string | nu
     return null;
   }
   try {
-    return await invoke<string>("read_desktop_file", { relativePath });
+    return await invoke<string>("read_local_file", { relativePath });
   } catch {
     return null;
   }
@@ -521,7 +520,7 @@ export async function removeManagedPath(relativePath: string): Promise<boolean> 
     return false;
   }
   try {
-    return await invoke<boolean>("remove_desktop_path", { relativePath });
+    return await invoke<boolean>("remove_local_path", { relativePath });
   } catch {
     return false;
   }
@@ -609,7 +608,7 @@ export function getDefaultPermissionPolicy(): AgentPermissionPolicy {
 }
 
 export function permissionAllows(value: PermissionDecision): boolean {
-  return value === "allow" || value === "ask";
+  return value === "allow";
 }
 
 export function permissionPolicyToGrantedList(policy: AgentPermissionPolicy): string[] {
