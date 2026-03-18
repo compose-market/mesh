@@ -1,0 +1,132 @@
+name: Release Compose Mesh
+
+# ─── Trigger ───────────────────────────────────────────────────────────
+# Push a tag like: v0.9.1, v0.9.2-exp, v0.9.3-mac, v1.0.0
+on:
+  push:
+    tags:
+      - "v*"
+
+# ─── Permissions ───────────────────────────────────────────────────────
+permissions:
+  contents: write    # create releases & upload assets
+
+# ─── Concurrency ───────────────────────────────────────────────────────
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+# ─── Jobs ──────────────────────────────────────────────────────────────
+jobs:
+  # ── Build matrix ─────────────────────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS Intel
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            label: mac-intel
+          # macOS Apple Silicon
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: mac-arm
+          # Linux
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux
+          # Windows
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── System deps (Linux) ────────────────────────────────────────
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      # ── Rust ───────────────────────────────────────────────────────
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: tauri
+
+      # ── Node ───────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # ── Extract version from tag ───────────────────────────────────
+      - name: Parse version from tag
+        id: version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION from tag: $TAG"
+
+      # ── Stamp version into tauri.conf.json ─────────────────────────
+      - name: Set version in tauri.conf.json
+        shell: bash
+        working-directory: tauri
+        run: |
+          # Extract clean semver (strip any pre-release suffix for tauri)
+          RAW="${{ steps.version.outputs.version }}"
+          SEMVER=$(echo "$RAW" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+          if [ -z "$SEMVER" ]; then
+            # If tag is like v0.9 (no patch), append .0
+            SEMVER=$(echo "$RAW" | grep -oE '^[0-9]+\.[0-9]+')
+            SEMVER="${SEMVER}.0"
+          fi
+          echo "Stamping version: $SEMVER"
+          node -e "
+            const fs = require('fs');
+            const conf = JSON.parse(fs.readFileSync('tauri.conf.json', 'utf8'));
+            conf.version = '$SEMVER';
+            fs.writeFileSync('tauri.conf.json', JSON.stringify(conf, null, 2) + '\n');
+          "
+
+      # ── Build & sign ───────────────────────────────────────────────
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tauriScript: npx tauri
+          tagName: ${{ steps.version.outputs.tag }}
+          releaseName: "Compose Mesh ${{ steps.version.outputs.tag }}"
+          releaseBody: |
+            Compose Mesh ${{ steps.version.outputs.tag }}
+
+            **Platform:** ${{ matrix.label }}
+
+            See the [full changelog](https://github.com/compose-market/mesh/commits/${{ steps.version.outputs.tag }}) for details.
+          releaseDraft: false
+          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
+          args: --target ${{ matrix.target }}
