@@ -27,7 +27,7 @@ export type AgentDetailTab = "permissions" | "skills" | "history" | "mesh";
 
 export interface AgentExecutionPolicy {
   grantedPermissions: string[];
-  permissionPolicy: Record<string, "allow" | "ask" | "deny">;
+  permissionPolicy: Record<string, "allow" | "deny">;
 }
 
 export interface AgentEconomicsActivity {
