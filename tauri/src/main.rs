@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod runtime_host;
+
 use futures::StreamExt;
 use libp2p::{
     autonat,
@@ -15,18 +17,26 @@ use libp2p::{
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol,
 };
+use rand::{rngs::OsRng, RngCore};
+use reqwest::Client as HttpClient;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, RunEvent};
 use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::{mpsc, oneshot};
 
+use runtime_host::{current_runtime_host_auth_token, LocalRuntimeHostState, LocalRuntimeHostStatus};
+
+const LOCAL_RUNTIME_AUTH_HEADER: &str = "x-compose-local-runtime-token";
+const COMPOSE_SYNAPSE_COLLECTION: &str = "compose";
+
 #[derive(Debug, serde::Serialize)]
-struct DesktopPaths {
+struct LocalPaths {
     base_dir: String,
     state_file: String,
     agents_dir: String,
@@ -49,14 +59,14 @@ struct DaemonPermissionPolicy {
 impl Default for DaemonPermissionPolicy {
     fn default() -> Self {
         Self {
-            shell: "ask".to_string(),
-            filesystem_read: "ask".to_string(),
-            filesystem_write: "ask".to_string(),
-            filesystem_edit: "ask".to_string(),
+            shell: "deny".to_string(),
+            filesystem_read: "deny".to_string(),
+            filesystem_write: "deny".to_string(),
+            filesystem_edit: "deny".to_string(),
             filesystem_delete: "deny".to_string(),
-            camera: "ask".to_string(),
-            microphone: "ask".to_string(),
-            network: "allow".to_string(),
+            camera: "deny".to_string(),
+            microphone: "deny".to_string(),
+            network: "deny".to_string(),
         }
     }
 }
@@ -123,7 +133,7 @@ impl Default for DaemonStateFile {
 }
 
 #[derive(Default)]
-struct DesktopDaemonState {
+struct LocalDaemonState {
     state: Mutex<DaemonStateFile>,
 }
 
@@ -230,6 +240,251 @@ struct MeshManifestUnsigned {
     signed_at: u64,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshStateSnapshotRuntime {
+    dna_hash: String,
+    model_id: String,
+    chain_id: u32,
+    agent_card_cid: String,
+    mcp_tools_hash: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshStateSnapshotManifest {
+    skills: Vec<String>,
+    capabilities: Vec<String>,
+    mcp_servers: Vec<String>,
+    a2a_endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshStateSnapshotReceipts {
+    latest_conclave_ids: Vec<String>,
+    latest_hypercert_ids: Vec<String>,
+    latest_proof_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshStateSnapshot {
+    version: u64,
+    created_at: u64,
+    agent_wallet: String,
+    user_wallet: String,
+    device_id: String,
+    peer_id: String,
+    runtime: MeshStateSnapshotRuntime,
+    manifest: MeshStateSnapshotManifest,
+    receipts: MeshStateSnapshotReceipts,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshStateSnapshotRequest {
+    agent_wallet: String,
+    chain_id: u32,
+    peer_id: String,
+    model_id: String,
+    dna_hash: String,
+    agent_card_cid: String,
+    mcp_tools_hash: String,
+    skills: Vec<String>,
+    capabilities: Vec<String>,
+    mcp_servers: Vec<String>,
+    a2a_endpoints: Vec<String>,
+    #[serde(default)]
+    latest_conclave_ids: Vec<String>,
+    #[serde(default)]
+    latest_hypercert_ids: Vec<String>,
+    #[serde(default)]
+    latest_proof_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshStateAnchorCommandRequest {
+    api_url: String,
+    compose_key_token: String,
+    user_address: String,
+    device_id: String,
+    target_synapse_expiry: u64,
+    snapshot: MeshStateSnapshotRequest,
+    previous_state_root_hash: Option<String>,
+    previous_pdp_piece_cid: Option<String>,
+    previous_pdp_anchored_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshHaiRecord {
+    version: u32,
+    agent_wallet: String,
+    user_wallet: String,
+    device_id: String,
+    hai_id: String,
+    synapse_session_private_key: String,
+    payer_address: Option<String>,
+    session_key_expires_at: Option<u64>,
+    next_update_number: u64,
+    last_update_number: Option<u64>,
+    last_path: Option<String>,
+    last_state_root_hash: Option<String>,
+    last_piece_cid: Option<String>,
+    last_anchored_at: Option<u64>,
+    updated_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedMeshStateEnvelope {
+    version: u32,
+    kind: String,
+    collection: String,
+    hai_id: String,
+    update_number: u64,
+    path: String,
+    peer_id: String,
+    agent_wallet: String,
+    user_wallet: String,
+    device_id: String,
+    chain_id: u32,
+    signed_at: u64,
+    state_root_hash: String,
+    snapshot: MeshStateSnapshot,
+    signature: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshStateAnchorRuntimeResponse {
+    hai_id: String,
+    update_number: u64,
+    path: String,
+    state_root_hash: String,
+    pdp_piece_cid: String,
+    pdp_anchored_at: u64,
+    payload_size: usize,
+    provider_id: String,
+    data_set_id: Option<String>,
+    retrieval_url: Option<String>,
+    payer_address: String,
+    session_key_expires_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshPublicationQueueRequest {
+    request_id: String,
+    agent_wallet: String,
+    requested_at: u64,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshPublicationQueueResult {
+    request_id: String,
+    success: bool,
+    error: Option<String>,
+    hai_id: Option<String>,
+    update_number: Option<u64>,
+    path: Option<String>,
+    state_root_hash: Option<String>,
+    pdp_piece_cid: Option<String>,
+    pdp_anchored_at: Option<u64>,
+    manifest: Option<MeshManifest>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedLocalState {
+    settings: PersistedLocalSettings,
+    identity: Option<PersistedLocalIdentity>,
+    installed_agents: Vec<PersistedInstalledAgent>,
+    installed_skills: Vec<PersistedInstalledSkill>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedLocalSettings {
+    api_url: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedLocalIdentity {
+    user_address: String,
+    compose_key_token: String,
+    chain_id: u32,
+    expires_at: u64,
+    device_id: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedInstalledSkill {
+    id: String,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedInstalledAgent {
+    agent_wallet: String,
+    metadata: PersistedAgentMetadata,
+    lock: PersistedAgentLock,
+    network: PersistedAgentNetworkState,
+    skill_states: HashMap<String, PersistedAgentSkillState>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedAgentMetadata {
+    name: String,
+    description: String,
+    agent_card_uri: String,
+    model: String,
+    framework: String,
+    plugins: Vec<serde_json::Value>,
+    endpoints: PersistedAgentEndpoints,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedAgentEndpoints {
+    chat: String,
+    stream: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedAgentLock {
+    agent_wallet: String,
+    agent_card_cid: String,
+    model_id: String,
+    mcp_tools_hash: String,
+    chain_id: u32,
+    dna_hash: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedAgentNetworkState {
+    public_card: Option<MeshAgentCard>,
+    manifest: Option<MeshManifest>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedAgentSkillState {
+    skill_id: String,
+    enabled: bool,
+    eligible: bool,
+}
+
 enum MeshLoopCommand {
     PublishManifest {
         manifest: MeshManifest,
@@ -289,7 +544,7 @@ struct MeshRuntimeStatus {
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DesktopUpdateCheckResult {
+struct LocalUpdateCheckResult {
     enabled: bool,
     available: bool,
     current_version: Option<String>,
@@ -396,7 +651,7 @@ impl From<void::Void> for MeshBehaviourEvent {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Duration::from_secs(0))
@@ -420,7 +675,7 @@ fn default_conclave_topic() -> String {
 }
 
 fn default_kad_protocol() -> String {
-    "/compose-market/desktop/kad/1.0.0".to_string()
+    "/compose-market/local/kad/1.0.0".to_string()
 }
 
 fn normalize_wallet(value: &str) -> Option<String> {
@@ -559,6 +814,25 @@ fn normalize_optional_hex_32(value: Option<String>) -> Result<Option<String>, St
     Ok(Some(trimmed))
 }
 
+fn normalize_state_root_hash_for_compare(value: &str) -> Option<String> {
+    let trimmed = value.trim().to_lowercase();
+    let normalized = trimmed.strip_prefix("0x").unwrap_or(&trimmed);
+    if normalized.len() != 64 || !normalized.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(normalized.to_string())
+}
+
+fn same_state_root_hash(previous: Option<&str>, next: &str) -> bool {
+    let Some(previous_normalized) = previous.and_then(normalize_state_root_hash_for_compare) else {
+        return false;
+    };
+    let Some(next_normalized) = normalize_state_root_hash_for_compare(next) else {
+        return false;
+    };
+    previous_normalized == next_normalized
+}
+
 fn normalize_optional_cid(value: Option<String>) -> Option<String> {
     let trimmed = value.unwrap_or_default().trim().to_string();
     if trimmed.is_empty() {
@@ -601,6 +875,552 @@ fn hex_encode(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{:02x}", byte))
         .collect::<String>()
+}
+
+fn generate_synapse_private_key() -> String {
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    format!("0x{}", hex_encode(&bytes))
+}
+
+fn normalize_snapshot_receipt_ids(values: &[String]) -> Vec<String> {
+    normalize_manifest_atoms(values, 64, 128)
+}
+
+fn hai_registry_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = resolve_base_dir(app)?.join("synapse").join("hai");
+    fs::create_dir_all(&dir).map_err(|err| format!("failed to create Synapse HAI dir: {err}"))?;
+    Ok(dir)
+}
+
+fn hai_record_path(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+    user_wallet: &str,
+    device_id: &str,
+) -> Result<PathBuf, String> {
+    Ok(hai_registry_dir(app)?.join(format!(
+        "{}__{}__{}.json",
+        agent_wallet.to_lowercase(),
+        user_wallet.to_lowercase(),
+        device_id
+    )))
+}
+
+fn normalized_hai_triplet_key(agent_wallet: &str, user_wallet: &str, device_id: &str) -> String {
+    format!(
+        "{}:{}:{}",
+        agent_wallet.trim().to_lowercase(),
+        user_wallet.trim().to_lowercase(),
+        device_id.trim()
+    )
+}
+
+fn same_hai_triplet(
+    record: &MeshHaiRecord,
+    agent_wallet: &str,
+    user_wallet: &str,
+    device_id: &str,
+) -> bool {
+    record.agent_wallet == agent_wallet.trim().to_lowercase()
+        && record.user_wallet == user_wallet.trim().to_lowercase()
+        && record.device_id == device_id.trim()
+}
+
+fn compose_hai_path(hai_id: &str, update_number: u64) -> String {
+    format!("compose-{}-#{}", hai_id, update_number)
+}
+
+fn deterministic_hai_candidate(seed: &str) -> String {
+    sha256_hex_string(seed).chars().take(6).collect()
+}
+
+fn load_hai_record_by_id(app: &tauri::AppHandle, hai_id: &str) -> Result<Option<MeshHaiRecord>, String> {
+    let dir = hai_registry_dir(app)?;
+    for entry in fs::read_dir(&dir).map_err(|err| format!("failed to read Synapse HAI dir: {err}"))? {
+        let entry = entry.map_err(|err| format!("failed to inspect Synapse HAI entry: {err}"))?;
+        let raw = match fs::read_to_string(entry.path()) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let parsed = match serde_json::from_str::<MeshHaiRecord>(&raw) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if parsed.hai_id == hai_id {
+            return Ok(Some(parsed));
+        }
+    }
+    Ok(None)
+}
+
+fn derive_deterministic_hai_id(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+    user_wallet: &str,
+    device_id: &str,
+) -> Result<String, String> {
+    let triplet_key = normalized_hai_triplet_key(agent_wallet, user_wallet, device_id);
+    for attempt in 0..128usize {
+        let seed = if attempt == 0 {
+            triplet_key.clone()
+        } else {
+            format!("{}:{}", triplet_key, attempt)
+        };
+        let candidate = deterministic_hai_candidate(&seed);
+        match load_hai_record_by_id(app, &candidate)? {
+            None => return Ok(candidate),
+            Some(existing) if same_hai_triplet(&existing, agent_wallet, user_wallet, device_id) => {
+                return Ok(candidate)
+            }
+            Some(_) => continue,
+        }
+    }
+    Err("failed to derive a unique deterministic HAI id".to_string())
+}
+
+fn load_or_create_hai_record(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+    user_wallet: &str,
+    device_id: &str,
+) -> Result<MeshHaiRecord, String> {
+    let path = hai_record_path(app, agent_wallet, user_wallet, device_id)?;
+    let expected_hai_id = derive_deterministic_hai_id(app, agent_wallet, user_wallet, device_id)?;
+    if path.exists() {
+        let raw = fs::read_to_string(&path).map_err(|err| format!("failed to read HAI record: {err}"))?;
+        let mut record =
+            serde_json::from_str::<MeshHaiRecord>(&raw).map_err(|err| format!("failed to parse HAI record: {err}"))?;
+        let mut changed = false;
+        if record.hai_id != expected_hai_id {
+            record.hai_id = expected_hai_id.clone();
+            changed = true;
+        }
+        match record.last_update_number {
+            Some(last_update_number) => {
+                let expected_path = compose_hai_path(&record.hai_id, last_update_number);
+                if record.last_path.as_deref() != Some(expected_path.as_str()) {
+                    record.last_path = Some(expected_path);
+                    changed = true;
+                }
+            }
+            None if record.last_path.is_some() => {
+                record.last_path = None;
+                changed = true;
+            }
+            None => {}
+        }
+        if changed {
+            record.updated_at = now_ms();
+            write_hai_record(app, &record)?;
+        }
+        return Ok(record);
+    }
+
+    let record = MeshHaiRecord {
+        version: 1,
+        agent_wallet: agent_wallet.to_lowercase(),
+        user_wallet: user_wallet.to_lowercase(),
+        device_id: device_id.to_string(),
+        hai_id: expected_hai_id,
+        synapse_session_private_key: generate_synapse_private_key(),
+        payer_address: None,
+        session_key_expires_at: None,
+        next_update_number: 1,
+        last_update_number: None,
+        last_path: None,
+        last_state_root_hash: None,
+        last_piece_cid: None,
+        last_anchored_at: None,
+        updated_at: now_ms(),
+    };
+    write_hai_record(app, &record)?;
+    Ok(record)
+}
+
+fn write_hai_record(app: &tauri::AppHandle, record: &MeshHaiRecord) -> Result<(), String> {
+    let path = hai_record_path(app, &record.agent_wallet, &record.user_wallet, &record.device_id)?;
+    let serialized = serde_json::to_string_pretty(record)
+        .map_err(|err| format!("failed to serialize HAI record: {err}"))?;
+    fs::write(path, serialized).map_err(|err| format!("failed to write HAI record: {err}"))
+}
+
+fn persist_manifest_update(app: &tauri::AppHandle, manifest: &MeshManifest) -> Result<(), String> {
+    let state_path = local_state_path(app)?;
+    if !state_path.exists() {
+        return Ok(());
+    }
+
+    let raw = fs::read_to_string(&state_path).map_err(|err| format!("failed to read local state for manifest update: {err}"))?;
+    let mut value = serde_json::from_str::<serde_json::Value>(&raw)
+        .map_err(|err| format!("failed to parse local state for manifest update: {err}"))?;
+
+    let Some(installed_agents) = value.get_mut("installedAgents").and_then(|items| items.as_array_mut()) else {
+        return Ok(());
+    };
+
+    for agent in installed_agents.iter_mut() {
+        let wallet = agent
+            .get("agentWallet")
+            .and_then(|entry| entry.as_str())
+            .and_then(normalize_wallet);
+        if wallet.as_deref() != Some(manifest.agent_wallet.as_str()) {
+            continue;
+        }
+
+        if !agent.get("network").is_some_and(|entry| entry.is_object()) {
+            agent["network"] = serde_json::json!({});
+        }
+        agent["network"]["manifest"] = serde_json::to_value(manifest)
+            .map_err(|err| format!("failed to encode published manifest: {err}"))?;
+        break;
+    }
+
+    let serialized = serde_json::to_string_pretty(&value)
+        .map_err(|err| format!("failed to serialize updated local state: {err}"))?;
+    fs::write(&state_path, serialized).map_err(|err| format!("failed to persist updated local state: {err}"))
+}
+
+fn normalize_persisted_url(value: &str) -> Option<String> {
+    let trimmed = truncate_string(value.to_string(), 256);
+    let lower = trimmed.to_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
+fn normalize_agent_card_uri(metadata_uri: &str, fallback_cid: &str) -> Result<String, String> {
+    let metadata_uri = metadata_uri.trim();
+    if !metadata_uri.is_empty() {
+        if metadata_uri.starts_with("ipfs://") {
+            return Ok(metadata_uri.to_string());
+        }
+        return Ok(format!("ipfs://{}", metadata_uri.trim_start_matches('/')));
+    }
+
+    let fallback = fallback_cid.trim();
+    if fallback.is_empty() {
+        return Err("agentCardCid is required to build the mesh manifest".to_string());
+    }
+    Ok(format!("ipfs://{}", fallback))
+}
+
+fn extract_plugin_capabilities(values: &[serde_json::Value]) -> Vec<String> {
+    let mut out = values
+        .iter()
+        .filter_map(|value| {
+            if let Some(raw) = value.as_str() {
+                return normalize_capability(raw);
+            }
+            value
+                .as_object()
+                .and_then(|entry| entry.get("registryId"))
+                .and_then(|entry| entry.as_str())
+                .and_then(normalize_capability)
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn merge_mesh_skill_ids(
+    installed_skills: &[PersistedInstalledSkill],
+    agent_skills: &HashMap<String, PersistedAgentSkillState>,
+) -> Vec<String> {
+    let mut values = installed_skills
+        .iter()
+        .filter(|skill| skill.enabled)
+        .map(|skill| skill.id.clone())
+        .collect::<Vec<_>>();
+
+    values.extend(
+        agent_skills
+            .values()
+            .filter(|state| state.enabled && state.eligible)
+            .filter_map(|state| {
+                if state.skill_id.trim().is_empty() {
+                    None
+                } else {
+                    Some(state.skill_id.clone())
+                }
+            }),
+    );
+
+    normalize_manifest_atoms(&values, 128, 96)
+}
+
+fn manifest_comparable_payload(manifest: &MeshManifest) -> serde_json::Value {
+    serde_json::json!({
+        "agentWallet": manifest.agent_wallet,
+        "userWallet": manifest.user_wallet,
+        "deviceId": manifest.device_id,
+        "chainId": manifest.chain_id,
+        "stateRootHash": manifest.state_root_hash,
+        "pdpPieceCid": manifest.pdp_piece_cid,
+        "pdpAnchoredAt": manifest.pdp_anchored_at,
+        "name": manifest.name,
+        "description": manifest.description,
+        "model": manifest.model,
+        "framework": manifest.framework,
+        "headline": manifest.headline,
+        "statusLine": manifest.status_line,
+        "skills": manifest.skills,
+        "mcpServers": manifest.mcp_servers,
+        "a2aEndpoints": manifest.a2a_endpoints,
+        "capabilities": manifest.capabilities,
+        "agentCardUri": manifest.agent_card_uri,
+        "reputationScore": manifest.reputation_score,
+        "totalConclaves": manifest.total_conclaves,
+        "successfulConclaves": manifest.successful_conclaves,
+    })
+}
+
+fn next_manifest_state_version(previous_manifest: Option<&MeshManifest>, next_manifest: &MeshManifest) -> u64 {
+    match previous_manifest {
+        None => 1,
+        Some(previous) => {
+            if manifest_comparable_payload(previous) == manifest_comparable_payload(next_manifest) {
+                previous.state_version
+            } else {
+                previous.state_version.saturating_add(1)
+            }
+        }
+    }
+}
+
+fn build_current_mesh_publication(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+    live_status: &MeshRuntimeStatus,
+) -> Result<(MeshManifest, MeshStateAnchorCommandRequest), String> {
+    let state = load_persisted_local_state(app)?;
+    let identity = state
+        .identity
+        .as_ref()
+        .ok_or_else(|| "local identity is required for mesh publication".to_string())?;
+    let normalized_user_wallet = normalize_wallet(&identity.user_address)
+        .ok_or_else(|| "local identity userAddress is invalid".to_string())?;
+    let normalized_device_id = normalize_device_id(&identity.device_id)
+        .ok_or_else(|| "local identity deviceId is invalid".to_string())?;
+    let compose_key_token = identity.compose_key_token.trim().to_string();
+    if compose_key_token.is_empty() {
+        return Err("local identity composeKeyToken is required for mesh publication".to_string());
+    }
+
+    let normalized_agent_wallet = normalize_wallet(agent_wallet)
+        .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
+    let agent = state
+        .installed_agents
+        .iter()
+        .find(|entry| normalize_wallet(&entry.agent_wallet).as_deref() == Some(normalized_agent_wallet.as_str()))
+        .cloned()
+        .ok_or_else(|| format!("local state is missing installed agent {}", normalized_agent_wallet))?;
+
+    let previous_manifest = agent.network.manifest.clone();
+    let existing_card = agent.network.public_card.clone();
+    let model_id = if !agent.lock.model_id.trim().is_empty() {
+        agent.lock.model_id.clone()
+    } else {
+        agent.metadata.model.clone()
+    };
+    if model_id.trim().is_empty() {
+        return Err("installed agent lock is missing modelId".to_string());
+    }
+
+    let framework = if !agent.metadata.framework.trim().is_empty() {
+        agent.metadata.framework.clone()
+    } else {
+        "openclaw".to_string()
+    };
+    let capabilities = {
+        let base = existing_card
+            .as_ref()
+            .map(|card| card.capabilities.clone())
+            .filter(|items| !items.is_empty())
+            .unwrap_or_else(|| extract_plugin_capabilities(&agent.metadata.plugins));
+        normalize_manifest_atoms(&base, 128, 96)
+    };
+    let skills = merge_mesh_skill_ids(&state.installed_skills, &agent.skill_states);
+    let a2a_endpoints = normalize_manifest_urls(
+        &[
+            agent.metadata.endpoints.chat.clone(),
+            agent.metadata.endpoints.stream.clone(),
+        ]
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>(),
+        16,
+    );
+    let peer_id = live_status
+        .peer_id
+        .clone()
+        .ok_or_else(|| "mesh runtime does not have a live peerId yet".to_string())?;
+
+    let mut manifest = MeshManifest {
+        agent_wallet: normalized_agent_wallet.clone(),
+        user_wallet: normalized_user_wallet.clone(),
+        device_id: normalized_device_id.clone(),
+        peer_id,
+        chain_id: if identity.chain_id > 0 { identity.chain_id } else { agent.lock.chain_id },
+        state_version: 1,
+        state_root_hash: previous_manifest.as_ref().and_then(|value| value.state_root_hash.clone()),
+        pdp_piece_cid: previous_manifest.as_ref().and_then(|value| value.pdp_piece_cid.clone()),
+        pdp_anchored_at: previous_manifest.as_ref().and_then(|value| value.pdp_anchored_at),
+        name: truncate_string(
+            existing_card
+                .as_ref()
+                .map(|card| card.name.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| agent.metadata.name.clone()),
+            80,
+        ),
+        description: truncate_string(agent.metadata.description.clone(), 240),
+        model: truncate_string(
+            existing_card
+                .as_ref()
+                .map(|card| card.model.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| model_id.clone()),
+            120,
+        ),
+        framework: truncate_string(
+            existing_card
+                .as_ref()
+                .map(|card| card.framework.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| framework.clone()),
+            80,
+        ),
+        headline: truncate_string(
+            existing_card
+                .as_ref()
+                .map(|card| card.headline.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| format!("{} on {}", agent.metadata.name, framework)),
+            120,
+        ),
+        status_line: truncate_string(
+            existing_card
+                .as_ref()
+                .map(|card| card.status_line.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| agent.metadata.description.clone()),
+            180,
+        ),
+        skills: skills.clone(),
+        mcp_servers: previous_manifest
+            .as_ref()
+            .map(|value| value.mcp_servers.clone())
+            .unwrap_or_default(),
+        a2a_endpoints: a2a_endpoints.clone(),
+        capabilities: capabilities.clone(),
+        agent_card_uri: normalize_agent_card_uri(&agent.metadata.agent_card_uri, &agent.lock.agent_card_cid)?,
+        listen_multiaddrs: normalize_multiaddr_strings(&live_status.listen_multiaddrs),
+        relay_peer_id: previous_manifest.as_ref().and_then(|value| value.relay_peer_id.clone()),
+        reputation_score: previous_manifest.as_ref().map(|value| value.reputation_score).unwrap_or(0.0),
+        total_conclaves: previous_manifest.as_ref().map(|value| value.total_conclaves).unwrap_or(0),
+        successful_conclaves: previous_manifest.as_ref().map(|value| value.successful_conclaves).unwrap_or(0),
+        signed_at: 0,
+        signature: String::new(),
+    };
+    manifest.state_version = next_manifest_state_version(previous_manifest.as_ref(), &manifest);
+
+    let snapshot = MeshStateSnapshotRequest {
+        agent_wallet: normalized_agent_wallet,
+        chain_id: manifest.chain_id,
+        peer_id: manifest.peer_id.clone(),
+        model_id,
+        dna_hash: agent.lock.dna_hash.clone(),
+        agent_card_cid: agent.lock.agent_card_cid.clone(),
+        mcp_tools_hash: agent.lock.mcp_tools_hash.clone(),
+        skills,
+        capabilities,
+        mcp_servers: manifest.mcp_servers.clone(),
+        a2a_endpoints,
+        latest_conclave_ids: Vec::new(),
+        latest_hypercert_ids: Vec::new(),
+        latest_proof_ids: Vec::new(),
+    };
+
+    let anchor_request = MeshStateAnchorCommandRequest {
+        api_url: normalize_persisted_url(&state.settings.api_url)
+            .ok_or_else(|| "local settings apiUrl is invalid for mesh publication".to_string())?,
+        compose_key_token,
+        user_address: normalized_user_wallet,
+        device_id: normalized_device_id,
+        target_synapse_expiry: identity.expires_at,
+        previous_state_root_hash: previous_manifest.as_ref().and_then(|value| value.state_root_hash.clone()),
+        previous_pdp_piece_cid: previous_manifest.as_ref().and_then(|value| value.pdp_piece_cid.clone()),
+        previous_pdp_anchored_at: previous_manifest.as_ref().and_then(|value| value.pdp_anchored_at),
+        snapshot,
+    };
+
+    Ok((manifest, anchor_request))
+}
+
+fn normalize_mesh_state_snapshot_request(
+    request: &MeshStateAnchorCommandRequest,
+    live_status: &MeshRuntimeStatus,
+) -> Result<MeshStateSnapshot, String> {
+    let user_wallet = normalize_wallet(&request.user_address)
+        .ok_or_else(|| "userAddress must be a valid wallet address".to_string())?;
+    let agent_wallet = normalize_wallet(&request.snapshot.agent_wallet)
+        .ok_or_else(|| "snapshot.agentWallet must be a valid wallet address".to_string())?;
+    let device_id = normalize_device_id(&request.device_id)
+        .ok_or_else(|| "deviceId format is invalid".to_string())?;
+    if live_status.agent_wallet.as_deref() != Some(agent_wallet.as_str()) {
+        return Err("snapshot agentWallet does not match the running mesh agent".to_string());
+    }
+    if live_status.device_id.as_deref() != Some(device_id.as_str()) {
+        return Err("snapshot deviceId does not match the running mesh device".to_string());
+    }
+    let peer_id = live_status
+        .peer_id
+        .clone()
+        .ok_or_else(|| "mesh runtime does not have a live peerId yet".to_string())?;
+    if peer_id != request.snapshot.peer_id.trim() {
+        return Err("snapshot.peerId does not match the running mesh peer".to_string());
+    }
+
+    Ok(MeshStateSnapshot {
+        version: 2,
+        created_at: now_ms(),
+        agent_wallet,
+        user_wallet,
+        device_id,
+        peer_id,
+        runtime: MeshStateSnapshotRuntime {
+            dna_hash: truncate_string(request.snapshot.dna_hash.clone(), 256),
+            model_id: truncate_string(request.snapshot.model_id.clone(), 128),
+            chain_id: request.snapshot.chain_id,
+            agent_card_cid: truncate_string(request.snapshot.agent_card_cid.clone(), 256),
+            mcp_tools_hash: truncate_string(request.snapshot.mcp_tools_hash.clone(), 256),
+        },
+        manifest: MeshStateSnapshotManifest {
+            skills: normalize_manifest_atoms(&request.snapshot.skills, 128, 96),
+            capabilities: normalize_manifest_atoms(&request.snapshot.capabilities, 128, 96),
+            mcp_servers: normalize_manifest_atoms(&request.snapshot.mcp_servers, 64, 128),
+            a2a_endpoints: normalize_manifest_urls(&request.snapshot.a2a_endpoints, 64),
+        },
+        receipts: MeshStateSnapshotReceipts {
+            latest_conclave_ids: normalize_snapshot_receipt_ids(&request.snapshot.latest_conclave_ids),
+            latest_hypercert_ids: normalize_snapshot_receipt_ids(&request.snapshot.latest_hypercert_ids),
+            latest_proof_ids: normalize_snapshot_receipt_ids(&request.snapshot.latest_proof_ids),
+        },
+    })
+}
+
+fn canonical_snapshot_json(snapshot: &MeshStateSnapshot) -> Result<String, String> {
+    serde_json::to_string(snapshot).map_err(|err| format!("failed to encode canonical state snapshot: {err}"))
+}
+
+fn sha256_hex_string(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    hex_encode(&hasher.finalize())
 }
 
 fn default_capabilities(agent_wallet: &str) -> Vec<String> {
@@ -789,7 +1609,7 @@ fn validate_mesh_manifest(manifest: MeshManifest, status: &MeshRuntimeStatus) ->
     })
 }
 
-fn resolve_base_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn resolve_base_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let base = app
         .path()
         .app_data_dir()
@@ -824,10 +1644,35 @@ fn write_daemon_state_to_disk(app: &tauri::AppHandle, state: &DaemonStateFile) -
     Ok(())
 }
 
+fn local_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(resolve_base_dir(app)?.join("state.json"))
+}
+
+fn mesh_publication_requests_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = resolve_base_dir(app)?.join("mesh").join("publications").join("requests");
+    fs::create_dir_all(&dir).map_err(|err| format!("failed to create mesh publication requests dir: {err}"))?;
+    Ok(dir)
+}
+
+fn mesh_publication_results_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = resolve_base_dir(app)?.join("mesh").join("publications").join("results");
+    fs::create_dir_all(&dir).map_err(|err| format!("failed to create mesh publication results dir: {err}"))?;
+    Ok(dir)
+}
+
+fn load_persisted_local_state(app: &tauri::AppHandle) -> Result<PersistedLocalState, String> {
+    let file = local_state_path(app)?;
+    if !file.exists() {
+        return Ok(PersistedLocalState::default());
+    }
+
+    let raw = fs::read_to_string(&file).map_err(|err| format!("failed to read local state: {err}"))?;
+    serde_json::from_str(&raw).map_err(|err| format!("failed to parse local state: {err}"))
+}
+
 fn normalize_daemon_decision(value: &str) -> String {
     match value.trim().to_lowercase().as_str() {
         "allow" => "allow".to_string(),
-        "ask" => "ask".to_string(),
         _ => "deny".to_string(),
     }
 }
@@ -842,6 +1687,37 @@ fn normalize_daemon_permission_policy(policy: DaemonPermissionPolicy) -> DaemonP
         camera: normalize_daemon_decision(&policy.camera),
         microphone: normalize_daemon_decision(&policy.microphone),
         network: normalize_daemon_decision(&policy.network),
+    }
+}
+
+fn check_agent_permission(
+    daemon: &DaemonStateFile,
+    agent_wallet: &str,
+    permission_key: &str,
+) -> Result<(), String> {
+    let agent = daemon
+        .agents
+        .get(agent_wallet)
+        .ok_or_else(|| format!("agent not installed: {}", agent_wallet))?;
+
+    let decision = match permission_key {
+        "shell" => &agent.permissions.shell,
+        "fs.read" => &agent.permissions.filesystem_read,
+        "fs.write" => &agent.permissions.filesystem_write,
+        "fs.edit" => &agent.permissions.filesystem_edit,
+        "fs.delete" => &agent.permissions.filesystem_delete,
+        "camera" => &agent.permissions.camera,
+        "microphone" => &agent.permissions.microphone,
+        "network" => &agent.permissions.network,
+        _ => return Err(format!("unknown permission key: {}", permission_key)),
+    };
+
+    match decision.as_str() {
+        "allow" => Ok(()),
+        _ => Err(format!(
+            "permission '{}' is denied for agent {}",
+            permission_key, agent_wallet
+        )),
     }
 }
 
@@ -1399,7 +2275,7 @@ fn build_mesh_swarm(
             autonat: autonat::Behaviour::new(local_peer_id, autonat::Config::default()),
             ping: ping::Behaviour::new(ping::Config::new()),
             identify: identify::Behaviour::new(identify::Config::new(
-                "/compose-market/desktop/1.0.0".to_string(),
+                "/compose-market/local/1.0.0".to_string(),
                 key.public(),
             )),
             gossipsub,
@@ -1795,7 +2671,7 @@ async fn run_mesh_loop(
 }
 
 #[tauri::command]
-fn get_desktop_paths(app: tauri::AppHandle) -> Result<DesktopPaths, String> {
+fn get_local_paths(app: tauri::AppHandle) -> Result<LocalPaths, String> {
     let base_dir = resolve_base_dir(&app)?;
     let state_file = base_dir.join("state.json");
     let agents_dir = base_dir.join("agents");
@@ -1804,7 +2680,7 @@ fn get_desktop_paths(app: tauri::AppHandle) -> Result<DesktopPaths, String> {
     fs::create_dir_all(&agents_dir).map_err(|err| format!("failed to create agents directory: {err}"))?;
     fs::create_dir_all(&skills_dir).map_err(|err| format!("failed to create skills directory: {err}"))?;
 
-    Ok(DesktopPaths {
+    Ok(LocalPaths {
         base_dir: base_dir.to_string_lossy().to_string(),
         state_file: state_file.to_string_lossy().to_string(),
         agents_dir: agents_dir.to_string_lossy().to_string(),
@@ -1813,7 +2689,7 @@ fn get_desktop_paths(app: tauri::AppHandle) -> Result<DesktopPaths, String> {
 }
 
 #[tauri::command]
-fn load_desktop_state(app: tauri::AppHandle) -> Result<String, String> {
+fn load_local_state(app: tauri::AppHandle) -> Result<String, String> {
     let base_dir = resolve_base_dir(&app)?;
     let state_file = base_dir.join("state.json");
 
@@ -1825,7 +2701,7 @@ fn load_desktop_state(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn save_desktop_state(app: tauri::AppHandle, state_json: String) -> Result<(), String> {
+fn save_local_state(app: tauri::AppHandle, state_json: String) -> Result<(), String> {
     let base_dir = resolve_base_dir(&app)?;
     let state_file = base_dir.join("state.json");
 
@@ -1837,14 +2713,14 @@ fn save_desktop_state(app: tauri::AppHandle, state_json: String) -> Result<(), S
 }
 
 #[tauri::command]
-fn ensure_desktop_dir(app: tauri::AppHandle, relative_path: String) -> Result<String, String> {
+fn ensure_local_dir(app: tauri::AppHandle, relative_path: String) -> Result<String, String> {
     let dir = resolve_managed_path(&app, &relative_path)?;
     fs::create_dir_all(&dir).map_err(|err| format!("failed to create directory: {err}"))?;
     Ok(dir.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-fn write_desktop_file(
+fn write_local_file(
     app: tauri::AppHandle,
     relative_path: String,
     content: String,
@@ -1858,7 +2734,7 @@ fn write_desktop_file(
 }
 
 #[tauri::command]
-fn read_desktop_file(app: tauri::AppHandle, relative_path: String) -> Result<String, String> {
+fn read_local_file(app: tauri::AppHandle, relative_path: String) -> Result<String, String> {
     let file_path = resolve_managed_path(&app, &relative_path)?;
     if !file_path.exists() {
         return Err("file not found".to_string());
@@ -1867,7 +2743,7 @@ fn read_desktop_file(app: tauri::AppHandle, relative_path: String) -> Result<Str
 }
 
 #[tauri::command]
-fn remove_desktop_path(app: tauri::AppHandle, relative_path: String) -> Result<bool, String> {
+fn remove_local_path(app: tauri::AppHandle, relative_path: String) -> Result<bool, String> {
     let target = resolve_managed_path(&app, &relative_path)?;
     if !target.exists() {
         return Ok(false);
@@ -1975,7 +2851,7 @@ fn bootstrap_agent_workspace(app: &tauri::AppHandle, payload: &DaemonInstallPayl
 
 fn with_daemon_state<T>(
     app: &tauri::AppHandle,
-    state: &tauri::State<'_, DesktopDaemonState>,
+    state: &tauri::State<'_, LocalDaemonState>,
     updater: impl FnOnce(&mut DaemonStateFile) -> Result<T, String>,
 ) -> Result<T, String> {
     let mut guard = state
@@ -1987,10 +2863,18 @@ fn with_daemon_state<T>(
     Ok(output)
 }
 
+fn daemon_state_snapshot(state: &tauri::State<'_, LocalDaemonState>) -> Result<DaemonStateFile, String> {
+    state
+        .state
+        .lock()
+        .map(|guard| guard.clone())
+        .map_err(|_| "failed to snapshot daemon state".to_string())
+}
+
 #[tauri::command]
 fn daemon_install_agent(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopDaemonState>,
+    state: tauri::State<'_, LocalDaemonState>,
     payload: DaemonInstallPayload,
 ) -> Result<DaemonAgentState, String> {
     let normalized_wallet = normalize_wallet(&payload.agent_wallet)
@@ -2050,7 +2934,8 @@ fn daemon_install_agent(
 #[tauri::command]
 fn daemon_start_agent(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopDaemonState>,
+    state: tauri::State<'_, LocalDaemonState>,
+    runtime_host_state: tauri::State<'_, LocalRuntimeHostState>,
     agent_wallet: String,
 ) -> Result<DaemonAgentState, String> {
     let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
@@ -2062,19 +2947,44 @@ fn daemon_start_agent(
             .ok_or_else(|| format!("agent not installed: {wallet}"))?;
 
         entry.desired_running = true;
-        entry.running = true;
-        entry.status = "running".to_string();
-        entry.runtime_id = Some(format!("openclaw-{}-{}", wallet, now_ms()));
+        entry.running = false;
+        entry.status = "starting".to_string();
+        entry.runtime_id = None;
         entry.last_error = None;
         entry.updated_at = now_ms();
-        Ok(entry.clone())
+        Ok(())
+    })?;
+
+    let snapshot = daemon_state_snapshot(&state)?;
+    let host_result = runtime_host::reconcile_local_runtime_host(&app, runtime_host_state.inner(), &snapshot);
+    let host_status = match host_result {
+        Ok(status) => status,
+        Err(error) => {
+            let fallback_status = runtime_host::current_runtime_host_status(runtime_host_state.inner())?;
+            with_daemon_state(&app, &state, |daemon| {
+                runtime_host::apply_runtime_host_status(daemon, &fallback_status);
+                Ok(())
+            })?;
+            let error_message = fallback_status.last_error.unwrap_or(error);
+            return Err(error_message);
+        }
+    };
+
+    with_daemon_state(&app, &state, |daemon| {
+        runtime_host::apply_runtime_host_status(daemon, &host_status);
+        daemon
+            .agents
+            .get(&wallet)
+            .cloned()
+            .ok_or_else(|| format!("agent not installed: {wallet}"))
     })
 }
 
 #[tauri::command]
 fn daemon_stop_agent(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopDaemonState>,
+    state: tauri::State<'_, LocalDaemonState>,
+    runtime_host_state: tauri::State<'_, LocalRuntimeHostState>,
     agent_wallet: String,
 ) -> Result<DaemonAgentState, String> {
     let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
@@ -2087,16 +2997,31 @@ fn daemon_stop_agent(
 
         entry.desired_running = false;
         entry.running = false;
-        entry.status = "stopped".to_string();
+        entry.status = "stopping".to_string();
+        entry.runtime_id = None;
+        entry.last_error = None;
         entry.updated_at = now_ms();
-        Ok(entry.clone())
+        Ok(())
+    })?;
+
+    let snapshot = daemon_state_snapshot(&state)?;
+    let host_status = runtime_host::reconcile_local_runtime_host(&app, runtime_host_state.inner(), &snapshot)
+        .or_else(|_| runtime_host::current_runtime_host_status(runtime_host_state.inner()))?;
+
+    with_daemon_state(&app, &state, |daemon| {
+        runtime_host::apply_runtime_host_status(daemon, &host_status);
+        daemon
+            .agents
+            .get(&wallet)
+            .cloned()
+            .ok_or_else(|| format!("agent not installed: {wallet}"))
     })
 }
 
 #[tauri::command]
 fn daemon_update_permissions(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopDaemonState>,
+    state: tauri::State<'_, LocalDaemonState>,
     agent_wallet: String,
     policy: DaemonPermissionPolicy,
 ) -> Result<DaemonAgentState, String> {
@@ -2117,7 +3042,7 @@ fn daemon_update_permissions(
 #[tauri::command]
 fn daemon_update_skill(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopDaemonState>,
+    state: tauri::State<'_, LocalDaemonState>,
     agent_wallet: String,
     skill_key: String,
     enabled: bool,
@@ -2159,7 +3084,7 @@ fn daemon_update_skill(
 
 #[tauri::command]
 fn daemon_get_agent_status(
-    state: tauri::State<'_, DesktopDaemonState>,
+    state: tauri::State<'_, LocalDaemonState>,
     agent_wallet: String,
 ) -> Result<Option<DaemonAgentState>, String> {
     let wallet = normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
@@ -2202,7 +3127,7 @@ fn daemon_tail_logs(
 #[tauri::command]
 fn daemon_mesh_set(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopDaemonState>,
+    state: tauri::State<'_, LocalDaemonState>,
     agent_wallet: String,
     enabled: bool,
 ) -> Result<DaemonAgentState, String> {
@@ -2222,7 +3147,7 @@ fn daemon_mesh_set(
 #[tauri::command]
 fn daemon_issue_permission_ticket(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopDaemonState>,
+    state: tauri::State<'_, LocalDaemonState>,
     agent_wallet: String,
     action: String,
     decision: String,
@@ -2255,7 +3180,7 @@ fn daemon_issue_permission_ticket(
 #[tauri::command]
 fn daemon_validate_permission_ticket(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopDaemonState>,
+    state: tauri::State<'_, LocalDaemonState>,
     ticket_id: String,
     action: String,
 ) -> Result<bool, String> {
@@ -2272,6 +3197,83 @@ fn daemon_validate_permission_ticket(
             return Ok(false);
         }
         Ok(ticket.decision == "allow")
+    })
+}
+
+#[tauri::command]
+fn daemon_check_permission(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, LocalDaemonState>,
+    agent_wallet: String,
+    permission_key: String,
+) -> Result<bool, String> {
+    let wallet = normalize_wallet(&agent_wallet)
+        .ok_or_else(|| "invalid agentWallet".to_string())?;
+    let key = permission_key.trim().to_string();
+    if key.is_empty() {
+        return Err("permissionKey is required".to_string());
+    }
+
+    with_daemon_state(&app, &state, |daemon| {
+        match check_agent_permission(daemon, &wallet, &key) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OsPermissionSnapshot {
+    camera: String,
+    microphone: String,
+    screen: String,
+    full_disk_access: String,
+    accessibility: String,
+}
+
+fn query_tcc_status(service: &str) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        let db_path = format!(
+            "{}/Library/Application Support/com.apple.TCC/TCC.db",
+            std::env::var("HOME").unwrap_or_default()
+        );
+        let query = format!(
+            "SELECT auth_value FROM access WHERE service='{}' AND client='compose.market.mesh' LIMIT 1",
+            service
+        );
+        if let Ok(output) = std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg(&query)
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return match stdout.as_str() {
+                "2" => "granted".to_string(),
+                "0" => "denied".to_string(),
+                "3" => "limited".to_string(),
+                _ if stdout.is_empty() => "not-determined".to_string(),
+                _ => "unknown".to_string(),
+            };
+        }
+        "unknown".to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = service;
+        "unsupported".to_string()
+    }
+}
+
+#[tauri::command]
+fn daemon_query_os_permissions() -> Result<OsPermissionSnapshot, String> {
+    Ok(OsPermissionSnapshot {
+        camera: query_tcc_status("kTCCServiceCamera"),
+        microphone: query_tcc_status("kTCCServiceMicrophone"),
+        screen: query_tcc_status("kTCCServiceScreenCapture"),
+        full_disk_access: query_tcc_status("kTCCServiceSystemPolicyAllFiles"),
+        accessibility: query_tcc_status("kTCCServiceAccessibility"),
     })
 }
 
@@ -2333,7 +3335,14 @@ fn daemon_launch_agent_status() -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn desktop_network_status(state: tauri::State<MeshRuntimeState>) -> Result<MeshRuntimeStatus, String> {
+fn daemon_runtime_host_status(
+    state: tauri::State<'_, LocalRuntimeHostState>,
+) -> Result<LocalRuntimeHostStatus, String> {
+    runtime_host::current_runtime_host_status(state.inner())
+}
+
+#[tauri::command]
+fn local_network_status(state: tauri::State<MeshRuntimeState>) -> Result<MeshRuntimeStatus, String> {
     let status = state
         .status
         .lock()
@@ -2342,7 +3351,7 @@ fn desktop_network_status(state: tauri::State<MeshRuntimeState>) -> Result<MeshR
 }
 
 #[tauri::command]
-async fn desktop_network_join(
+async fn local_network_join(
     app: tauri::AppHandle,
     state: tauri::State<'_, MeshRuntimeState>,
     request: MeshJoinRequest,
@@ -2379,11 +3388,11 @@ async fn desktop_network_join(
         run_mesh_loop(app_handle, request, stop_rx, command_rx).await;
     });
 
-    desktop_network_status(state)
+    local_network_status(state)
 }
 
 #[tauri::command]
-async fn desktop_network_leave(
+async fn local_network_leave(
     app: tauri::AppHandle,
     state: tauri::State<'_, MeshRuntimeState>,
 ) -> Result<MeshRuntimeStatus, String> {
@@ -2400,16 +3409,84 @@ async fn desktop_network_leave(
         *status = MeshRuntimeStatus::default();
     });
 
-    desktop_network_status(state)
+    local_network_status(state)
 }
 
-#[tauri::command]
-async fn desktop_mesh_publish_manifest(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, MeshRuntimeState>,
-    manifest: MeshManifest,
-) -> Result<MeshManifest, String> {
-    let live_status = state
+fn build_signed_state_envelope(
+    local_key: &identity::Keypair,
+    snapshot: &MeshStateSnapshot,
+    hai_record: &MeshHaiRecord,
+) -> Result<(String, String, String), String> {
+    let canonical = canonical_snapshot_json(snapshot)?;
+    let state_root_hash = sha256_hex_string(&canonical);
+    let signed_at = now_ms();
+    let update_number = hai_record.next_update_number;
+    let path = compose_hai_path(&hai_record.hai_id, update_number);
+    let signature = local_key
+        .sign(canonical.as_bytes())
+        .map_err(|err| format!("failed to sign mesh state snapshot: {err}"))?;
+    let envelope = SignedMeshStateEnvelope {
+        version: 2,
+        kind: "compose.mesh.state.v2".to_string(),
+        collection: COMPOSE_SYNAPSE_COLLECTION.to_string(),
+        hai_id: hai_record.hai_id.clone(),
+        update_number,
+        path,
+        peer_id: snapshot.peer_id.clone(),
+        agent_wallet: snapshot.agent_wallet.clone(),
+        user_wallet: snapshot.user_wallet.clone(),
+        device_id: snapshot.device_id.clone(),
+        chain_id: snapshot.runtime.chain_id,
+        signed_at,
+        state_root_hash: format!("0x{}", state_root_hash),
+        snapshot: snapshot.clone(),
+        signature: hex_encode(&signature),
+    };
+    let envelope_json = serde_json::to_string(&envelope)
+        .map_err(|err| format!("failed to encode signed mesh state envelope: {err}"))?;
+    Ok((canonical, format!("0x{}", state_root_hash), envelope_json))
+}
+
+async fn anchor_mesh_state_via_local_runtime(
+    base_url: &str,
+    auth_token: &str,
+    body: serde_json::Value,
+) -> Result<MeshStateAnchorRuntimeResponse, String> {
+    let client = HttpClient::new();
+    let response = client
+        .post(format!("{}/mesh/synapse/anchor", base_url.trim_end_matches('/')))
+        .header(LOCAL_RUNTIME_AUTH_HEADER, auth_token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("failed to call local runtime Synapse route: {err}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| String::new());
+        return Err(format!(
+            "local runtime Synapse route failed: HTTP {}: {}",
+            status,
+            body
+        ));
+    }
+
+    response
+        .json::<MeshStateAnchorRuntimeResponse>()
+        .await
+        .map_err(|err| format!("failed to decode local runtime Synapse response: {err}"))
+}
+
+async fn anchor_mesh_state_from_command(
+    app: &tauri::AppHandle,
+    mesh_state: &MeshRuntimeState,
+    runtime_host: &LocalRuntimeHostState,
+    request: MeshStateAnchorCommandRequest,
+) -> Result<MeshStateAnchorRuntimeResponse, String> {
+    let live_status = mesh_state
         .status
         .lock()
         .map_err(|_| "failed to read mesh runtime status".to_string())?
@@ -2418,11 +3495,173 @@ async fn desktop_mesh_publish_manifest(
         return Err("mesh runtime is not running".to_string());
     }
 
-    let local_key = load_or_create_mesh_identity(&app)?;
+    let snapshot = normalize_mesh_state_snapshot_request(&request, &live_status)?;
+    let mut hai_record = load_or_create_hai_record(
+        app,
+        &snapshot.agent_wallet,
+        &snapshot.user_wallet,
+        &snapshot.device_id,
+    )?;
+
+    let (canonical_snapshot_json, state_root_hash, envelope_json) =
+        build_signed_state_envelope(&load_or_create_mesh_identity(app)?, &snapshot, &hai_record)?;
+
+    if same_state_root_hash(request.previous_state_root_hash.as_deref(), &state_root_hash)
+        && request
+            .previous_pdp_piece_cid
+            .as_ref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        && request.previous_pdp_anchored_at.unwrap_or(0) > 0
+    {
+        let last_update_number = hai_record
+            .last_update_number
+            .unwrap_or_else(|| hai_record.next_update_number.saturating_sub(1));
+        let last_path = hai_record
+            .last_path
+            .clone()
+            .unwrap_or_else(|| compose_hai_path(&hai_record.hai_id, last_update_number));
+        let last_piece_cid = request
+            .previous_pdp_piece_cid
+            .clone()
+            .or_else(|| hai_record.last_piece_cid.clone())
+            .ok_or_else(|| "previous PDP piece CID is required for a skipped anchor".to_string())?;
+        let last_anchored_at = request
+            .previous_pdp_anchored_at
+            .or(hai_record.last_anchored_at)
+            .ok_or_else(|| "previous PDP anchor timestamp is required for a skipped anchor".to_string())?;
+
+        return Ok(MeshStateAnchorRuntimeResponse {
+            hai_id: hai_record.hai_id.clone(),
+            update_number: last_update_number,
+            path: last_path,
+            state_root_hash,
+            pdp_piece_cid: last_piece_cid,
+            pdp_anchored_at: last_anchored_at,
+            payload_size: envelope_json.len(),
+            provider_id: String::new(),
+            data_set_id: None,
+            retrieval_url: None,
+            payer_address: hai_record.payer_address.clone().unwrap_or_default(),
+            session_key_expires_at: hai_record.session_key_expires_at.unwrap_or(0),
+        });
+    }
+
+    let runtime_status = runtime_host::current_runtime_host_status(runtime_host)?;
+    if !runtime_status.running {
+        return Err("local runtime host is not running".to_string());
+    }
+    let auth_token = current_runtime_host_auth_token(runtime_host)?;
+
+    let response = anchor_mesh_state_via_local_runtime(
+        &runtime_status.base_url,
+        &auth_token,
+        serde_json::json!({
+            "apiUrl": request.api_url,
+            "composeKeyToken": request.compose_key_token,
+            "userAddress": snapshot.user_wallet,
+            "agentWallet": snapshot.agent_wallet,
+            "deviceId": snapshot.device_id,
+            "chainId": snapshot.runtime.chain_id,
+            "targetSynapseExpiry": request.target_synapse_expiry,
+            "haiId": hai_record.hai_id,
+            "updateNumber": hai_record.next_update_number,
+            "path": compose_hai_path(&hai_record.hai_id, hai_record.next_update_number),
+            "canonicalSnapshotJson": canonical_snapshot_json,
+            "stateRootHash": state_root_hash,
+            "envelopeJson": envelope_json,
+            "sessionKeyPrivateKey": hai_record.synapse_session_private_key,
+            "payerAddress": hai_record.payer_address,
+            "sessionKeyExpiresAt": hai_record.session_key_expires_at,
+        }),
+    )
+    .await?;
+
+    hai_record.next_update_number = response.update_number.saturating_add(1);
+    hai_record.last_update_number = Some(response.update_number);
+    hai_record.last_path = Some(response.path.clone());
+    hai_record.last_state_root_hash = Some(response.state_root_hash.clone());
+    hai_record.last_piece_cid = Some(response.pdp_piece_cid.clone());
+    hai_record.last_anchored_at = Some(response.pdp_anchored_at);
+    if !response.payer_address.trim().is_empty() {
+        hai_record.payer_address = Some(response.payer_address.clone());
+    }
+    if response.session_key_expires_at > 0 {
+        hai_record.session_key_expires_at = Some(response.session_key_expires_at);
+    }
+    hai_record.updated_at = now_ms();
+    write_hai_record(app, &hai_record)?;
+
+    Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        compose_hai_path, deterministic_hai_candidate, normalize_state_root_hash_for_compare,
+        same_state_root_hash,
+    };
+
+    #[test]
+    fn normalize_state_root_hash_handles_optional_prefix() {
+        let bare = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let prefixed = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        assert_eq!(
+            normalize_state_root_hash_for_compare(bare).as_deref(),
+            Some(bare)
+        );
+        assert_eq!(
+            normalize_state_root_hash_for_compare(prefixed).as_deref(),
+            Some(bare)
+        );
+    }
+
+    #[test]
+    fn same_state_root_hash_matches_prefixed_and_bare_forms() {
+        let bare = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let prefixed = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        assert!(same_state_root_hash(Some(bare), prefixed));
+        assert!(same_state_root_hash(Some(prefixed), bare));
+        assert!(!same_state_root_hash(Some("bbbb"), prefixed));
+    }
+
+    #[test]
+    fn deterministic_hai_candidate_is_unprefixed_and_stable() {
+        let seed = "0x1111111111111111111111111111111111111111:0x2222222222222222222222222222222222222222:device-12345678";
+        let hai_id = deterministic_hai_candidate(seed);
+
+        assert_eq!(hai_id.len(), 6);
+        assert!(hai_id.chars().all(|char| char.is_ascii_hexdigit()));
+        assert_eq!(hai_id, deterministic_hai_candidate(seed));
+    }
+
+    #[test]
+    fn compose_hai_path_uses_plain_hai_value() {
+        assert_eq!(compose_hai_path("abc123", 7), "compose-abc123-#7");
+    }
+}
+
+async fn publish_mesh_manifest_from_command(
+    app: &tauri::AppHandle,
+    mesh_state: &MeshRuntimeState,
+    manifest: MeshManifest,
+) -> Result<MeshManifest, String> {
+    let live_status = mesh_state
+        .status
+        .lock()
+        .map_err(|_| "failed to read mesh runtime status".to_string())?
+        .clone();
+    if !live_status.running {
+        return Err("mesh runtime is not running".to_string());
+    }
+
+    let local_key = load_or_create_mesh_identity(app)?;
     let validated = validate_mesh_manifest(manifest, &live_status)?;
     let signed = sign_mesh_manifest(&local_key, &validated)?;
 
-    let command_tx = state
+    let command_tx = mesh_state
         .command_tx
         .lock()
         .map_err(|_| "failed to read mesh command channel".to_string())?
@@ -2442,13 +3681,166 @@ async fn desktop_mesh_publish_manifest(
         .map_err(|_| "mesh runtime dropped the manifest publish response".to_string())?
 }
 
+fn write_mesh_publication_result(
+    app: &tauri::AppHandle,
+    result: &MeshPublicationQueueResult,
+) -> Result<(), String> {
+    let file = mesh_publication_results_dir(app)?.join(format!("{}.json", result.request_id));
+    let serialized = serde_json::to_string_pretty(result)
+        .map_err(|err| format!("failed to serialize mesh publication result: {err}"))?;
+    fs::write(file, serialized).map_err(|err| format!("failed to write mesh publication result: {err}"))
+}
+
+async fn process_mesh_publication_request(
+    app: &tauri::AppHandle,
+    request: MeshPublicationQueueRequest,
+) -> MeshPublicationQueueResult {
+    let mesh_state = app.state::<MeshRuntimeState>();
+    let runtime_host = app.state::<LocalRuntimeHostState>();
+
+    let outcome = async {
+        let live_status = mesh_state
+            .status
+            .lock()
+            .map_err(|_| "failed to read mesh runtime status".to_string())?
+            .clone();
+        if !live_status.running {
+            return Err("mesh runtime is not running".to_string());
+        }
+
+        let requested_wallet = normalize_wallet(&request.agent_wallet)
+            .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
+        if live_status.agent_wallet.as_deref() != Some(requested_wallet.as_str()) {
+            return Err("mesh publication request agentWallet does not match the running mesh agent".to_string());
+        }
+
+        let (mut manifest, anchor_request) = build_current_mesh_publication(app, &requested_wallet, &live_status)?;
+        let anchor = anchor_mesh_state_from_command(app, mesh_state.inner(), runtime_host.inner(), anchor_request).await?;
+
+        manifest.state_root_hash = Some(anchor.state_root_hash.clone().trim_start_matches("0x").to_string());
+        manifest.pdp_piece_cid = Some(anchor.pdp_piece_cid.clone());
+        manifest.pdp_anchored_at = Some(anchor.pdp_anchored_at);
+
+        let published = publish_mesh_manifest_from_command(app, mesh_state.inner(), manifest).await?;
+        persist_manifest_update(app, &published)?;
+        let _ = app.emit("mesh-manifest-updated", &published);
+
+        Ok(MeshPublicationQueueResult {
+            request_id: request.request_id.clone(),
+            success: true,
+            error: None,
+            hai_id: Some(anchor.hai_id),
+            update_number: Some(anchor.update_number),
+            path: Some(anchor.path),
+            state_root_hash: Some(anchor.state_root_hash),
+            pdp_piece_cid: Some(anchor.pdp_piece_cid),
+            pdp_anchored_at: Some(anchor.pdp_anchored_at),
+            manifest: Some(published),
+        })
+    }
+    .await;
+
+    match outcome {
+        Ok(result) => result,
+        Err(error) => MeshPublicationQueueResult {
+            request_id: request.request_id,
+            success: false,
+            error: Some(error),
+            hai_id: None,
+            update_number: None,
+            path: None,
+            state_root_hash: None,
+            pdp_piece_cid: None,
+            pdp_anchored_at: None,
+            manifest: None,
+        },
+    }
+}
+
+async fn process_pending_mesh_publication_requests(app: &tauri::AppHandle) -> Result<(), String> {
+    let requests_dir = mesh_publication_requests_dir(app)?;
+    let mut files = fs::read_dir(&requests_dir)
+        .map_err(|err| format!("failed to read mesh publication request dir: {err}"))?
+        .filter_map(|entry| entry.ok().map(|value| value.path()))
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    files.sort();
+
+    for path in files {
+        let raw = match fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("[mesh] failed to read mesh publication request {}: {}", path.display(), error);
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+        };
+
+        let request = match serde_json::from_str::<MeshPublicationQueueRequest>(&raw) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("[mesh] failed to parse mesh publication request {}: {}", path.display(), error);
+                let fallback_id = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("mesh-request")
+                    .to_string();
+                let _ = write_mesh_publication_result(
+                    app,
+                    &MeshPublicationQueueResult {
+                        request_id: fallback_id,
+                        success: false,
+                        error: Some(format!("Invalid mesh publication request: {error}")),
+                        hai_id: None,
+                        update_number: None,
+                        path: None,
+                        state_root_hash: None,
+                        pdp_piece_cid: None,
+                        pdp_anchored_at: None,
+                        manifest: None,
+                    },
+                );
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+        };
+
+        let result = process_mesh_publication_request(app, request).await;
+        if let Err(error) = write_mesh_publication_result(app, &result) {
+            eprintln!("[mesh] failed to persist mesh publication result: {}", error);
+        }
+        let _ = fs::remove_file(&path);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn local_mesh_anchor_state(
+    app: tauri::AppHandle,
+    mesh_state: tauri::State<'_, MeshRuntimeState>,
+    runtime_host: tauri::State<'_, LocalRuntimeHostState>,
+    request: MeshStateAnchorCommandRequest,
+) -> Result<MeshStateAnchorRuntimeResponse, String> {
+    anchor_mesh_state_from_command(&app, mesh_state.inner(), runtime_host.inner(), request).await
+}
+
+#[tauri::command]
+async fn local_mesh_publish_manifest(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MeshRuntimeState>,
+    manifest: MeshManifest,
+) -> Result<MeshManifest, String> {
+    publish_mesh_manifest_from_command(&app, state.inner(), manifest).await
+}
+
 fn normalize_api_base(api_url: &str) -> Result<String, String> {
     let trimmed = api_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
-        return Err("Desktop updater apiUrl is required".to_string());
+        return Err("Local updater apiUrl is required".to_string());
     }
     if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
-        return Err("Desktop updater apiUrl must start with http:// or https://".to_string());
+        return Err("Local updater apiUrl must start with http:// or https://".to_string());
     }
     Ok(trimmed.to_string())
 }
@@ -2456,52 +3848,52 @@ fn normalize_api_base(api_url: &str) -> Result<String, String> {
 fn normalize_updater_pubkey(pubkey: &str) -> Result<String, String> {
     let normalized = pubkey.trim();
     if normalized.is_empty() {
-        return Err("Desktop updater public key is required".to_string());
+        return Err("Local updater public key is required".to_string());
     }
     Ok(normalized.to_string())
 }
 
-fn build_desktop_update_endpoint(api_url: &str) -> Result<String, String> {
+fn build_local_update_endpoint(api_url: &str) -> Result<String, String> {
     let api_base = normalize_api_base(api_url)?;
     Ok(format!(
-        "{api_base}/api/desktop/updates/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}"
+        "{api_base}/api/local/updates/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}"
     ))
 }
 
-fn build_desktop_updater(
+fn build_local_updater(
     app: &tauri::AppHandle,
     api_url: &str,
     pubkey: &str,
 ) -> Result<tauri_plugin_updater::Updater, String> {
-    let endpoint = build_desktop_update_endpoint(api_url)?;
+    let endpoint = build_local_update_endpoint(api_url)?;
     let pubkey = normalize_updater_pubkey(pubkey)?;
     let endpoint = endpoint
         .parse()
-        .map_err(|error| format!("Invalid desktop updater endpoint: {error}"))?;
+        .map_err(|error| format!("Invalid local updater endpoint: {error}"))?;
 
     app.updater_builder()
         .pubkey(pubkey)
         .endpoints(vec![endpoint])
-        .map_err(|error| format!("Failed to configure desktop updater endpoints: {error}"))?
+        .map_err(|error| format!("Failed to configure local updater endpoints: {error}"))?
         .build()
-        .map_err(|error| format!("Failed to initialize desktop updater: {error}"))
+        .map_err(|error| format!("Failed to initialize local updater: {error}"))
 }
 
 #[tauri::command]
-async fn desktop_check_for_updates(
+async fn local_check_for_updates(
     app: tauri::AppHandle,
     api_url: String,
     pubkey: String,
-) -> Result<DesktopUpdateCheckResult, String> {
-    let updater = build_desktop_updater(&app, &api_url, &pubkey)?;
+) -> Result<LocalUpdateCheckResult, String> {
+    let updater = build_local_updater(&app, &api_url, &pubkey)?;
     let current_version = app.package_info().version.to_string();
     let update = updater
         .check()
         .await
-        .map_err(|error| format!("Failed to check for desktop updates: {error}"))?;
+        .map_err(|error| format!("Failed to check for local updates: {error}"))?;
 
     Ok(match update {
-        Some(update) => DesktopUpdateCheckResult {
+        Some(update) => LocalUpdateCheckResult {
             enabled: true,
             available: true,
             current_version: Some(update.current_version),
@@ -2509,7 +3901,7 @@ async fn desktop_check_for_updates(
             body: update.body,
             date: update.date.map(|value| value.to_string()),
         },
-        None => DesktopUpdateCheckResult {
+        None => LocalUpdateCheckResult {
             enabled: true,
             available: false,
             current_version: Some(current_version),
@@ -2521,24 +3913,24 @@ async fn desktop_check_for_updates(
 }
 
 #[tauri::command]
-async fn desktop_install_update(
+async fn local_install_update(
     app: tauri::AppHandle,
     api_url: String,
     pubkey: String,
 ) -> Result<(), String> {
-    let updater = build_desktop_updater(&app, &api_url, &pubkey)?;
+    let updater = build_local_updater(&app, &api_url, &pubkey)?;
     let update = updater
         .check()
         .await
-        .map_err(|error| format!("Failed to check for desktop updates: {error}"))?;
+        .map_err(|error| format!("Failed to check for local updates: {error}"))?;
     let Some(update) = update else {
-        return Err("Compose Desktop is already on the latest version".to_string());
+        return Err("Compose Local is already on the latest version".to_string());
     };
 
     update
         .download_and_install(|_, _| {}, || {})
         .await
-        .map_err(|error| format!("Failed to install desktop update: {error}"))?;
+        .map_err(|error| format!("Failed to install local update: {error}"))?;
 
     app.restart();
 }
@@ -2553,21 +3945,23 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PendingDeepLinks::default())
         .manage(MeshRuntimeState::default())
-        .manage(DesktopDaemonState::default())
+        .manage(LocalDaemonState::default())
+        .manage(LocalRuntimeHostState::default())
         .invoke_handler(tauri::generate_handler![
-            get_desktop_paths,
-            load_desktop_state,
-            save_desktop_state,
-            ensure_desktop_dir,
-            write_desktop_file,
-            read_desktop_file,
-            remove_desktop_path,
+            get_local_paths,
+            load_local_state,
+            save_local_state,
+            ensure_local_dir,
+            write_local_file,
+            read_local_file,
+            remove_local_path,
             check_missing_binaries,
             consume_pending_deep_links,
-            desktop_network_status,
-            desktop_network_join,
-            desktop_network_leave,
-            desktop_mesh_publish_manifest,
+            local_network_status,
+            local_network_join,
+            local_network_leave,
+            local_mesh_anchor_state,
+            local_mesh_publish_manifest,
             daemon_install_agent,
             daemon_start_agent,
             daemon_stop_agent,
@@ -2578,15 +3972,58 @@ fn main() {
             daemon_mesh_set,
             daemon_issue_permission_ticket,
             daemon_validate_permission_ticket,
+            daemon_check_permission,
+            daemon_query_os_permissions,
             daemon_install_launch_agent,
             daemon_launch_agent_status,
-            desktop_check_for_updates,
-            desktop_install_update
+            daemon_runtime_host_status,
+            local_check_for_updates,
+            local_install_update
         ])
         .setup(|app| {
             let daemon_disk_state = read_daemon_state_from_disk(&app.handle()).unwrap_or_default();
-            if let Ok(mut guard) = app.state::<DesktopDaemonState>().state.lock() {
+            let daemon_state = app.state::<LocalDaemonState>();
+            let runtime_host_state = app.state::<LocalRuntimeHostState>();
+
+            if let Ok(mut guard) = daemon_state.state.lock() {
                 *guard = daemon_disk_state;
+            }
+            if let Ok(snapshot) = daemon_state_snapshot(&daemon_state) {
+                match runtime_host::reconcile_local_runtime_host(
+                    &app.handle(),
+                    runtime_host_state.inner(),
+                    &snapshot,
+                ) {
+                    Ok(host_status) => {
+                        if let Ok(mut guard) = daemon_state.state.lock() {
+                            runtime_host::apply_runtime_host_status(&mut guard, &host_status);
+                            let _ = write_daemon_state_to_disk(&app.handle(), &guard);
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("[daemon] failed to reconcile local runtime host: {}", error);
+                        if let Ok(host_status) =
+                            runtime_host::current_runtime_host_status(runtime_host_state.inner())
+                        {
+                            if let Ok(mut guard) = daemon_state.state.lock() {
+                                runtime_host::apply_runtime_host_status(&mut guard, &host_status);
+                                let _ = write_daemon_state_to_disk(&app.handle(), &guard);
+                            }
+                        }
+                    }
+                }
+            }
+
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        if let Err(error) = process_pending_mesh_publication_requests(&handle).await {
+                            eprintln!("[mesh] failed to process local mesh publication queue: {}", error);
+                        }
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                });
             }
 
             #[cfg(desktop)]
@@ -2632,6 +4069,15 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run compose desktop");
+        .build(tauri::generate_context!())
+        .expect("failed to build Compose Mesh")
+        .run(|app, event| {
+            if matches!(event, RunEvent::Exit) {
+                let _ = runtime_host::stop_local_runtime_host(
+                    app,
+                    app.state::<LocalRuntimeHostState>().inner(),
+                );
+            }
+        })
+        ;
 }
