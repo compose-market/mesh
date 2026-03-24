@@ -5,5 +5,4 @@ tauri/target
 .env
 README.md
 coverage
-scripts
 tests
