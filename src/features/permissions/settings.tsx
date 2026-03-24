@@ -1,9 +1,10 @@
-import type { OsPermissionStatus } from "../../lib/types";
+import type { OsPermissionSnapshot } from "../../lib/types";
 import { ShellButton } from "@compose-market/theme/shell";
+import { formatOsPermissionStatus } from "../../lib/permissions";
 import { MachineStatusCard } from "./agent-permissions";
 
 interface GlobalPermissionsSectionProps {
-  osPermissions: { camera: OsPermissionStatus; microphone: OsPermissionStatus };
+  osPermissions: OsPermissionSnapshot;
   refreshing: boolean;
   onOpenSystemPermissions: () => void;
   onRefresh: () => void;
@@ -28,11 +29,10 @@ export function GlobalPermissionsSection({ osPermissions, refreshing, onOpenSyst
         Per-agent permissions are managed on each agent's detail page.
       </p>
       <div className="detail-stat-stack">
-        <MachineStatusCard label="Camera" value={osPermissions.camera} />
-        <MachineStatusCard label="Microphone" value={osPermissions.microphone} />
-        <MachineStatusCard label="Full Disk Access" value="Grant in System Settings" />
-        <MachineStatusCard label="Accessibility" value="Grant in System Settings" />
-        <MachineStatusCard label="Agent Controls" value="Scoped per selected agent" />
+        <MachineStatusCard label="Camera" value={formatOsPermissionStatus(osPermissions.camera)} />
+        <MachineStatusCard label="Microphone" value={formatOsPermissionStatus(osPermissions.microphone)} />
+        <MachineStatusCard label="Full Disk Access" value={formatOsPermissionStatus(osPermissions.fullDiskAccess)} />
+        <MachineStatusCard label="Accessibility" value={formatOsPermissionStatus(osPermissions.accessibility)} />
       </div>
       <div className="settings-actions">
         <ShellButton tone="primary" onClick={onOpenSystemPermissions}>

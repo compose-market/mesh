@@ -105,8 +105,6 @@ export function PermissionsPanel({ permissions, osPermissions, agentWallet, perm
         ))}
       </div>
       <div className="perm-machine-row">
-        <MachineStatusCard label="Camera (OS)" value={osPermissions.camera} />
-        <MachineStatusCard label="Mic (OS)" value={osPermissions.microphone} />
         <MachineStatusCard label="Wallet" value={`${agentWallet.slice(0, 8)}...${agentWallet.slice(-4)}`} />
       </div>
     </ShellPanel>
