@@ -56,7 +56,9 @@ pub fn build_local_runtime_base_url(port: u16) -> String {
     format!("http://{LOCAL_RUNTIME_HOST}:{port}")
 }
 
-pub fn current_runtime_host_status(state: &LocalRuntimeHostState) -> Result<LocalRuntimeHostStatus, String> {
+pub fn current_runtime_host_status(
+    state: &LocalRuntimeHostState,
+) -> Result<LocalRuntimeHostStatus, String> {
     state
         .status
         .lock()
@@ -79,10 +81,16 @@ pub fn current_runtime_host_auth_token(state: &LocalRuntimeHostState) -> Result<
 }
 
 pub fn needs_local_runtime_host(daemon_state: &DaemonStateFile) -> bool {
-    daemon_state.agents.values().any(|agent| agent.desired_running)
+    daemon_state
+        .agents
+        .values()
+        .any(|agent| agent.desired_running)
 }
 
-pub fn apply_runtime_host_status(daemon_state: &mut DaemonStateFile, host_status: &LocalRuntimeHostStatus) {
+pub fn apply_runtime_host_status(
+    daemon_state: &mut DaemonStateFile,
+    host_status: &LocalRuntimeHostStatus,
+) {
     let runtime_id = host_status
         .running
         .then(|| format!("local-runtime-host:{}", host_status.port));
@@ -221,7 +229,10 @@ pub fn ensure_local_runtime_host(
         .env("RUNTIME_HOST_MODE", "local")
         .env("RUNTIME_DISABLE_TEMPORAL_WORKERS", "true")
         .env("RUNTIME_URL", base_url.clone())
-        .env("COMPOSE_LOCAL_RUNTIME_AUTH_TOKEN", current_runtime_host_auth_token(state)?)
+        .env(
+            "COMPOSE_LOCAL_RUNTIME_AUTH_TOKEN",
+            current_runtime_host_auth_token(state)?,
+        )
         .env("COMPOSE_LOCAL_BASE_DIR", resolve_base_dir(app)?)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -349,7 +360,8 @@ pub fn stop_local_runtime_host(
     }
 
     if runtime_health_check(port).is_ok() {
-        let message = format!("Local runtime host on port {port} is still responding after shutdown");
+        let message =
+            format!("Local runtime host on port {port} is still responding after shutdown");
         update_status(state, |status| {
             status.running = false;
             status.status = "error".to_string();
@@ -474,13 +486,15 @@ fn resolve_runtime_dir(server_entry: &Path) -> Result<PathBuf, String> {
 
 fn runtime_stdout_log_path(app: &AppHandle) -> Result<PathBuf, String> {
     let base_dir = resolve_base_dir(app)?;
-    fs::create_dir_all(&base_dir).map_err(|err| format!("failed to create runtime host log dir: {err}"))?;
+    fs::create_dir_all(&base_dir)
+        .map_err(|err| format!("failed to create runtime host log dir: {err}"))?;
     Ok(base_dir.join("runtime-host.stdout.log"))
 }
 
 fn runtime_stderr_log_path(app: &AppHandle) -> Result<PathBuf, String> {
     let base_dir = resolve_base_dir(app)?;
-    fs::create_dir_all(&base_dir).map_err(|err| format!("failed to create runtime host log dir: {err}"))?;
+    fs::create_dir_all(&base_dir)
+        .map_err(|err| format!("failed to create runtime host log dir: {err}"))?;
     Ok(base_dir.join("runtime-host.stderr.log"))
 }
 
@@ -505,8 +519,6 @@ fn update_status(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::{DaemonAgentState, DaemonPermissionPolicy};
 
@@ -516,15 +528,14 @@ mod tests {
             runtime_id: None,
             desired_running,
             running: false,
-            mesh_enabled: false,
             status: "stopped".to_string(),
             dna_hash: "dna".to_string(),
             chain_id: 1,
             model_id: "model".to_string(),
             mcp_tools_hash: "hash".to_string(),
             agent_card_cid: "bafyagent".to_string(),
+            desired_permissions: DaemonPermissionPolicy::default(),
             permissions: DaemonPermissionPolicy::default(),
-            skills: HashMap::new(),
             logs_cursor: 0,
             last_error: None,
             updated_at: 0,
@@ -533,10 +544,7 @@ mod tests {
 
     #[test]
     fn build_local_runtime_base_url_uses_loopback_host() {
-        assert_eq!(
-            build_local_runtime_base_url(4310),
-            "http://127.0.0.1:4310"
-        );
+        assert_eq!(build_local_runtime_base_url(4310), "http://127.0.0.1:4310");
     }
 
     #[test]
