@@ -1,4 +1,8 @@
-import { getAgentHeartbeatRelativePath, readManagedFile } from "./storage";
+import {
+  getAgentHeartbeatRelativePath,
+  getAgentWorkspaceRelativePath,
+  readManagedFile,
+} from "./storage";
 
 const HEARTBEAT_OK_TOKEN = "HEARTBEAT_OK";
 const BASE_HEARTBEAT_PROMPT = `Read HEARTBEAT.md and execute only what it asks for.
@@ -13,6 +17,7 @@ interface DedupEntry {
 export interface HeartbeatStartConfig {
   agentWallet: string;
   intervalMs?: number;
+  skillRelativePaths?: string[];
   onExecute: (prompt: string) => Promise<string>;
   onAlert?: (message: string) => void;
   onTickComplete?: (result: "ok" | "alert" | "error") => void;
@@ -23,6 +28,7 @@ export class HeartbeatService {
   private running = false;
   private agentWallet: string | null = null;
   private intervalMs = 30000;
+  private skillRelativePaths: string[] = [];
   private lastTickAt = 0;
   private onExecute: ((prompt: string) => Promise<string>) | null = null;
   private onAlert: ((message: string) => void) | null = null;
@@ -33,6 +39,7 @@ export class HeartbeatService {
     this.stop();
     this.agentWallet = config.agentWallet.toLowerCase();
     this.intervalMs = config.intervalMs ?? 30000;
+    this.skillRelativePaths = (config.skillRelativePaths || []).slice();
     this.onExecute = config.onExecute;
     this.onAlert = config.onAlert ?? null;
     this.onTickComplete = config.onTickComplete ?? null;
@@ -52,6 +59,7 @@ export class HeartbeatService {
       this.timer = null;
     }
     this.agentWallet = null;
+    this.skillRelativePaths = [];
     this.onExecute = null;
     this.onAlert = null;
     this.onTickComplete = null;
@@ -82,12 +90,29 @@ export class HeartbeatService {
     if (!this.agentWallet) {
       return null;
     }
+    const workspaceDir = getAgentWorkspaceRelativePath(this.agentWallet);
     const heartbeatPath = getAgentHeartbeatRelativePath(this.agentWallet);
     const heartbeatMd = await readManagedFile(heartbeatPath);
-    if (!heartbeatMd || heartbeatMd.trim().length === 0) {
+    const soulMd = await readManagedFile(`${workspaceDir}/SOUL.md`);
+    const skillBodies = await Promise.all(
+      this.skillRelativePaths.map(async (relativePath) => {
+        const skillMd = await readManagedFile(`${relativePath.replace(/\/+$/, "")}/SKILL.md`);
+        return skillMd && skillMd.trim().length > 0
+          ? `[${relativePath}/SKILL.md]\n${skillMd.trim()}`
+          : null;
+      }),
+    );
+
+    const sections = [
+      soulMd && soulMd.trim().length > 0 ? `[SOUL.md]\n${soulMd.trim()}` : null,
+      heartbeatMd && heartbeatMd.trim().length > 0 ? `[HEARTBEAT.md]\n${heartbeatMd.trim()}` : null,
+      ...skillBodies.filter((value): value is string => value !== null),
+    ].filter((value): value is string => value !== null);
+
+    if (sections.length === 0) {
       return null;
     }
-    return `${BASE_HEARTBEAT_PROMPT}\n\n[HEARTBEAT.md]\n${heartbeatMd.trim()}`;
+    return `${BASE_HEARTBEAT_PROMPT}\n\n${sections.join("\n\n")}`;
   }
 
   private async tick(): Promise<void> {
