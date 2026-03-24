@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentPermissionPolicy,
-  AgentSkillState,
   AgentWorkerState,
+  InstalledAgent,
   PermissionDecisionTicket,
 } from "./types";
 
@@ -20,15 +20,14 @@ export interface DaemonAgentStatus {
   runtimeId: string | null;
   desiredRunning: boolean;
   running: boolean;
-  meshEnabled: boolean;
   status: "stopped" | "starting" | "running" | "stopping" | "error" | string;
   dnaHash: string;
   chainId: number;
   modelId: string;
   mcpToolsHash: string;
   agentCardCid: string;
+  desiredPermissions: AgentPermissionPolicy;
   permissions: AgentPermissionPolicy;
-  skills: Record<string, AgentSkillState>;
   logsCursor: number;
   lastError: string | null;
   updatedAt: number;
@@ -92,11 +91,6 @@ export async function daemonUpdatePermissions(agentWallet: string, policy: Agent
   return invoke<DaemonAgentStatus>("daemon_update_permissions", { agentWallet, policy });
 }
 
-export async function daemonUpdateSkill(agentWallet: string, skillKey: string, enabled: boolean): Promise<DaemonAgentStatus> {
-  ensureTauriRuntime();
-  return invoke<DaemonAgentStatus>("daemon_update_skill", { agentWallet, skillKey, enabled });
-}
-
 export async function daemonGetAgentStatus(agentWallet: string): Promise<DaemonAgentStatus | null> {
   ensureTauriRuntime();
   return invoke<DaemonAgentStatus | null>("daemon_get_agent_status", { agentWallet });
@@ -105,11 +99,6 @@ export async function daemonGetAgentStatus(agentWallet: string): Promise<DaemonA
 export async function daemonTailLogs(agentWallet: string, cursor?: number): Promise<DaemonLogTail> {
   ensureTauriRuntime();
   return invoke<DaemonLogTail>("daemon_tail_logs", { agentWallet, cursor });
-}
-
-export async function daemonMeshSet(agentWallet: string, enabled: boolean): Promise<DaemonAgentStatus> {
-  ensureTauriRuntime();
-  return invoke<DaemonAgentStatus>("daemon_mesh_set", { agentWallet, enabled });
 }
 
 export async function daemonIssuePermissionTicket(input: {
@@ -147,24 +136,25 @@ export async function daemonRuntimeHostStatus(): Promise<DaemonRuntimeHostStatus
   return invoke<DaemonRuntimeHostStatus>("daemon_runtime_host_status");
 }
 
-export async function daemonCheckPermission(agentWallet: string, permissionKey: string): Promise<boolean> {
-  ensureTauriRuntime();
-  return invoke<boolean>("daemon_check_permission", { agentWallet, permissionKey });
-}
-
-export interface DaemonOsPermissionSnapshot {
-  camera: string;
-  microphone: string;
-  screen: string;
-  fullDiskAccess: string;
-  accessibility: string;
-}
-
-export async function daemonQueryOsPermissions(): Promise<DaemonOsPermissionSnapshot> {
-  ensureTauriRuntime();
-  return invoke<DaemonOsPermissionSnapshot>("daemon_query_os_permissions");
-}
-
 export function daemonStatusToWorkerState(status: DaemonAgentStatus | null | undefined): AgentWorkerState {
   return toWorkerState(status);
+}
+
+export function mergeDaemonStatusIntoInstalledAgent(agent: InstalledAgent, status: DaemonAgentStatus | null | undefined): InstalledAgent {
+  if (!status) {
+    return agent;
+  }
+
+  return {
+    ...agent,
+    running: Boolean(status.running),
+    runtimeId: status.runtimeId || agent.runtimeId,
+    desiredPermissions: { ...(status.desiredPermissions || status.permissions) },
+    permissions: { ...status.permissions },
+    network: {
+      ...agent.network,
+      updatedAt: status.updatedAt || Date.now(),
+    },
+    workerState: toWorkerState(status),
+  };
 }
