@@ -2,17 +2,15 @@ import { useMemo, useState } from "react";
 import { ExternalLink, Loader2, ToggleLeft, ToggleRight, Trash2 } from "lucide-react";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { uninstallSkill } from "../lib/api";
-import { daemonUpdateSkill } from "../lib/daemon";
 import { permissionAllows } from "../lib/storage";
 import type { LocalRuntimeState } from "../lib/types";
 
 interface SkillsManagerProps {
   state: LocalRuntimeState;
   onStateChange: (next: LocalRuntimeState) => Promise<void>;
-  agentWallet?: string | null;
 }
 
-export function SkillsManager({ state, onStateChange, agentWallet }: SkillsManagerProps) {
+export function SkillsManager({ state, onStateChange }: SkillsManagerProps) {
   const [busySkill, setBusySkill] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,27 +18,11 @@ export function SkillsManager({ state, onStateChange, agentWallet }: SkillsManag
     () => state.installedSkills.filter((skill) => skill.enabled).length,
     [state.installedSkills],
   );
-  const targetAgent = useMemo(
-    () => (
-      (agentWallet ? state.installedAgents.find((agent) => agent.agentWallet === agentWallet) : null) ||
-      state.installedAgents.find((agent) => agent.running) ||
-      state.installedAgents[0] ||
-      null
-    ),
-    [agentWallet, state.installedAgents],
-  );
 
   const toggleSkill = async (skillId: string) => {
     const nextSkills = state.installedSkills.map((skill) =>
       skill.id === skillId ? { ...skill, enabled: !skill.enabled } : skill,
     );
-
-    if (targetAgent) {
-      const toggled = nextSkills.find((skill) => skill.id === skillId);
-      if (toggled) {
-        await daemonUpdateSkill(targetAgent.agentWallet, skillId, toggled.enabled);
-      }
-    }
 
     await onStateChange({ ...state, installedSkills: nextSkills });
   };
@@ -88,59 +70,63 @@ export function SkillsManager({ state, onStateChange, agentWallet }: SkillsManag
         </div>
       ) : (
         <div className="installed-list">
-          {state.installedSkills.map((skill) => (
-            <div key={skill.id} className={`installed-skill ${skill.enabled ? "" : "disabled"}`}>
-              <div className="skill-info">
-                <div className="skill-title-row">
-                  <h3>{skill.name}</h3>
-                  <span className="source-tag">{skill.source.name}</span>
+          {state.installedSkills.map((skill) => {
+            const isBuiltin = skill.source.id === "built-in";
+            return (
+              <div key={skill.id} className={`installed-skill ${skill.enabled ? "" : "disabled"}`}>
+                <div className="skill-info">
+                  <div className="skill-title-row">
+                    <h3>{skill.name}</h3>
+                    <span className="source-tag">{skill.source.name}</span>
+                  </div>
+                  <p className="skill-desc">{skill.description}</p>
+                  <div className="skill-meta-row">
+                    <span className="meta-date">Installed: {new Date(skill.installedAt).toLocaleString()}</span>
+                    <span className="meta-path" title={skill.localPath}>{skill.localPath}</span>
+                  </div>
                 </div>
-                <p className="skill-desc">{skill.description}</p>
-                <div className="skill-meta-row">
-                  <span className="meta-date">Installed: {new Date(skill.installedAt).toLocaleString()}</span>
-                  <span className="meta-path" title={skill.localPath}>{skill.localPath}</span>
-                </div>
-              </div>
 
-              <div className="skill-actions">
-                <button
-                  className={`icon-btn toggle-btn ${skill.enabled ? "enabled" : ""}`}
-                  onClick={() => {
-                    void toggleSkill(skill.id);
-                  }}
-                  title={skill.enabled ? "Disable skill" : "Enable skill"}
-                >
-                  {skill.enabled ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
-                </button>
-                <button
-                  className="icon-btn"
-                  onClick={() => window.open(skill.htmlUrl, "_blank", "noopener,noreferrer")}
-                  title="Open source repository"
-                >
-                  <ExternalLink size={18} />
-                </button>
-                <button
-                  className="icon-btn"
-                  onClick={() => {
-                    void openUrl(`${skill.localPath}/SKILL.md`);
-                  }}
-                  title="Open local SKILL.md"
-                >
-                  <ExternalLink size={18} />
-                </button>
-                <button
-                  className="icon-btn danger"
-                  onClick={() => {
-                    void removeSkill(skill.id);
-                  }}
-                  disabled={busySkill === skill.id}
-                  title="Uninstall skill"
-                >
-                  {busySkill === skill.id ? <Loader2 size={16} className="spinner" /> : <Trash2 size={18} />}
-                </button>
+                <div className="skill-actions">
+                  <button
+                    className={`icon-btn toggle-btn ${skill.enabled ? "enabled" : ""}`}
+                    onClick={() => {
+                      void toggleSkill(skill.id);
+                    }}
+                    title={isBuiltin ? "Built-in skill" : skill.enabled ? "Disable skill" : "Enable skill"}
+                    disabled={isBuiltin}
+                  >
+                    {skill.enabled ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
+                  </button>
+                  <button
+                    className="icon-btn"
+                    onClick={() => window.open(skill.htmlUrl, "_blank", "noopener,noreferrer")}
+                    title="Open source repository"
+                  >
+                    <ExternalLink size={18} />
+                  </button>
+                  <button
+                    className="icon-btn"
+                    onClick={() => {
+                      void openUrl(`${skill.localPath}/SKILL.md`);
+                    }}
+                    title="Open local SKILL.md"
+                  >
+                    <ExternalLink size={18} />
+                  </button>
+                  <button
+                    className="icon-btn danger"
+                    onClick={() => {
+                      void removeSkill(skill.id);
+                    }}
+                    disabled={busySkill === skill.id || isBuiltin}
+                    title={isBuiltin ? "Built-in skill" : "Uninstall skill"}
+                  >
+                    {busySkill === skill.id ? <Loader2 size={16} className="spinner" /> : <Trash2 size={18} />}
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
