@@ -1,52 +1,145 @@
 name: Release Compose Mesh
 
-# ─── Trigger ───────────────────────────────────────────────────────────
-# Push a tag like: v0.9.1, v0.9.2-exp, v0.9.3-mac, v1.0.0
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
 
-# ─── Permissions ───────────────────────────────────────────────────────
 permissions:
-  contents: write    # create releases & upload assets
+  contents: write
 
-# ─── Concurrency ───────────────────────────────────────────────────────
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 
-# ─── Jobs ──────────────────────────────────────────────────────────────
 jobs:
-  # ── Build matrix ─────────────────────────────────────────────────────
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # macOS Intel
-          - platform: macos-latest
-            target: x86_64-apple-darwin
-            label: mac-intel
-          # macOS Apple Silicon
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            label: mac-arm
-          # Linux
-          - platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            label: linux
-          # Windows
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-            label: windows
+  resolve-version:
+    name: Resolve Release Version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      package_version: ${{ steps.version.outputs.package_version }}
+      published_version: ${{ steps.version.outputs.published_version }}
+      source: ${{ steps.version.outputs.source }}
+      release_name: ${{ steps.version.outputs.release_name }}
+      repository: ${{ steps.version.outputs.repository }}
 
-    runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── System deps (Linux) ────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve progressive release version
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/versioning.mjs resolve-release
+
+  create-release:
+    name: Create Draft Release
+    runs-on: ubuntu-22.04
+    needs: resolve-version
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+
+    steps:
+      - name: Create or reuse draft release
+        id: release
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag = `${{ needs.resolve-version.outputs.tag }}`;
+            const releaseName = `${{ needs.resolve-version.outputs.release_name }}`;
+            const versionSource = `${{ needs.resolve-version.outputs.source }}`;
+            const packageVersion = `${{ needs.resolve-version.outputs.package_version }}`;
+            const publishedVersion = `${{ needs.resolve-version.outputs.published_version }}`;
+            const targetCommitish = context.sha;
+            const bodyLines = [
+              `${releaseName}`,
+              "",
+              `Automated release for ${targetCommitish}.`,
+              `Version source: ${versionSource}.`,
+              `package.json version: ${packageVersion}.`,
+              `Highest published release before this run: ${publishedVersion || "none"}.`,
+              "",
+              `Commit: https://github.com/${owner}/${repo}/commit/${targetCommitish}`,
+            ];
+            const body = bodyLines.join("\n");
+
+            let release;
+            try {
+              const existing = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag,
+              });
+              release = existing.data;
+              release = (await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: release.id,
+                tag_name: tag,
+                target_commitish: targetCommitish,
+                name: releaseName,
+                body,
+                draft: true,
+                prerelease: false,
+              })).data;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+
+              release = (await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                target_commitish: targetCommitish,
+                name: releaseName,
+                body,
+                draft: true,
+                prerelease: false,
+              })).data;
+            }
+
+            core.setOutput("release_id", String(release.id));
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs:
+      - resolve-version
+      - create-release
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            label: macOS Intel
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS Apple Silicon
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -57,7 +150,6 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      # ── Rust ───────────────────────────────────────────────────────
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -68,7 +160,6 @@ jobs:
         with:
           workspaces: tauri
 
-      # ── Node ───────────────────────────────────────────────────────
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -78,55 +169,43 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # ── Extract version from tag ───────────────────────────────────
-      - name: Parse version from tag
-        id: version
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          VERSION="${TAG#v}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Building version: $VERSION from tag: $TAG"
-
-      # ── Stamp version into tauri.conf.json ─────────────────────────
-      - name: Set version in tauri.conf.json
-        shell: bash
-        working-directory: tauri
-        run: |
-          # Extract clean semver (strip any pre-release suffix for tauri)
-          RAW="${{ steps.version.outputs.version }}"
-          SEMVER=$(echo "$RAW" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
-          if [ -z "$SEMVER" ]; then
-            # If tag is like v0.9 (no patch), append .0
-            SEMVER=$(echo "$RAW" | grep -oE '^[0-9]+\.[0-9]+')
-            SEMVER="${SEMVER}.0"
-          fi
-          echo "Stamping version: $SEMVER"
-          node -e "
-            const fs = require('fs');
-            const conf = JSON.parse(fs.readFileSync('tauri.conf.json', 'utf8'));
-            conf.version = '$SEMVER';
-            fs.writeFileSync('tauri.conf.json', JSON.stringify(conf, null, 2) + '\n');
-          "
-
-      # ── Build & sign ───────────────────────────────────────────────
-      - name: Build Tauri app
+      - name: Build and upload Tauri bundles
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          COMPOSE_MESH_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
         with:
-          tauriScript: npx tauri
-          tagName: ${{ steps.version.outputs.tag }}
-          releaseName: "Compose Mesh ${{ steps.version.outputs.tag }}"
-          releaseBody: |
-            Compose Mesh ${{ steps.version.outputs.tag }}
-
-            **Platform:** ${{ matrix.label }}
-
-            See the [full changelog](https://github.com/compose-market/mesh/commits/${{ steps.version.outputs.tag }}) for details.
-          releaseDraft: false
-          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
+          tauriScript: node scripts/tauri-cli.mjs
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          tagName: ${{ needs.resolve-version.outputs.tag }}
+          releaseName: ${{ needs.resolve-version.outputs.release_name }}
+          releaseDraft: true
+          prerelease: false
+          releaseAssetNamePattern: compose-mesh-[platform]-[arch][ext]
+          uploadUpdaterSignatures: true
           args: --target ${{ matrix.target }}
+
+  publish-release:
+    name: Publish Release
+    runs-on: ubuntu-22.04
+    needs:
+      - resolve-version
+      - create-release
+      - build
+    steps:
+      - name: Publish draft release
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number(`${{ needs.create-release.outputs.release_id }}`),
+              tag_name: `${{ needs.resolve-version.outputs.tag }}`,
+              name: `${{ needs.resolve-version.outputs.release_name }}`,
+              draft: false,
+              prerelease: false,
+            });
