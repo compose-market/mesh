@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, ChevronDown, Copy, Link2, LogOut, RefreshCw, Settings2, Shield, Waypoints } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Check, ChevronDown, Copy, Link2, LogOut, RefreshCw, Settings2, Waypoints } from "lucide-react";
 import { ComposeAppShell } from "@compose-market/theme/app";
 import {
   ShellBanner,
   ShellButton,
   ShellEmptyState,
+  ShellFormGroup,
+  ShellInput,
   ShellModal,
   ShellNotice,
   ShellPageHeader,
   ShellPanel,
+  ShellStat,
+  ShellStatGrid,
   ShellTab,
   ShellTabStrip,
 } from "@compose-market/theme/shell";
@@ -18,7 +22,6 @@ import { SessionIndicator } from "./components/session";
 import { AgentDetailPage, AgentManagerPage } from "./features/agents/pages";
 import {
   appendAgentReport,
-  buildAgentExecutionPolicy,
   mergeMeshPeerSignals,
 } from "./features/agents/model";
 import {
@@ -33,15 +36,22 @@ import {
   type MeshBootstrapResolution,
 } from "./features/mesh";
 import { callAgent, getActiveSessionStatus } from "./lib/api";
-import { heartbeatService } from "./lib/heartbeat";
+import { daemonGetAgentStatus, mergeDaemonStatusIntoInstalledAgent } from "./lib/daemon";
+import { HeartbeatService } from "./lib/heartbeat";
 import {
   clearLocalConnectionState,
   createLocalWalletDisplay,
   deriveLinkedDeploymentIntent,
   resolveInheritedLocalChainId,
 } from "./lib/deploy";
-import { queryOsPermissions } from "./lib/permissions";
-import { GlobalPermissionsSection } from "./features/permissions";
+import {
+  canAgentUseMesh,
+  formatOsPermissionStatus,
+  reconcileStateWithOsPermissions,
+  queryOsPermissions,
+  requestOrOpenMissingGlobalPermission,
+} from "./lib/permissions";
+
 import {
   checkForLocalUpdates,
   createLocalUpdateState,
@@ -53,8 +63,11 @@ import {
 import {
   ensureSkillsRoot,
   getLocalPaths,
+  setLocalBaseDir,
   loadRuntimeState,
+  permissionPolicyToGrantedList,
   saveRuntimeState,
+  syncAgentLocalFiles,
 } from "./lib/storage";
 import type {
   LocalIdentityContext,
@@ -67,7 +80,7 @@ import "./styles.css";
 
 const WEB_APP_URL = "https://compose.market";
 const CONNECT_LOCAL_PATH = "/connect-local";
-type BasePage = "agents" | "network";
+type BasePage = "agents" | "network" | "settings";
 
 const defaultSessionState: SessionState = {
   active: false,
@@ -198,12 +211,33 @@ function microsBigIntToUsd(value: bigint): string {
   return `$${(Number(bounded) / 1_000_000).toFixed(2)}`;
 }
 
+async function syncInstalledAgentsWithDaemon(state: LocalRuntimeState): Promise<LocalRuntimeState> {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window) || state.installedAgents.length === 0) {
+    return state;
+  }
+
+  const statuses = await Promise.all(
+    state.installedAgents.map(async (agent) => [agent.agentWallet, await daemonGetAgentStatus(agent.agentWallet)] as const),
+  );
+  const statusByWallet = new Map(
+    statuses.filter((entry): entry is readonly [string, NonNullable<Awaited<ReturnType<typeof daemonGetAgentStatus>>>] => entry[1] !== null),
+  );
+
+  return {
+    ...state,
+    installedAgents: state.installedAgents.map((agent) => (
+      mergeDaemonStatusIntoInstalledAgent(agent, statusByWallet.get(agent.agentWallet) || null)
+    )),
+  };
+}
+
 export default function App() {
   const [state, setState] = useState<LocalRuntimeState | null>(null);
   const stateRef = useRef<LocalRuntimeState | null>(null);
+  const heartbeatServicesRef = useRef<Map<string, HeartbeatService>>(new Map());
   const [activePage, setActivePage] = useState<BasePage>("agents");
+  const [meshMounted, setMeshMounted] = useState(false);
   const [session, setSession] = useState<SessionState>({ ...defaultSessionState });
-  const [activeAgentWallet, setActiveAgentWallet] = useState<string | null>(null);
   const [selectedAgentWallet, setSelectedAgentWallet] = useState<string | null>(null);
   const [meshPeers, setMeshPeers] = useState<MeshPeerSignal[]>([]);
   const [meshBootstrap, setMeshBootstrap] = useState<MeshBootstrapResolution>(() => resolveLocalMeshBootstrap());
@@ -211,7 +245,7 @@ export default function App() {
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [deviceId] = useState(getOrCreateDeviceId);
   const [connectModalOpen, setConnectModalOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+
   const [appUpdate, setAppUpdate] = useState(() => createLocalUpdateState());
 
   const wallet = state?.identity?.userAddress || null;
@@ -243,6 +277,7 @@ export default function App() {
     stateRef.current = next;
     setState(next);
     await saveRuntimeState(next);
+    await Promise.all(next.installedAgents.map((agent) => syncAgentLocalFiles(agent)));
   }, []);
 
   useEffect(() => {
@@ -252,16 +287,17 @@ export default function App() {
   useEffect(() => {
     void (async () => {
       const loaded = await loadRuntimeState();
+      const osPermissions = await queryOsPermissions().catch(() => loaded.osPermissions);
+      const hydratedState = await syncInstalledAgentsWithDaemon(reconcileStateWithOsPermissions(loaded, osPermissions))
+        .catch(() => reconcileStateWithOsPermissions(loaded, osPermissions));
       await ensureSkillsRoot();
       const resolvedPaths = await getLocalPaths();
       setPaths(resolvedPaths);
+      await Promise.all(hydratedState.installedAgents.map((agent) => syncAgentLocalFiles(agent)));
 
-      stateRef.current = loaded;
-      setState(loaded);
-      setSession(sessionFromIdentity(loaded.identity));
-
-      const running = loaded.installedAgents.find((agent) => agent.running);
-      setActiveAgentWallet(running?.agentWallet || null);
+      stateRef.current = hydratedState;
+      setState(hydratedState);
+      setSession(sessionFromIdentity(hydratedState.identity));
     })();
   }, []);
 
@@ -276,6 +312,10 @@ export default function App() {
     window.addEventListener("navigate-to-agent", navigateHandler);
     return () => window.removeEventListener("navigate-to-agent", navigateHandler);
   }, []);
+
+  useEffect(() => {
+    if (activePage === "network") setMeshMounted(true);
+  }, [activePage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -339,77 +379,124 @@ export default function App() {
     }
   }, [selectedAgentWallet, state]);
 
+  const heartbeatTopologyKey = useMemo(() => (
+    state?.installedAgents
+      .filter((agent) => agent.running && agent.heartbeat.enabled)
+      .map((agent) => `${agent.agentWallet}:${agent.heartbeat.intervalMs}`)
+      .sort()
+      .join("|")
+    || ""
+  ), [state?.installedAgents]);
+
+  const heartbeatSkillKey = useMemo(() => (
+    state?.installedSkills
+      .filter((skill) => skill.enabled)
+      .map((skill) => skill.id)
+      .sort()
+      .join("|")
+    || ""
+  ), [state?.installedSkills]);
+
   useEffect(() => {
-    if (!state?.identity || !activeAgentWallet) {
-      heartbeatService.stop();
+    const services = heartbeatServicesRef.current;
+
+    if (!state?.identity) {
+      for (const service of services.values()) {
+        service.stop();
+      }
+      services.clear();
       return;
     }
 
-    const activeAgent = state.installedAgents.find((agent) => agent.agentWallet === activeAgentWallet && agent.running);
-    if (!activeAgent || !activeAgent.heartbeat.enabled) {
-      heartbeatService.stop();
-      return;
+    const runningAgents = state.installedAgents.filter((agent) => agent.running && agent.heartbeat.enabled);
+    const runningWallets = new Set(runningAgents.map((agent) => agent.agentWallet));
+
+    for (const [agentWallet, service] of services.entries()) {
+      if (!runningWallets.has(agentWallet)) {
+        service.stop();
+        services.delete(agentWallet);
+      }
     }
 
-    heartbeatService.start({
-      agentWallet: activeAgent.agentWallet,
-      intervalMs: activeAgent.heartbeat.intervalMs,
-      onExecute: async (prompt) => {
-        const executionPolicy = buildAgentExecutionPolicy(activeAgent.permissions);
-        const response = await callAgent({
-          runtimeUrl: state.settings.runtimeUrl,
-          identity: state.identity!,
-          agentWallet: activeAgent.agentWallet,
-          message: prompt,
-          threadId: `heartbeat-${activeAgent.agentWallet}`,
-          grantedPermissions: executionPolicy.grantedPermissions,
-          permissionPolicy: executionPolicy.permissionPolicy,
-        });
-        return response.output || response.error || "HEARTBEAT_OK";
-      },
-      onAlert: (message) => {
-        showNotification("error", `Heartbeat alert: ${message.slice(0, 160)}`);
-      },
-      onTickComplete: (result) => {
-        const updatedAgents = state.installedAgents.map((agent) =>
-          agent.agentWallet === activeAgent.agentWallet
-            ? (
-              result === "ok"
-                ? {
-                  ...agent,
-                  heartbeat: {
-                    ...agent.heartbeat,
-                    lastRunAt: Date.now(),
-                    lastResult: result,
-                  },
-                }
-                : appendAgentReport(
-                  {
-                    ...agent,
-                    heartbeat: {
-                      ...agent.heartbeat,
-                      lastRunAt: Date.now(),
-                      lastResult: result,
-                    },
-                  },
-                  {
-                    kind: "heartbeat",
-                    title: result === "alert" ? "Heartbeat alert" : "Heartbeat execution failed",
-                    summary: result === "alert"
-                      ? `${agent.metadata.name} raised a local heartbeat alert.`
-                      : `${agent.metadata.name} failed its most recent local heartbeat execution.`,
-                    outcome: result === "alert" ? "warning" : "error",
-                  },
-                )
-            )
-            : agent,
-        );
-        void persistState({ ...state, installedAgents: updatedAgents });
-      },
-    });
+    for (const runningAgent of runningAgents) {
+      const service = services.get(runningAgent.agentWallet) || new HeartbeatService();
+      services.set(runningAgent.agentWallet, service);
 
-    return () => heartbeatService.stop();
-  }, [activeAgentWallet, persistState, showNotification, state]);
+      service.start({
+        agentWallet: runningAgent.agentWallet,
+        intervalMs: runningAgent.heartbeat.intervalMs,
+        skillRelativePaths: (stateRef.current?.installedSkills || [])
+          .filter((skill) => skill.enabled)
+          .map((skill) => skill.relativePath),
+        onExecute: async (prompt) => {
+          const current = stateRef.current;
+          if (!current?.identity) {
+            return "HEARTBEAT_OK";
+          }
+
+          const response = await callAgent({
+            runtimeUrl: current.settings.runtimeUrl,
+            identity: current.identity,
+            agentWallet: runningAgent.agentWallet,
+            message: prompt,
+            threadId: `heartbeat-${runningAgent.agentWallet}`,
+            userAddress: current.identity.userAddress,
+            sessionGrants: permissionPolicyToGrantedList(runningAgent.permissions),
+          });
+          return response.output || response.error || "HEARTBEAT_OK";
+        },
+        onAlert: (message) => {
+          showNotification("error", `Heartbeat alert: ${message.slice(0, 160)}`);
+        },
+        onTickComplete: (result) => {
+          void persistState((current) => {
+            return {
+              ...current,
+              installedAgents: current.installedAgents.map((agent) => (
+                agent.agentWallet !== runningAgent.agentWallet
+                  ? agent
+                  : result === "ok"
+                    ? {
+                      ...agent,
+                      heartbeat: {
+                        ...agent.heartbeat,
+                        lastRunAt: Date.now(),
+                        lastResult: result,
+                      },
+                    }
+                    : appendAgentReport(
+                      {
+                        ...agent,
+                        heartbeat: {
+                          ...agent.heartbeat,
+                          lastRunAt: Date.now(),
+                          lastResult: result,
+                        },
+                      },
+                      {
+                        kind: "heartbeat",
+                        title: result === "alert" ? "Heartbeat alert" : "Heartbeat execution failed",
+                        summary: result === "alert"
+                          ? `${agent.metadata.name} raised a local heartbeat alert.`
+                          : `${agent.metadata.name} failed its most recent local heartbeat execution.`,
+                        outcome: result === "alert" ? "warning" : "error",
+                      },
+                    )
+              )),
+            };
+          });
+        },
+      });
+    }
+  }, [heartbeatSkillKey, heartbeatTopologyKey, persistState, showNotification, state?.identity, state?.settings.runtimeUrl]);
+
+  useEffect(() => () => {
+    const services = heartbeatServicesRef.current;
+    for (const service of services.values()) {
+      service.stop();
+    }
+    services.clear();
+  }, []);
 
   useEffect(() => {
     localMeshService.configure((status) => {
@@ -466,27 +553,25 @@ export default function App() {
     };
   }, []);
 
-  const runningNetworkAgent = (
-    state?.installedAgents.find((agent) => agent.agentWallet === activeAgentWallet && agent.running && agent.network.enabled) ||
-    state?.installedAgents.find((agent) => agent.running && agent.network.enabled) ||
-    null
+  const publishedNetworkAgents = useMemo(
+    () => state?.installedAgents.filter((agent) => canAgentUseMesh(agent, state.settings.meshEnabled)) || [],
+    [state?.installedAgents, state?.settings.meshEnabled],
   );
 
   useEffect(() => {
-    if (!runningNetworkAgent) {
+    if (publishedNetworkAgents.length === 0) {
       setMeshPeers([]);
     }
-  }, [runningNetworkAgent?.agentWallet]);
+  }, [publishedNetworkAgents.length]);
 
   useEffect(() => {
     void localMeshService.setDesiredState(buildMeshDesiredState(
-      runningNetworkAgent,
+      state?.installedAgents || [],
       state?.identity || null,
       deviceId,
-      state?.installedSkills || [],
-      state?.settings.apiUrl || "",
+      state?.settings.meshEnabled ?? false,
     ));
-  }, [deviceId, runningNetworkAgent, state?.identity, state?.installedSkills]);
+  }, [deviceId, state?.identity, state?.installedAgents, state?.settings.meshEnabled]);
 
   const handleSessionUpdate = useCallback((active: boolean, expiresAt: number | null, budget: string | null, sessionId?: string, duration?: number) => {
     setSession((prev) => ({
@@ -695,10 +780,6 @@ export default function App() {
     showNotification("success", "Local wallet disconnected");
   }, [persistState, showNotification]);
 
-  const activateAgent = useCallback((agentWallet: string | null) => {
-    setActiveAgentWallet(agentWallet);
-  }, []);
-
   const openAgent = useCallback((agentWallet: string) => {
     setActivePage("agents");
     setSelectedAgentWallet(agentWallet.toLowerCase());
@@ -733,9 +814,7 @@ export default function App() {
 
   const stateReady = state !== null;
   const selectedAgent = state?.installedAgents.find((agent) => agent.agentWallet === selectedAgentWallet) || null;
-  const visibleMeshPeers = runningNetworkAgent
-    ? meshPeers.filter((peer) => !(peer.deviceId === deviceId && peer.agentWallet === runningNetworkAgent.agentWallet))
-    : [];
+  const visibleMeshPeers = meshPeers.filter((peer) => peer.deviceId !== deviceId);
 
   return (
     <ComposeAppShell contentClassName="app">
@@ -786,7 +865,7 @@ export default function App() {
                       CONNECT
                     </button>
                   )}
-                  <ShellButton tone="secondary" className="connect-btn" onClick={() => setSettingsOpen(true)}>
+                  <ShellButton tone="secondary" className="connect-btn" onClick={() => setActivePage("settings")}>
                     <Settings2 size={14} />
                     Settings
                   </ShellButton>
@@ -858,8 +937,8 @@ export default function App() {
           ) : null}
 
           <main className="main">
-            {activePage === "agents" ? (
-              selectedAgent ? (
+            <div style={{ display: activePage === "agents" ? "contents" : "none" }}>
+              {selectedAgent ? (
                 <AgentDetailPage
                   agent={selectedAgent}
                   state={state}
@@ -873,51 +952,41 @@ export default function App() {
                   state={state}
                   session={session}
                   onStateChange={persistState}
-                  onActivateAgent={activateAgent}
                   onOpenAgent={openAgent}
                   onBrowse={() => void openUrl(`${WEB_APP_URL}/market`)}
                 />
-              )
-            ) : (
-              <MeshPage
-                agent={runningNetworkAgent}
-                peers={visibleMeshPeers}
-                bootstrapResolution={meshBootstrap}
+              )}
+            </div>
+            {meshMounted ? (
+              <div style={{ display: activePage === "network" ? "contents" : "none" }}>
+                <MeshPage
+                  agents={publishedNetworkAgents}
+                  peers={visibleMeshPeers}
+                  bootstrapResolution={meshBootstrap}
+                />
+              </div>
+            ) : null}
+            {activePage === "settings" ? (
+              <SettingsPage
+                state={state}
+                paths={paths}
+                appUpdate={appUpdate}
+                onStateChange={persistState}
+                onCheckForUpdates={() => refreshLocalUpdate({ showChecking: true, showErrors: true })}
+                onInstallUpdate={handleInstallUpdate}
+                onOpenPath={async (path) => {
+                  try {
+                    await openUrl(path);
+                  } catch (error) {
+                    showNotification("error", error instanceof Error ? error.message : "Failed to open local path");
+                  }
+                }}
+                onNotify={showNotification}
+                onBack={() => setActivePage("agents")}
+                onPathsChange={setPaths}
               />
-            )}
+            ) : null}
           </main>
-
-          <ShellModal
-            open={settingsOpen}
-            title="Local Settings"
-            subtitle="Updater, macOS permissions, and managed local storage."
-            onClose={() => setSettingsOpen(false)}
-            className="settings-modal-shell"
-          >
-            <SettingsPanel
-              state={state}
-              paths={paths}
-              appUpdate={appUpdate}
-              onStateChange={persistState}
-              onCheckForUpdates={() => refreshLocalUpdate({ showChecking: true, showErrors: true })}
-              onInstallUpdate={handleInstallUpdate}
-              onOpenSystemPermissions={async () => {
-                try {
-                  await openUrl("x-help-action://openPrefPane?bundleId=com.apple.settings.PrivacySecurity.extension");
-                } catch (error) {
-                  showNotification("error", error instanceof Error ? error.message : "Failed to open macOS Privacy & Security");
-                }
-              }}
-              onOpenPath={async (path) => {
-                try {
-                  await openUrl(path);
-                } catch (error) {
-                  showNotification("error", error instanceof Error ? error.message : "Failed to open local path");
-                }
-              }}
-              onNotify={showNotification}
-            />
-          </ShellModal>
 
           <ConnectModal
             open={connectModalOpen}
@@ -930,16 +999,17 @@ export default function App() {
   );
 }
 
-function SettingsPanel({
+function SettingsPage({
   state,
   paths,
   appUpdate,
   onStateChange,
   onCheckForUpdates,
   onInstallUpdate,
-  onOpenSystemPermissions,
   onOpenPath,
   onNotify,
+  onBack,
+  onPathsChange,
 }: {
   state: LocalRuntimeState;
   paths: Awaited<ReturnType<typeof getLocalPaths>>;
@@ -947,114 +1017,191 @@ function SettingsPanel({
   onStateChange: (next: LocalRuntimeState) => Promise<void>;
   onCheckForUpdates: () => Promise<void>;
   onInstallUpdate: () => Promise<void>;
-  onOpenSystemPermissions: () => Promise<void>;
   onOpenPath: (path: string) => Promise<void>;
   onNotify: (type: "success" | "error", message: string) => void;
+  onBack: () => void;
+  onPathsChange: (paths: Awaited<ReturnType<typeof getLocalPaths>>) => void;
 }) {
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"permissions" | "storage">("permissions");
   const [refreshingPermissions, setRefreshingPermissions] = useState(false);
+  const [editingBaseDir, setEditingBaseDir] = useState(paths?.base_dir || "");
+  const mountedRef = useRef(false);
+
+  /* Proactively request full access on mount */
+  useEffect(() => {
+    if (mountedRef.current) return;
+    mountedRef.current = true;
+    void (async () => {
+      try {
+        const osStatus = await requestOrOpenMissingGlobalPermission(state.osPermissions);
+        await onStateChange(reconcileStateWithOsPermissions(state, osStatus));
+      } catch { /* best-effort on mount */ }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const refreshMacPermissions = async () => {
     setRefreshingPermissions(true);
     try {
       const osStatus = await queryOsPermissions();
-
-      await onStateChange({
-        ...state,
-        osPermissions: {
-          camera: osStatus.camera,
-          microphone: osStatus.microphone,
-        },
-      });
+      await onStateChange(reconcileStateWithOsPermissions(state, osStatus));
       onNotify("success", "macOS permission status refreshed");
+    } catch (error) {
+      onNotify("error", error instanceof Error ? error.message : "Failed to refresh macOS permission status");
     } finally {
       setRefreshingPermissions(false);
     }
   };
 
+  const openGlobalPermissions = async () => {
+    try {
+      const osStatus = await requestOrOpenMissingGlobalPermission(state.osPermissions);
+      await onStateChange(reconcileStateWithOsPermissions(state, osStatus));
+    } catch (error) {
+      onNotify("error", error instanceof Error ? error.message : "Failed to open macOS Privacy & Security");
+    }
+  };
+
+  const commitBaseDir = async () => {
+    const trimmed = editingBaseDir.trim();
+    if (!trimmed || trimmed === paths?.base_dir) return;
+    try {
+      const newPaths = await setLocalBaseDir(trimmed);
+      onPathsChange(newPaths);
+      setEditingBaseDir(newPaths.base_dir);
+      onNotify("success", `Runtime root relocated to: ${newPaths.base_dir}`);
+    } catch (error) {
+      onNotify("error", error instanceof Error ? error.message : "Failed to update runtime root");
+      // Reset to current value
+      setEditingBaseDir(paths?.base_dir || "");
+    }
+  };
+
+  const meshEnabled = state.settings.meshEnabled ?? false;
+  const toggleMesh = async () => {
+    await onStateChange({
+      ...state,
+      settings: { ...state.settings, meshEnabled: !meshEnabled },
+    });
+    onNotify("success", !meshEnabled ? "Mesh network enabled" : "Mesh network disabled");
+  };
+
   return (
-    <div className="settings settings--compact">
-      <ShellTabStrip className="settings-tab-row">
-        <ShellTab active={activeSettingsTab === "permissions"} onClick={() => setActiveSettingsTab("permissions")} className={`detail-tab-btn ${activeSettingsTab === "permissions" ? "active" : ""}`}>
-          <Shield size={14} />
-          Permissions
-        </ShellTab>
-        <ShellTab active={activeSettingsTab === "storage"} onClick={() => setActiveSettingsTab("storage")} className={`detail-tab-btn ${activeSettingsTab === "storage" ? "active" : ""}`}>
-          <Settings2 size={14} />
-          Storage
-        </ShellTab>
-      </ShellTabStrip>
+    <div className="settings-page">
+      <ShellPageHeader
+        eyebrow="Settings"
+        title="System & Mesh Configuration"
+        subtitle="Updater, macOS permissions, mesh activation, and managed local storage."
+        actions={
+          <ShellButton tone="secondary" onClick={onBack}>
+            ← Back
+          </ShellButton>
+        }
+      />
 
-      {activeSettingsTab === "permissions" ? (
-        <>
-          <GlobalPermissionsSection
-            osPermissions={state.osPermissions}
-            refreshing={refreshingPermissions}
-            onOpenSystemPermissions={() => void onOpenSystemPermissions()}
-            onRefresh={() => void refreshMacPermissions()}
-          />
+      {/* ── Section 1: Full Access (macOS system permissions) ── */}
+      <ShellPanel className="settings-section-card">
+        <h3>System Permissions</h3>
+        <p className="settings-hint">
+          Compose Mesh requires full system access to operate agents autonomously.
+          Grant permissions in macOS System Settings → Privacy &amp; Security.
+        </p>
+        <ShellStatGrid>
+          <ShellStat label="Camera" value={formatOsPermissionStatus(state.osPermissions.camera)} />
+          <ShellStat label="Microphone" value={formatOsPermissionStatus(state.osPermissions.microphone)} />
+          <ShellStat label="Full Disk Access" value={formatOsPermissionStatus(state.osPermissions.fullDiskAccess)} />
+          <ShellStat label="Accessibility" value={formatOsPermissionStatus(state.osPermissions.accessibility)} />
+        </ShellStatGrid>
+        <div className="settings-actions">
+          <ShellButton tone="primary" onClick={() => void openGlobalPermissions()}>
+            Grant Full Access
+          </ShellButton>
+          <ShellButton tone="secondary" disabled={refreshingPermissions} onClick={() => void refreshMacPermissions()}>
+            <RefreshCw size={14} />
+            Refresh Status
+          </ShellButton>
+        </div>
+      </ShellPanel>
 
-          {/* Compact update row */}
-          <div className="settings-section settings-update-row">
-            <div className="settings-update-info">
-              <span className="settings-update-version">v{appUpdate.currentVersion || "?"}</span>
-              {appUpdate.available ? (
-                <span className="settings-update-badge">Update available: {appUpdate.available.version}</span>
-              ) : (
-                <span className="settings-update-hint">Up to date</span>
-              )}
-            </div>
+      {/* ── Section 2: Mesh Activation ── */}
+      <ShellPanel className="settings-section-card">
+        <h3>Mesh Network</h3>
+        <p className="settings-hint">
+          When enabled, your agents broadcast signed manifests and can respond to peer requests over the libp2p mesh.
+        </p>
+        <button
+          type="button"
+          className={`settings-mesh-toggle ${meshEnabled ? "settings-mesh-toggle--on" : ""}`}
+          onClick={() => void toggleMesh()}
+        >
+          <span className="settings-mesh-toggle-label">{meshEnabled ? "Mesh Enabled" : "Mesh Disabled"}</span>
+          <div className={`perm-toggle-switch ${meshEnabled ? "perm-toggle-switch--on" : ""}`}>
+            <div className="perm-toggle-thumb" />
+          </div>
+        </button>
+      </ShellPanel>
+
+      {/* ── Section 3: Directory Paths ── */}
+      <ShellPanel className="settings-section-card">
+        <h3>Local Storage</h3>
+        <p className="settings-hint">
+          Compose Local stores runtime state, agent workspaces, and shared skill installs inside the managed local runtime root.
+        </p>
+        <div className="settings-path-list">
+          <ShellFormGroup label="Runtime Root">
+            <ShellInput
+              value={editingBaseDir}
+              onChange={(e) => setEditingBaseDir(e.target.value)}
+              onBlur={() => void commitBaseDir()}
+              onKeyDown={(e) => { if (e.key === "Enter") void commitBaseDir(); }}
+              placeholder="/path/to/compose-local"
+            />
+          </ShellFormGroup>
+          <ShellFormGroup label="State File">
+            <ShellInput value={paths?.state_file || "Browser fallback mode"} readOnly />
+          </ShellFormGroup>
+          <ShellFormGroup label="Agents Directory">
+            <ShellInput value={paths?.agents_dir || "Browser fallback mode"} readOnly />
+          </ShellFormGroup>
+          <ShellFormGroup label="Skills Directory">
+            <ShellInput value={paths?.skills_dir || "Browser fallback mode"} readOnly />
+          </ShellFormGroup>
+        </div>
+        <div className="settings-actions">
+          {paths?.base_dir ? (
+            <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.base_dir)}>
+              Open Runtime Folder
+            </ShellButton>
+          ) : null}
+          {paths?.skills_dir ? (
+            <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.skills_dir)}>
+              Open Skills Folder
+            </ShellButton>
+          ) : null}
+        </div>
+      </ShellPanel>
+
+      {/* ── Section 4: Update / Status ── */}
+      <ShellPanel className="settings-section-card">
+        <div className="settings-update-row">
+          <div className="settings-update-info">
+            <span className="settings-update-version">v{appUpdate.currentVersion || "?"}</span>
             {appUpdate.available ? (
-              <ShellButton tone="primary" onClick={() => void onInstallUpdate()}>
-                Install {appUpdate.available.version}
-              </ShellButton>
+              <span className="settings-update-badge">Update available: {appUpdate.available.version}</span>
             ) : (
-              <ShellButton tone="secondary" onClick={() => void onCheckForUpdates()}>
-                <RefreshCw size={14} />
-                Check for Updates
-              </ShellButton>
+              <span className="settings-update-hint">Up to date</span>
             )}
           </div>
-        </>
-      ) : null}
-
-      {activeSettingsTab === "storage" ? (
-        <div className="settings-section">
-          <p className="settings-hint">
-            Compose Local stores runtime state, agent workspaces, and shared skill installs inside the managed local runtime root.
-          </p>
-          <div className="settings-path-list">
-            <div className="settings-path-row">
-              <span>Runtime Root</span>
-              <strong>{paths?.base_dir || "Browser fallback mode"}</strong>
-            </div>
-            <div className="settings-path-row">
-              <span>State File</span>
-              <strong>{paths?.state_file || "Browser fallback mode"}</strong>
-            </div>
-            <div className="settings-path-row">
-              <span>Agents Directory</span>
-              <strong>{paths?.agents_dir || "Browser fallback mode"}</strong>
-            </div>
-            <div className="settings-path-row">
-              <span>Skills Directory</span>
-              <strong>{paths?.skills_dir || "Browser fallback mode"}</strong>
-            </div>
-          </div>
-          <div className="settings-actions">
-            {paths?.base_dir ? (
-              <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.base_dir)}>
-                Open Runtime Folder
-              </ShellButton>
-            ) : null}
-            {paths?.skills_dir ? (
-              <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.skills_dir)}>
-                Open Skills Folder
-              </ShellButton>
-            ) : null}
-          </div>
+          {appUpdate.available ? (
+            <ShellButton tone="primary" onClick={() => void onInstallUpdate()}>
+              Install {appUpdate.available.version}
+            </ShellButton>
+          ) : (
+            <ShellButton tone="secondary" onClick={() => void onCheckForUpdates()}>
+              <RefreshCw size={14} />
+              Check for Updates
+            </ShellButton>
+          )}
         </div>
-      ) : null}
+      </ShellPanel>
     </div>
   );
 }

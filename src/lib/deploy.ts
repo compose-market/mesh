@@ -92,11 +92,13 @@ export function deriveLinkedDeploymentIntent(context: RedeemedLocalContext): Lin
     return null;
   }
 
+  const source = context.market?.entry === "local-signed" ? "signed-install" : "local-link";
+
   return {
     agentWallet,
     agentCardCid: normalizeCid(context.market?.agentCardCid),
     chainId: context.chainId,
-    source: "local-link",
+    source,
     receivedAt: Date.now(),
   };
 }

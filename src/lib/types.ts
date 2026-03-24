@@ -80,10 +80,11 @@ export interface InstalledAgent {
   running: boolean;
   runtimeId: string;
   heartbeat: AgentHeartbeatState;
+  desiredPermissions?: AgentPermissionPolicy;
   permissions: AgentPermissionPolicy;
   network: AgentNetworkState;
   workerState?: AgentWorkerState;
-  skillStates: Record<string, AgentSkillState>;
+  skillStates?: Record<string, AgentSkillState>;
   reports: AgentTaskReport[];
 }
 
@@ -103,6 +104,7 @@ export interface LocalIdentityContext {
 export interface LocalSettings {
   apiUrl: string;
   runtimeUrl: string;
+  meshEnabled: boolean;
 }
 
 export type PermissionDecision = "allow" | "deny";
@@ -162,8 +164,10 @@ export interface MeshManifest {
 }
 
 export interface MeshPeerSignal {
+  id: string;
   peerId: string;
   agentWallet: string | null;
+  haiId: string | null;
   deviceId: string | null;
   lastSeenAt: number;
   stale: boolean;
@@ -193,6 +197,7 @@ export interface AgentMeshInteraction {
 export interface AgentNetworkState {
   enabled: boolean;
   status: AgentNetworkStatus;
+  haiId: string | null;
   peerId: string | null;
   listenMultiaddrs: string[];
   peersDiscovered: number;
@@ -230,6 +235,9 @@ export type OsPermissionStatus = "unknown" | "granted" | "denied" | "unsupported
 export interface OsPermissionSnapshot {
   camera: OsPermissionStatus;
   microphone: OsPermissionStatus;
+  screen: OsPermissionStatus;
+  fullDiskAccess: OsPermissionStatus;
+  accessibility: OsPermissionStatus;
 }
 
 export interface LocalRuntimeState {
@@ -243,7 +251,7 @@ export interface LocalRuntimeState {
 }
 
 export interface SkillSource {
-  id: "clawhub" | "awesome-curated";
+  id: "clawhub" | "awesome-curated" | "built-in";
   name: string;
   description: string;
   catalogUrl: string;
@@ -282,6 +290,7 @@ export interface InstalledSkill {
   installedAt: number;
   enabled: boolean;
   localPath: string;
+  relativePath: string;
   installRef: string;
   installSha?: string;
   requirements: SkillRequirements;
@@ -338,7 +347,7 @@ export interface LinkedDeploymentIntent {
   agentWallet: string;
   agentCardCid: string | null;
   chainId: number;
-  source: "local-link";
+  source: "local-link" | "signed-install";
   receivedAt: number;
 }
 
