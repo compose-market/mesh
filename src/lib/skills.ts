@@ -1,24 +1,56 @@
 import { invoke } from "@tauri-apps/api/core";
 import { parse as parseYaml } from "yaml";
-import type { SkillRequirements } from "./types";
+import type { SkillRequirements, SkillSource } from "./types";
 
 interface ParsedFrontmatter {
   [key: string]: unknown;
 }
 
+export interface BuiltinSkillFile {
+  relativePath: string;
+  content: string;
+}
+
+export interface BuiltinSkillRoot {
+  id: string;
+  name: string;
+  fullName: string;
+  description: string;
+  relativePath: string;
+}
+
+const BUILTIN_SKILL_SOURCE: SkillSource = {
+  id: "built-in",
+  name: "Built-in",
+  description: "Built-in local skills",
+  catalogUrl: "https://compose.market",
+};
+
+const ROOTS = [
+  "skills/write-report",
+  "skills/use-tools",
+  "skills/start-convo",
+  "skills/hello-mesh",
+  "skills/use-mesh",
+  "skills/ping-request",
+] as const;
+
+const RAW = import.meta.glob<string>("../../skills/global/**/SKILL.md", {
+  eager: true,
+  import: "default",
+  query: "?raw",
+});
+
 function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-  return value as Record<string, unknown>;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean)
+    : [];
 }
 
 function parseJsonString(value: string): unknown {
@@ -29,6 +61,28 @@ function parseJsonString(value: string): unknown {
   }
 }
 
+function metadataRecord(frontmatter: ParsedFrontmatter): Record<string, unknown> {
+  const raw = frontmatter.metadata;
+  return asRecord(typeof raw === "string" ? parseJsonString(raw) : raw);
+}
+
+function toLocalSkillPath(sourcePath: string): string {
+  return sourcePath
+    .replace(/^\.{2}\/\.{2}\/skills\/global\//, "skills/")
+    .replace(/^\/+/, "");
+}
+
+const builtinSkillFiles: BuiltinSkillFile[] = Object.entries(RAW)
+  .sort(([left], [right]) => left.localeCompare(right))
+  .map(([sourcePath, content]) => ({
+    relativePath: toLocalSkillPath(sourcePath),
+    content,
+  }));
+
+const builtinSkillFileMap = new Map(
+  builtinSkillFiles.map((entry) => [entry.relativePath, entry.content]),
+);
+
 export function parseSkillFrontmatter(content: string): ParsedFrontmatter {
   const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
   if (!match) {
@@ -36,18 +90,10 @@ export function parseSkillFrontmatter(content: string): ParsedFrontmatter {
   }
 
   try {
-    const parsed = parseYaml(match[1]);
-    return asRecord(parsed);
+    return asRecord(parseYaml(match[1]));
   } catch {
     return {};
   }
-}
-
-function extractOpenClawMetadata(frontmatter: ParsedFrontmatter): Record<string, unknown> {
-  const metadataRaw = frontmatter.metadata;
-  const metadataValue = typeof metadataRaw === "string" ? parseJsonString(metadataRaw) : metadataRaw;
-  const metadata = asRecord(metadataValue);
-  return asRecord(metadata.openclaw);
 }
 
 export function extractSkillSummary(skillMd: string): {
@@ -63,6 +109,19 @@ export function extractSkillSummary(skillMd: string): {
   };
 }
 
+const builtinSkillRoots: BuiltinSkillRoot[] = ROOTS.map((relativePath) => {
+  const skillMd = builtinSkillFileMap.get(`${relativePath}/SKILL.md`) || "";
+  const summary = extractSkillSummary(skillMd);
+  const slug = relativePath.replace(/^skills\//, "");
+  return {
+    id: `built-in:${slug}`,
+    name: summary.name || slug.toUpperCase(),
+    fullName: `built-in/${slug}`,
+    description: summary.description || `${slug} built-in skill`,
+    relativePath,
+  };
+});
+
 async function detectMissingBins(bins: string[]): Promise<string[]> {
   if (bins.length === 0) {
     return [];
@@ -75,12 +134,6 @@ async function detectMissingBins(bins: string[]): Promise<string[]> {
 }
 
 function detectMissingEnv(envKeys: string[]): string[] {
-  if (envKeys.length === 0) {
-    return [];
-  }
-
-  // Local runtime does not expose host env vars like OpenClaw gateway does.
-  // Surface env requirements as informational and let users configure keys later.
   return envKeys.map((entry) => `env:${entry}`);
 }
 
@@ -89,24 +142,24 @@ function detectUnsupportedOs(osList: string[]): string[] {
     return [];
   }
   const normalized = navigator.platform.toLowerCase();
-  const supported = osList.some((candidate) => normalized.includes(candidate.toLowerCase()));
-  return supported ? [] : [`os:${osList.join("|")}`];
+  return osList.some((candidate) => normalized.includes(candidate.toLowerCase()))
+    ? []
+    : [`os:${osList.join("|")}`];
 }
 
 export async function extractSkillRequirements(skillMd: string): Promise<SkillRequirements> {
   const frontmatter = parseSkillFrontmatter(skillMd);
-  const openclaw = extractOpenClawMetadata(frontmatter);
-  const requires = asRecord(openclaw.requires);
+  const metadata = metadataRecord(frontmatter);
+  const requires = asRecord(metadata.requires);
 
   const bins = asStringArray(requires.bins);
   const anyBins = asStringArray(requires.anyBins);
   const env = asStringArray(requires.env);
-  const os = asStringArray(openclaw.os ?? requires.os);
+  const os = asStringArray(metadata.os ?? requires.os);
 
   const missing: string[] = [];
 
-  const missingBins = await detectMissingBins(bins);
-  for (const bin of missingBins) {
+  for (const bin of await detectMissingBins(bins)) {
     missing.push(`bin:${bin}`);
   }
 
@@ -117,15 +170,13 @@ export async function extractSkillRequirements(skillMd: string): Promise<SkillRe
     }
   }
 
-  for (const missingEnv of detectMissingEnv(env)) {
-    missing.push(missingEnv);
-  }
+  missing.push(...detectMissingEnv(env));
+  missing.push(...detectUnsupportedOs(os));
 
-  for (const unsupported of detectUnsupportedOs(os)) {
-    missing.push(unsupported);
-  }
+  const hardMissing = missing.filter((entry) =>
+    entry.startsWith("bin:") || entry.startsWith("anyBin:") || entry.startsWith("os:"),
+  );
 
-  const hardMissing = missing.filter((entry) => entry.startsWith("bin:") || entry.startsWith("anyBin:") || entry.startsWith("os:"));
   return {
     bins: [...bins, ...anyBins],
     env,
@@ -133,4 +184,16 @@ export async function extractSkillRequirements(skillMd: string): Promise<SkillRe
     missing,
     eligible: hardMissing.length === 0,
   };
+}
+
+export function getBuiltinSkillSource(): SkillSource {
+  return BUILTIN_SKILL_SOURCE;
+}
+
+export function listBuiltinSkillFiles(): BuiltinSkillFile[] {
+  return builtinSkillFiles.map((entry) => ({ ...entry }));
+}
+
+export function listBuiltinSkillRoots(): BuiltinSkillRoot[] {
+  return builtinSkillRoots.map((entry) => ({ ...entry }));
 }
