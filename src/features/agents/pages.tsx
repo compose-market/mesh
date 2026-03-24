@@ -21,16 +21,23 @@ import { ComposeAgentCard, type ComposeAgentBadge, type ComposeAgentMetric, type
 import { ShellButton, ShellEmptyState, ShellNotice, ShellPageHeader, ShellPanel, ShellTab, ShellTabStrip } from "@compose-market/theme/shell";
 import {
   daemonInstallAgent,
-  daemonMeshSet,
   daemonStartAgent,
+  mergeDaemonStatusIntoInstalledAgent,
   daemonStatusToWorkerState,
   daemonStopAgent,
   daemonTailLogs,
   daemonUpdatePermissions,
 } from "../../lib/daemon";
 import { fetchAgentMetadata } from "../../lib/api";
-import { queryOsPermissions } from "../../lib/permissions";
-import { permissionAllows } from "../../lib/storage";
+import {
+  hasGlobalMeshAccess,
+  openSystemPermissionSettings,
+  queryOsPermissions,
+  reconcileStateWithOsPermissions,
+  requestOrOpenMissingGlobalPermission,
+  requestOsPermission,
+} from "../../lib/permissions";
+import { getDefaultPermissionPolicy } from "../../lib/storage";
 import type { AgentPermissionPolicy, LocalRuntimeState, InstalledAgent, MeshPeerSignal, SessionState } from "../../lib/types";
 import { SkillsManager } from "../../components/skills-manager";
 import { SkillsMarketplace } from "../../components/skills-store";
@@ -52,14 +59,13 @@ const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: typeof Shield }> 
   { id: "permissions", label: "Permissions", icon: Shield },
   { id: "skills", label: "Skills", icon: Sparkles },
   { id: "history", label: "Reports / History", icon: FileText },
-  { id: "mesh", label: "Peer / Mesh", icon: Globe },
+  { id: "mesh", label: "Peer / Network", icon: Globe },
 ];
 
 interface AgentManagerPageProps {
   state: LocalRuntimeState;
   session: SessionState;
   onStateChange: (state: LocalRuntimeState) => Promise<void>;
-  onActivateAgent: (agentWallet: string | null) => void;
   onOpenAgent: (agentWallet: string) => void;
   onBrowse: () => void;
 }
@@ -87,7 +93,6 @@ export function AgentManagerPage({
   state,
   session,
   onStateChange,
-  onActivateAgent,
   onOpenAgent,
   onBrowse,
 }: AgentManagerPageProps) {
@@ -119,11 +124,14 @@ export function AgentManagerPage({
         installedAgents: state.installedAgents.map((agent) => (
           agent.agentWallet === agentWallet
             ? appendAgentReport(
-              {
-                ...agent,
-                running: shouldRun,
-                workerState: daemonStatusToWorkerState(daemonStatus),
-              },
+              mergeDaemonStatusIntoInstalledAgent(
+                {
+                  ...agent,
+                  running: shouldRun,
+                  workerState: daemonStatusToWorkerState(daemonStatus),
+                },
+                daemonStatus,
+              ),
               {
                 kind: "runtime",
                 title: shouldRun ? "Agent started" : "Agent stopped",
@@ -133,12 +141,9 @@ export function AgentManagerPage({
                 outcome: "info",
               },
             )
-            : shouldRun
-              ? { ...agent, running: false }
-              : agent
+            : agent
         )),
       });
-      onActivateAgent(shouldRun ? agentWallet : null);
     } catch (toggleError) {
       setError(toggleError instanceof Error ? toggleError.message : "Failed to toggle local agent.");
     } finally {
@@ -151,54 +156,14 @@ export function AgentManagerPage({
     if (!target) {
       return;
     }
-    if (!permissionAllows(target.permissions.filesystemDelete)) {
-      setError("Enable Filesystem Delete in Settings before removing local deployments.");
-      return;
-    }
 
     await onStateChange({
       ...state,
       installedAgents: state.installedAgents.filter((agent) => agent.agentWallet !== agentWallet),
     });
-    onActivateAgent(null);
   };
 
-  const toggleAgentNetwork = async (agentWallet: string) => {
-    const target = state.installedAgents.find((agent) => agent.agentWallet === agentWallet);
-    if (!target) {
-      return;
-    }
 
-    const nextEnabled = !target.network.enabled;
-    await daemonMeshSet(agentWallet, nextEnabled);
-    await onStateChange({
-      ...state,
-      installedAgents: state.installedAgents.map((agent) => (
-        agent.agentWallet === agentWallet
-          ? appendAgentReport(
-            {
-              ...agent,
-              network: {
-                ...agent.network,
-                enabled: nextEnabled,
-                status: nextEnabled ? agent.network.status : "dormant",
-                lastError: nextEnabled ? agent.network.lastError : null,
-                updatedAt: Date.now(),
-              },
-            },
-            {
-              kind: "mesh",
-              title: nextEnabled ? "Mesh signaling enabled" : "Mesh signaling disabled",
-              summary: nextEnabled
-                ? `${agent.metadata.name} is now broadcasting on the local mesh.`
-                : `${agent.metadata.name} left the local mesh.`,
-              outcome: "info",
-            },
-          )
-          : agent
-      )),
-    });
-  };
 
   // Auto-deploy linked agent when a valid linked deployment arrives
   const autoDeployTriggeredRef = useRef<string | null>(null);
@@ -237,7 +202,7 @@ export function AgentManagerPage({
           : createInstalledAgent({
             metadata,
             lock,
-            permissions: state.permissionDefaults,
+            permissions: getDefaultPermissionPolicy(),
           });
         const daemonStatus = await daemonInstallAgent({
           agentWallet: lock.agentWallet,
@@ -248,11 +213,14 @@ export function AgentManagerPage({
           dnaHash: lock.dnaHash,
         });
         const deployed = appendAgentReport(
-          {
-            ...synced,
-            runtimeId: daemonStatus.runtimeId || synced.runtimeId,
-            workerState: daemonStatusToWorkerState(daemonStatus),
-          },
+          mergeDaemonStatusIntoInstalledAgent(
+            {
+              ...synced,
+              runtimeId: daemonStatus.runtimeId || synced.runtimeId,
+              workerState: daemonStatusToWorkerState(daemonStatus),
+            },
+            daemonStatus,
+          ),
           {
             kind: "deployment",
             title: existing ? "Agent refreshed" : "Agent installed",
@@ -312,8 +280,8 @@ export function AgentManagerPage({
                 icon: agent.running ? <Play size={12} /> : <ShieldCheck size={12} />,
               },
               {
-                label: agent.network.enabled ? "Mesh Enabled" : "Mesh Disabled",
-                tone: agent.network.enabled ? "fuchsia" : "neutral",
+                label: agent.permissions.network === "allow" ? "Network Allowed" : "Network Denied",
+                tone: agent.permissions.network === "allow" ? "fuchsia" : "neutral",
                 icon: <Globe size={12} />,
               },
             ];
@@ -353,8 +321,8 @@ export function AgentManagerPage({
                 value: `${agent.lock.agentCardCid.slice(0, 12)}...`,
               },
               {
-                label: "Mesh",
-                value: agent.network.enabled ? agent.network.status : "disabled",
+                label: "Network",
+                value: agent.permissions.network === "allow" ? agent.network.status : "denied",
               },
             ];
             const tags: ComposeAgentTag[] = listPluginIds(agent.metadata.plugins).map((name) => ({
@@ -405,18 +373,7 @@ export function AgentManagerPage({
                     <ShellButton tone="secondary" size="sm" iconOnly onClick={() => onOpenAgent(agent.agentWallet)} title="Open agent settings">
                       <Eye size={16} />
                     </ShellButton>
-                    <ShellButton
-                      tone={agent.network.enabled ? "primary" : "secondary"}
-                      size="sm"
-                      iconOnly
-                      onClick={() => {
-                        void toggleAgentNetwork(agent.agentWallet);
-                      }}
-                      disabled={loading !== null}
-                      title={agent.network.enabled ? "Disable mesh networking" : "Enable mesh networking (--mesh)"}
-                    >
-                      <Globe size={16} />
-                    </ShellButton>
+
                     <ShellButton
                       tone="danger"
                       size="sm"
@@ -492,48 +449,58 @@ export function AgentDetailPage({
 
     try {
       const nextValue = nextPermissionDecision(agent.permissions[key]);
-      let nextPermissions: AgentPermissionPolicy = { ...agent.permissions, [key]: nextValue };
+      const desiredPermissions: AgentPermissionPolicy = { ...(agent.desiredPermissions || agent.permissions) };
+      let nextPermissions: AgentPermissionPolicy = { ...desiredPermissions, [key]: nextValue };
       let nextOsPermissions = { ...state.osPermissions };
 
+      if (nextValue === "allow" && !hasGlobalMeshAccess(nextOsPermissions)) {
+        const osStatus = await requestOrOpenMissingGlobalPermission(nextOsPermissions);
+        nextOsPermissions = osStatus;
+        if (!hasGlobalMeshAccess(osStatus)) {
+          await onStateChange(reconcileStateWithOsPermissions({
+            ...state,
+            osPermissions: nextOsPermissions,
+          }, nextOsPermissions));
+          return;
+        }
+      }
+
       if (key === "camera" && nextValue === "allow") {
-        const osStatus = await queryOsPermissions();
-        nextOsPermissions = { ...nextOsPermissions, camera: osStatus.camera };
+        const osStatus = await requestOsPermission("camera");
+        nextOsPermissions = osStatus;
         if (osStatus.camera !== "granted") {
-          nextPermissions = { ...nextPermissions, camera: "deny" };
+          await openSystemPermissionSettings("camera");
           onNotify("error", "Camera permission was not granted by macOS. Enable it in System Settings → Privacy & Security → Camera.");
         }
       }
 
       if (key === "microphone" && nextValue === "allow") {
-        const osStatus = await queryOsPermissions();
-        nextOsPermissions = { ...nextOsPermissions, microphone: osStatus.microphone };
+        const osStatus = await requestOsPermission("microphone");
+        nextOsPermissions = osStatus;
         if (osStatus.microphone !== "granted") {
-          nextPermissions = { ...nextPermissions, microphone: "deny" };
+          await openSystemPermissionSettings("microphone");
           onNotify("error", "Microphone permission was not granted by macOS. Enable it in System Settings → Privacy & Security → Microphone.");
         }
       }
 
-      await daemonUpdatePermissions(agent.agentWallet, nextPermissions);
-      await onStateChange({
+      const daemonStatus = await daemonUpdatePermissions(agent.agentWallet, nextPermissions);
+      await onStateChange(reconcileStateWithOsPermissions({
         ...state,
         osPermissions: nextOsPermissions,
         installedAgents: state.installedAgents.map((item) => (
           item.agentWallet === agent.agentWallet
             ? appendAgentReport(
-              {
-                ...item,
-                permissions: nextPermissions,
-              },
+              mergeDaemonStatusIntoInstalledAgent(item, daemonStatus),
               {
                 kind: "permission",
                 title: `${key} permission updated`,
-                summary: `${key} is now ${nextPermissions[key]}.`,
+                summary: `${key} is now ${daemonStatus.permissions[key]}.`,
                 outcome: "info",
               },
             )
             : item
         )),
-      });
+      }, nextOsPermissions));
       onNotify("success", `${key} permission updated`);
     } catch (error) {
       onNotify("error", error instanceof Error ? error.message : `Failed to update ${key}`);
@@ -545,13 +512,7 @@ export function AgentDetailPage({
   const refreshOsPermissions = async () => {
     const osStatus = await queryOsPermissions();
 
-    await onStateChange({
-      ...state,
-      osPermissions: {
-        camera: osStatus.camera,
-        microphone: osStatus.microphone,
-      },
-    });
+    await onStateChange(reconcileStateWithOsPermissions(state, osStatus));
     onNotify("success", "Local OS permissions refreshed");
   };
 
@@ -560,7 +521,7 @@ export function AgentDetailPage({
   // Build agent card data (mirrors web/src/components/agent-card.tsx pattern)
   const agentBadges: ComposeAgentBadge[] = [
     { label: agent.running ? "Running" : "Stopped", tone: agent.running ? "green" : "neutral" },
-    { label: agent.network.enabled ? "Mesh On" : "Mesh Off", tone: agent.network.enabled ? "fuchsia" : "neutral" },
+    { label: agent.permissions.network === "allow" ? "Network On" : "Network Off", tone: agent.permissions.network === "allow" ? "fuchsia" : "neutral" },
   ];
   const agentMetrics: ComposeAgentMetric[] = [
     { label: "Model", value: agent.lock.modelId, icon: <Cpu size={16} />, tone: "cyan" },
@@ -572,7 +533,7 @@ export function AgentDetailPage({
   const agentMetaRows: ComposeAgentMetaRow[] = [
     { label: "Wallet", value: shortWallet(agent.agentWallet) },
     { label: "CID", value: `${agent.lock.agentCardCid.slice(0, 12)}...` },
-    { label: "Mesh", value: agent.network.enabled ? agent.network.status : "disabled" },
+    { label: "Network", value: agent.permissions.network === "allow" ? agent.network.status : "denied" },
   ];
 
   return (
@@ -633,7 +594,7 @@ export function AgentDetailPage({
                 </div>
               </div>
               {skillsTab === "installed" ? (
-                <SkillsManager state={state} onStateChange={onStateChange} agentWallet={agent.agentWallet} />
+                <SkillsManager state={state} onStateChange={onStateChange} />
               ) : (
                 <SkillsMarketplace state={state} onStateChange={onStateChange} />
               )}

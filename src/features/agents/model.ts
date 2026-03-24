@@ -4,7 +4,6 @@ import type {
   AgentMeshInteraction,
   AgentMetadata,
   AgentPermissionPolicy,
-  AgentSkillState,
   AgentTaskReport,
   InstalledAgent,
   MeshAgentCard,
@@ -12,13 +11,6 @@ import type {
 } from "../../lib/types";
 
 const BASE_RUNTIME_GRANTS = ["runtime.main", "runtime.cron", "runtime.subagent"];
-const DEFAULT_AGENT_SKILL_PACK = [
-  "conclave",
-  "manifest-structure",
-  "ping-network",
-  "reputation-query",
-  "sandbox-spin",
-] as const;
 const REPORT_LIMIT = 128;
 const SIGNAL_LIMIT = 32;
 const INTERACTION_LIMIT = 64;
@@ -58,22 +50,6 @@ function clampList<T>(items: T[], limit: number): T[] {
 
 function normalizeList(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
-}
-
-function buildDefaultAgentSkillStates(updatedAt: number): Record<string, AgentSkillState> {
-  return Object.fromEntries(
-    DEFAULT_AGENT_SKILL_PACK.map((skillId) => [
-      skillId,
-      {
-        skillId,
-        enabled: true,
-        eligible: true,
-        source: "agent" as const,
-        revision: "mesh-v1",
-        updatedAt,
-      },
-    ]),
-  );
 }
 
 function grantedPermissions(policy: AgentPermissionPolicy): string[] {
@@ -128,7 +104,7 @@ function signalSummary(signal: MeshPeerSignal): string {
 
 function createMeshInteraction(signal: MeshPeerSignal): AgentMeshInteraction {
   return {
-    id: `mesh-${signal.peerId}-${signal.lastSeenAt}`,
+    id: `mesh-${signal.id}-${signal.lastSeenAt}`,
     peerId: signal.peerId,
     peerAgentWallet: signal.agentWallet,
     direction: "inbound",
@@ -209,10 +185,12 @@ export function createInstalledAgent(input: CreateInstalledAgentInput): Installe
       lastRunAt: null,
       lastResult: null,
     },
+    desiredPermissions: { ...input.permissions },
     permissions: { ...input.permissions },
     network: {
       enabled: false,
       status: "dormant",
+      haiId: null,
       peerId: null,
       listenMultiaddrs: [],
       peersDiscovered: 0,
@@ -224,7 +202,6 @@ export function createInstalledAgent(input: CreateInstalledAgentInput): Installe
       interactions: [],
       manifest: null,
     },
-    skillStates: buildDefaultAgentSkillStates(createdAt),
     reports: [],
   };
 
@@ -243,6 +220,7 @@ export function syncInstalledAgent(agent: InstalledAgent, metadata: AgentMetadat
     agentWallet: lock.agentWallet,
     metadata,
     lock,
+    desiredPermissions: { ...(agent.desiredPermissions || agent.permissions) },
   };
 
   return {
@@ -278,7 +256,7 @@ export function mergeMeshPeerSignals(current: MeshPeerSignal[], incoming: MeshPe
   const merged = new Map<string, MeshPeerSignal>();
 
   for (const peer of current) {
-    merged.set(peer.peerId, {
+    merged.set(peer.id, {
       ...peer,
       caps: normalizeList(peer.caps),
       listenMultiaddrs: [...peer.listenMultiaddrs],
@@ -286,9 +264,9 @@ export function mergeMeshPeerSignals(current: MeshPeerSignal[], incoming: MeshPe
   }
 
   for (const peer of incoming) {
-    const existing = merged.get(peer.peerId);
+    const existing = merged.get(peer.id);
     if (!existing || peer.lastSeenAt >= existing.lastSeenAt) {
-      merged.set(peer.peerId, {
+      merged.set(peer.id, {
         ...peer,
         caps: normalizeList(peer.caps),
         listenMultiaddrs: [...peer.listenMultiaddrs],
