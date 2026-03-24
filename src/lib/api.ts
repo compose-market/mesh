@@ -381,9 +381,9 @@ export async function callAgent(params: {
   agentWallet: string;
   message: string;
   threadId?: string;
-  userId?: string;
-  grantedPermissions?: string[];
-  permissionPolicy?: Record<string, "allow" | "deny">;
+  userAddress?: string;
+  sessionGrants?: string[];
+  cloudPermissions?: string[];
   backpackAccounts?: BackpackConnectionInfo[];
 }): Promise<{ output?: string; success?: boolean; error?: string }> {
   return requestJson(
@@ -402,9 +402,9 @@ export async function callAgent(params: {
       body: JSON.stringify({
         message: params.message,
         threadId: params.threadId,
-        userId: params.userId,
-        grantedPermissions: params.grantedPermissions,
-        permissionPolicy: params.permissionPolicy,
+        userAddress: params.userAddress,
+        sessionGrants: params.sessionGrants,
+        cloudPermissions: params.cloudPermissions,
         backpackAccounts: params.backpackAccounts,
       }),
     },
@@ -780,6 +780,7 @@ export async function installSkill(
       installedAt: Date.now(),
       enabled,
       localPath,
+      relativePath: relativeDir,
       installRef: skill.installRef,
       installSha: skill.installSha,
       requirements,
