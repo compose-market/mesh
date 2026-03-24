@@ -19,7 +19,7 @@ export interface MeshStageRegion {
   lat: number | null;
   peerCount: number;
   peerNodeIds: string[];
-  localNodeId: string | null;
+  localNodeIds: string[];
 }
 
 export interface MeshStageNode {
@@ -79,7 +79,7 @@ export interface MeshStageModel {
 }
 
 interface BuildMeshStageModelInput {
-  agent: InstalledAgent | null;
+  agents: InstalledAgent[];
   peers: MeshPeerSignal[];
   scene: MeshScene;
   selectedNodeId: string | null;
@@ -211,8 +211,64 @@ function regionPairId(left: string, right: string): string {
   return left.localeCompare(right) <= 0 ? `${left}__${right}` : `${right}__${left}`;
 }
 
+function buildLocalNode(agent: InstalledAgent, scene: MeshScene, anchorsByPeerId: Record<string, MeshBootstrapAnchor>): {
+  node: MeshStageNode;
+  manifest: MeshSelectedManifest;
+} | null {
+  if (!agent.network.enabled) {
+    return null;
+  }
+
+  const localAnchorMatch = derivePeerAnchor(agent.network.listenMultiaddrs, anchorsByPeerId);
+  const localAnchor = findAnchorByMatch(scene, localAnchorMatch);
+  const localRegionProfile = resolveMeshRegionProfile(localAnchor?.region || null);
+  const localRegionLabel = localAnchor
+    ? formatRegion(localAnchor)
+    : localRegionProfile
+      ? `${localRegionProfile.city}, ${localRegionProfile.country}`
+      : "Unassigned region";
+
+  const x = clamp((localAnchor?.x ?? 50) + 3.8, 6, 94);
+  const y = clamp((localAnchor?.y ?? 50) - 3.2, 10, 90);
+  const nodeId = `local:${agent.agentWallet}`;
+  const node: MeshStageNode = {
+    ...offsetCoordinates(localAnchor, x, y),
+    id: nodeId,
+    kind: "local",
+    x,
+    y,
+    regionId: localAnchor?.id || null,
+    peerId: agent.network.peerId,
+    wallet: agent.agentWallet,
+    title: agent.network.publicCard?.name || agent.metadata.name,
+    subtitle: agent.network.publicCard?.headline || localRegionLabel,
+    statusLine: agent.network.publicCard?.statusLine || agent.metadata.description,
+    capabilities: agent.network.publicCard?.capabilities || [],
+    lastSeenAt: agent.network.updatedAt || null,
+    stale: agent.network.status !== "online",
+    signalCount: 1,
+    announceCount: 0,
+    nodeDistance: 0,
+  };
+
+  return {
+    node,
+    manifest: toManifest({
+      nodeId,
+      kind: "local",
+      title: node.title,
+      description: agent.metadata.description,
+      card: agent.network.publicCard,
+      wallet: agent.agentWallet,
+      peerId: agent.network.peerId,
+      regionLabel: localRegionLabel,
+      updatedAt: agent.network.publicCard?.updatedAt || agent.network.updatedAt || null,
+    }),
+  };
+}
+
 export function buildMeshStageModel({
-  agent,
+  agents,
   peers,
   scene,
   selectedNodeId,
@@ -220,81 +276,41 @@ export function buildMeshStageModel({
 }: BuildMeshStageModelInput): MeshStageModel {
   const anchorsByPeerId = buildAnchorsByPeerId(scene);
   const peerNodes: MeshStageNode[] = peers.flatMap((peer) => {
-      const scenePeer = findPeerNode(scene, peer.peerId);
-      if (!scenePeer) {
-        return [];
-      }
-      const anchor = scene.anchors.find((item) => item.id === scenePeer.anchorNodeId) || null;
-      return [{
-        ...offsetCoordinates(anchor, scenePeer.x, scenePeer.y),
-        id: `peer:${peer.peerId}`,
-        kind: "peer" as const,
-        x: scenePeer.x,
-        y: scenePeer.y,
-        regionId: anchor?.id || null,
-        peerId: peer.peerId,
-        wallet: peer.agentWallet,
-        title: peer.card?.name || peer.peerId,
-        subtitle: peer.card?.headline || peer.card?.statusLine || (anchor ? formatRegion(anchor) : "Mesh peer"),
-        statusLine: peer.card?.statusLine || peer.card?.headline || peer.agentWallet || peer.peerId,
-        capabilities: peer.card?.capabilities || peer.caps,
-        lastSeenAt: peer.lastSeenAt,
-        stale: peer.stale,
-        signalCount: peer.signalCount,
-        announceCount: peer.announceCount,
-        nodeDistance: peer.nodeDistance,
-      }];
-    });
+    const scenePeer = findPeerNode(scene, peer.peerId);
+    if (!scenePeer) {
+      return [];
+    }
+    const anchor = scene.anchors.find((item) => item.id === scenePeer.anchorNodeId) || null;
+    return [{
+      ...offsetCoordinates(anchor, scenePeer.x, scenePeer.y),
+      id: `peer:${peer.id}`,
+      kind: "peer" as const,
+      x: scenePeer.x,
+      y: scenePeer.y,
+      regionId: anchor?.id || null,
+      peerId: peer.peerId,
+      wallet: peer.agentWallet,
+      title: peer.card?.name || peer.peerId,
+      subtitle: peer.card?.headline || peer.card?.statusLine || (anchor ? formatRegion(anchor) : "Mesh peer"),
+      statusLine: peer.card?.statusLine || peer.card?.headline || peer.agentWallet || peer.peerId,
+      capabilities: peer.card?.capabilities || peer.caps,
+      lastSeenAt: peer.lastSeenAt,
+      stale: peer.stale,
+      signalCount: peer.signalCount,
+      announceCount: peer.announceCount,
+      nodeDistance: peer.nodeDistance,
+    }];
+  });
 
-  let localNode: MeshStageNode | null = null;
-  let localManifest: MeshSelectedManifest | null = null;
+  const localNodes = agents
+    .map((agent) => buildLocalNode(agent, scene, anchorsByPeerId))
+    .filter((entry): entry is { node: MeshStageNode; manifest: MeshSelectedManifest } => entry !== null);
+  const localManifestById = new Map(localNodes.map((entry) => [entry.node.id, entry.manifest]));
+  const nodes = [...localNodes.map((entry) => entry.node), ...peerNodes];
 
-  if (agent && agent.network.enabled) {
-    const localAnchorMatch = derivePeerAnchor(agent.network.listenMultiaddrs, anchorsByPeerId);
-    const localAnchor = findAnchorByMatch(scene, localAnchorMatch);
-    const localRegionProfile = resolveMeshRegionProfile(localAnchor?.region || null);
-    const localRegionLabel = localAnchor
-      ? formatRegion(localAnchor)
-      : localRegionProfile
-        ? `${localRegionProfile.city}, ${localRegionProfile.country}`
-        : "Unassigned region";
-
-    localNode = {
-      ...offsetCoordinates(localAnchor, clamp((localAnchor?.x ?? 50) + 3.8, 6, 94), clamp((localAnchor?.y ?? 50) - 3.2, 10, 90)),
-      id: "local-agent",
-      kind: "local",
-      x: clamp((localAnchor?.x ?? 50) + 3.8, 6, 94),
-      y: clamp((localAnchor?.y ?? 50) - 3.2, 10, 90),
-      regionId: localAnchor?.id || null,
-      peerId: agent.network.peerId,
-      wallet: agent.agentWallet,
-      title: agent.network.publicCard?.name || agent.metadata.name,
-      subtitle: agent.network.publicCard?.headline || localRegionLabel,
-      statusLine: agent.network.publicCard?.statusLine || agent.metadata.description,
-      capabilities: agent.network.publicCard?.capabilities || [],
-      lastSeenAt: agent.network.updatedAt || null,
-      stale: agent.network.status !== "online",
-      signalCount: Math.max(1, peers.length),
-      announceCount: 0,
-      nodeDistance: 0,
-    };
-
-    localManifest = toManifest({
-      nodeId: localNode.id,
-      kind: "local",
-      title: localNode.title,
-      description: agent.metadata.description,
-      card: agent.network.publicCard,
-      wallet: agent.agentWallet,
-      peerId: agent.network.peerId,
-      regionLabel: localRegionLabel,
-      updatedAt: agent.network.publicCard?.updatedAt || agent.network.updatedAt || null,
-    });
-  }
-
-  const nodes = localNode ? [localNode, ...peerNodes] : peerNodes;
   const regions = scene.anchors.map((anchor) => {
-    const regionPeerNodeIds = peerNodes.filter((node) => node.regionId === anchor.id).map((node) => node.id);
+    const peerNodeIds = peerNodes.filter((node) => node.regionId === anchor.id).map((node) => node.id);
+    const localNodeIds = localNodes.filter((entry) => entry.node.regionId === anchor.id).map((entry) => entry.node.id);
     return {
       id: anchor.id,
       code: anchor.region,
@@ -304,19 +320,19 @@ export function buildMeshStageModel({
       y: anchor.y,
       lon: anchor.lon,
       lat: anchor.lat,
-      peerCount: regionPeerNodeIds.length,
-      peerNodeIds: regionPeerNodeIds,
-      localNodeId: localNode?.regionId === anchor.id ? localNode.id : null,
+      peerCount: peerNodeIds.length,
+      peerNodeIds,
+      localNodeIds,
     };
   });
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) || null;
   const selectedPeer = selectedNode?.kind === "peer"
-    ? peers.find((peer) => `peer:${peer.peerId}` === selectedNode.id) || null
+    ? peers.find((peer) => `peer:${peer.id}` === selectedNode.id) || null
     : null;
 
   const selectedManifest = selectedNode?.kind === "local"
-    ? localManifest
+    ? localManifestById.get(selectedNode.id) || null
     : selectedPeer && selectedNode
       ? toManifest({
         nodeId: selectedNode.id,
@@ -332,46 +348,55 @@ export function buildMeshStageModel({
         updatedAt: selectedPeer.card?.updatedAt || selectedPeer.lastSeenAt,
       })
       : null;
+
   const activeRegionId = selectedRegionId || selectedNode?.regionId || null;
   const nodeLinks: MeshStageNodeLink[] = [];
 
-  if (localNode?.regionId) {
+  for (const peerNode of peerNodes) {
+    if (!peerNode.regionId) {
+      continue;
+    }
+
     nodeLinks.push({
-      id: `${localNode.regionId}::${localNode.id}::anchor`,
-      fromNodeId: localNode.regionId,
-      toNodeId: localNode.id,
+      id: `${peerNode.regionId}::${peerNode.id}::anchor`,
+      fromNodeId: peerNode.regionId,
+      toNodeId: peerNode.id,
       kind: "anchor",
-      selected: selectedNodeId === localNode.id || activeRegionId === localNode.regionId,
-      intensity: 1,
+      selected: selectedNodeId === peerNode.id || activeRegionId === peerNode.regionId,
+      intensity: linkIntensity(peerNode.signalCount, peerNode.announceCount, peerNode.stale),
     });
   }
 
-  for (const node of peerNodes) {
-    if (node.regionId) {
+  for (const localNode of localNodes.map((entry) => entry.node)) {
+    if (localNode.regionId) {
       nodeLinks.push({
-        id: `${node.regionId}::${node.id}::anchor`,
-        fromNodeId: node.regionId,
-        toNodeId: node.id,
+        id: `${localNode.regionId}::${localNode.id}::anchor`,
+        fromNodeId: localNode.regionId,
+        toNodeId: localNode.id,
         kind: "anchor",
-        selected: selectedNodeId === node.id || activeRegionId === node.regionId,
-        intensity: linkIntensity(node.signalCount, node.announceCount, node.stale),
+        selected: selectedNodeId === localNode.id || activeRegionId === localNode.regionId,
+        intensity: 1,
       });
     }
 
-    if (localNode) {
+    for (const peerNode of peerNodes) {
       nodeLinks.push({
-        id: `${localNode.id}::${node.id}::observed`,
+        id: `${localNode.id}::${peerNode.id}::observed`,
         fromNodeId: localNode.id,
-        toNodeId: node.id,
+        toNodeId: peerNode.id,
         kind: "observed",
-        selected: selectedNodeId === localNode.id || selectedNodeId === node.id || activeRegionId === node.regionId,
-        intensity: linkIntensity(node.signalCount, node.announceCount, node.stale),
+        selected: selectedNodeId === localNode.id || selectedNodeId === peerNode.id || activeRegionId === peerNode.regionId,
+        intensity: linkIntensity(peerNode.signalCount, peerNode.announceCount, peerNode.stale),
       });
     }
   }
 
   const regionLinksById = new Map<string, MeshStageRegionLink>();
-  if (localNode?.regionId) {
+  for (const localNode of localNodes.map((entry) => entry.node)) {
+    if (!localNode.regionId) {
+      continue;
+    }
+
     for (const peerNode of peerNodes) {
       if (!peerNode.regionId || peerNode.regionId === localNode.regionId) {
         continue;

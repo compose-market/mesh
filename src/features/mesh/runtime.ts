@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { LocalIdentityContext, LocalRuntimeState, InstalledAgent, InstalledSkill, MeshAgentCard, MeshManifest, MeshPeerSignal } from "../../lib/types";
+import type { InstalledAgent, LocalIdentityContext, LocalRuntimeState, MeshAgentCard, MeshManifest, MeshPeerSignal } from "../../lib/types";
 import { buildMeshAgentCard, listPluginIds, recordMeshPeerSignal } from "../agents/model";
-import { buildManifestPayload } from "./manifest";
+import { canAgentUseMesh } from "../../lib/permissions";
 import {
   deriveBootstrapAnchors,
   derivePeerAnchor,
@@ -12,24 +12,28 @@ import {
   type MeshBootstrapResolution,
 } from "./model";
 
+interface MeshPublishedAgent {
+  agentWallet: string;
+  dnaHash: string;
+  capabilitiesHash: string;
+  capabilities: string[];
+  publicCard?: MeshAgentCard;
+}
+
 interface MeshJoinRequest {
   userAddress: string;
-  agentWallet: string;
   deviceId: string;
   chainId: number;
-  sessionId?: string;
-  dnaHash?: string;
-  capabilitiesHash?: string;
+  sessionId: string;
   gossipTopic: string;
   announceTopic: string;
   manifestTopic: string;
   conclaveTopic: string;
   kadProtocol: string;
   heartbeatMs: number;
-  capabilities: string[];
   bootstrapMultiaddrs: string[];
   relayMultiaddrs: string[];
-  publicCard?: MeshAgentCard;
+  publishedAgents: MeshPublishedAgent[];
 }
 
 interface MeshBootstrapConfig {
@@ -44,11 +48,16 @@ interface MeshBootstrapConfig {
   anchorsByPeerId: Record<string, MeshBootstrapAnchor>;
 }
 
+export interface MeshPublishedAgentStatus {
+  agentWallet: string;
+  haiId: string;
+}
+
 export interface MeshRuntimeStatus {
   running: boolean;
   status: "dormant" | "connecting" | "online" | "error";
   userAddress: string | null;
-  agentWallet: string | null;
+  publishedAgents: MeshPublishedAgentStatus[];
   deviceId: string | null;
   peerId: string | null;
   listenMultiaddrs: string[];
@@ -60,18 +69,9 @@ export interface MeshRuntimeStatus {
 
 export interface MeshDesiredState {
   enabled: boolean;
-  apiUrl: string;
   identity: LocalIdentityContext;
-  agentWallet: string;
   deviceId: string;
-  sessionId?: string;
-  dnaHash?: string;
-  capabilitiesHash?: string;
-  modelId: string;
-  agentCardCid: string;
-  mcpToolsHash: string;
-  publicCard?: MeshAgentCard;
-  manifest: MeshManifest;
+  publishedAgents: MeshPublishedAgent[];
 }
 
 export interface MeshPeerIndexPayload {
@@ -88,7 +88,7 @@ function createDormantStatus(): MeshRuntimeStatus {
     running: false,
     status: "dormant",
     userAddress: null,
-    agentWallet: null,
+    publishedAgents: [],
     deviceId: null,
     peerId: null,
     listenMultiaddrs: [],
@@ -113,9 +113,22 @@ function normalizeBootstrap(resolution: MeshBootstrapResolution): MeshBootstrapC
   };
 }
 
+function signalKey(signal: Pick<MeshPeerSignal, "id" | "haiId" | "peerId" | "agentWallet">): string {
+  return signal.id || signal.haiId || `${signal.peerId}:${signal.agentWallet || "unknown"}`;
+}
+
+function samePublishedAgentSet(status: MeshRuntimeStatus, desired: MeshDesiredState): boolean {
+  if (status.publishedAgents.length !== desired.publishedAgents.length) {
+    return false;
+  }
+  const current = new Set(status.publishedAgents.map((agent) => agent.agentWallet.toLowerCase()));
+  return desired.publishedAgents.every((agent) => current.has(agent.agentWallet.toLowerCase()));
+}
+
 function resetAgentMeshState(agent: InstalledAgent, updatedAt: number): InstalledAgent {
   if (
     agent.network.status === "dormant"
+    && agent.network.haiId === null
     && agent.network.peerId === null
     && agent.network.listenMultiaddrs.length === 0
     && agent.network.peersDiscovered === 0
@@ -128,7 +141,9 @@ function resetAgentMeshState(agent: InstalledAgent, updatedAt: number): Installe
     ...agent,
     network: {
       ...agent.network,
+      enabled: false,
       status: "dormant",
+      haiId: null,
       peerId: null,
       listenMultiaddrs: [],
       peersDiscovered: 0,
@@ -163,40 +178,35 @@ async function leaveMeshRuntime(): Promise<MeshRuntimeStatus> {
 }
 
 export function buildMeshDesiredState(
-  agent: InstalledAgent | null,
+  agents: InstalledAgent[],
   identity: LocalIdentityContext | null,
   deviceId: string,
-  installedSkills: InstalledSkill[],
-  apiUrl: string,
+  meshEnabled: boolean,
 ): MeshDesiredState | null {
-  if (!agent || !identity || !agent.running || !agent.network.enabled) {
+  if (!identity) {
+    return null;
+  }
+
+  const publishedAgents = agents
+    .filter((agent) => canAgentUseMesh(agent, meshEnabled))
+    .map((agent) => ({
+      agentWallet: agent.agentWallet,
+      dnaHash: agent.lock.dnaHash || "",
+      capabilitiesHash: listPluginIds(agent.metadata.plugins).join("|"),
+      capabilities: agent.network.publicCard?.capabilities || listPluginIds(agent.metadata.plugins),
+      publicCard: agent.network.publicCard || buildMeshAgentCard(agent),
+    }))
+    .sort((left, right) => left.agentWallet.localeCompare(right.agentWallet));
+
+  if (publishedAgents.length === 0) {
     return null;
   }
 
   return {
     enabled: true,
-    apiUrl,
     identity,
-    agentWallet: agent.agentWallet,
     deviceId,
-    sessionId: identity.sessionId || "",
-    dnaHash: agent.lock.dnaHash || "",
-    capabilitiesHash: listPluginIds(agent.metadata.plugins).join("|"),
-    modelId: agent.lock.modelId,
-    agentCardCid: agent.lock.agentCardCid,
-    mcpToolsHash: agent.lock.mcpToolsHash,
-    publicCard: agent.network.publicCard || buildMeshAgentCard(agent),
-    manifest: buildManifestPayload({
-      agent,
-      skills: installedSkills,
-      userAddress: identity.userAddress,
-      deviceId,
-      chainId: identity.chainId,
-      previousManifest: agent.network.manifest,
-      stateRootHash: agent.network.manifest?.stateRootHash ?? null,
-      pdpPieceCid: agent.network.manifest?.pdpPieceCid ?? null,
-      pdpAnchoredAt: agent.network.manifest?.pdpAnchoredAt ?? null,
-    }),
+    publishedAgents,
   };
 }
 
@@ -206,16 +216,19 @@ export function mergeMeshStatusIntoState(
   deviceId: string,
 ): LocalRuntimeState {
   const updatedAt = status.updatedAt || Date.now();
-  const targetWallet = status.agentWallet?.toLowerCase() || null;
+  const publishedAgents = new Map(
+    status.publishedAgents.map((agent) => [agent.agentWallet.toLowerCase(), agent.haiId]),
+  );
 
   return {
     ...current,
     installedAgents: current.installedAgents.map((agent) => {
-      if (!agent.network.enabled) {
+      if (!canAgentUseMesh(agent, current.settings.meshEnabled)) {
         return resetAgentMeshState(agent, updatedAt);
       }
 
-      if (!targetWallet || targetWallet !== agent.agentWallet || status.deviceId !== deviceId) {
+      const haiId = publishedAgents.get(agent.agentWallet);
+      if (!haiId || status.deviceId !== deviceId) {
         return resetAgentMeshState(agent, updatedAt);
       }
 
@@ -223,7 +236,9 @@ export function mergeMeshStatusIntoState(
         ...agent,
         network: {
           ...agent.network,
+          enabled: true,
           status: status.status,
+          haiId,
           peerId: status.peerId,
           listenMultiaddrs: [...status.listenMultiaddrs],
           peersDiscovered: status.peersDiscovered,
@@ -241,41 +256,46 @@ export function mergePeerIndexIntoState(
   incoming: MeshPeerSignal[],
   deviceId: string,
 ): LocalRuntimeState {
-  const targetAgent = current.installedAgents.find((agent) => agent.running && agent.network.enabled);
-  if (!targetAgent || incoming.length === 0) {
+  const targetAgents = current.installedAgents.filter((agent) => canAgentUseMesh(agent, current.settings.meshEnabled));
+  if (targetAgents.length === 0 || incoming.length === 0) {
     return current;
   }
 
-  let nextTarget = targetAgent;
+  const remoteSignals = incoming.filter((signal) => signal.deviceId !== deviceId);
+  if (remoteSignals.length === 0) {
+    return current;
+  }
+
   let changed = false;
+  const nextByWallet = new Map(targetAgents.map((agent) => [agent.agentWallet, agent]));
 
-  for (const signal of incoming) {
-    if (signal.deviceId === deviceId && signal.agentWallet === targetAgent.agentWallet) {
-      continue;
+  for (const targetAgent of targetAgents) {
+    let nextAgent = targetAgent;
+
+    for (const signal of remoteSignals) {
+      const existing = nextAgent.network.recentPings.find((item) => signalKey(item) === signalKey(signal));
+      const isUpdated = (
+        !existing
+        || signal.lastSeenAt > existing.lastSeenAt
+        || signal.signalCount !== existing.signalCount
+        || signal.announceCount !== existing.announceCount
+        || signal.lastMessageType !== existing.lastMessageType
+      );
+      if (!isUpdated) {
+        continue;
+      }
+
+      nextAgent = recordMeshPeerSignal(nextAgent, signal);
+      changed = true;
     }
 
-    const existing = nextTarget.network.recentPings.find((item) => item.peerId === signal.peerId);
-    const isUpdated = (
-      !existing
-      || signal.lastSeenAt > existing.lastSeenAt
-      || signal.signalCount !== existing.signalCount
-      || signal.announceCount !== existing.announceCount
-      || signal.lastMessageType !== existing.lastMessageType
-    );
-    if (!isUpdated) {
-      continue;
-    }
-
-    nextTarget = recordMeshPeerSignal(nextTarget, signal);
-    changed = true;
+    nextByWallet.set(targetAgent.agentWallet, nextAgent);
   }
 
   return changed
     ? {
       ...current,
-      installedAgents: current.installedAgents.map((agent) => (
-        agent.agentWallet === nextTarget.agentWallet ? nextTarget : agent
-      )),
+      installedAgents: current.installedAgents.map((agent) => nextByWallet.get(agent.agentWallet) || agent),
     }
     : current;
 }
@@ -333,11 +353,16 @@ class LocalMeshService {
       ? [
         state.identity.userAddress.toLowerCase(),
         String(state.identity.chainId),
-        state.agentWallet.toLowerCase(),
         state.deviceId,
-        state.sessionId || "",
-        state.dnaHash || "",
-        state.capabilitiesHash || "",
+        state.identity.sessionId || "",
+        ...state.publishedAgents.map((agent) => (
+          [
+            agent.agentWallet.toLowerCase(),
+            agent.dnaHash,
+            agent.capabilitiesHash,
+            agent.capabilities.join(","),
+          ].join("|")
+        )),
       ].join("|")
       : "none";
   }
@@ -428,30 +453,26 @@ class LocalMeshService {
       const joinFingerprint = this.joinFingerprint(this.desired, this.bootstrap);
       const shouldRestart = (
         !runtimeStatus.running
-        || runtimeStatus.agentWallet !== this.desired.agentWallet.toLowerCase()
         || runtimeStatus.deviceId !== this.desired.deviceId
+        || !samePublishedAgentSet(runtimeStatus, this.desired)
         || this.lastJoinFingerprint !== joinFingerprint
       );
 
       const status = shouldRestart
         ? await joinMeshRuntime({
           userAddress: this.desired.identity.userAddress,
-          agentWallet: this.desired.agentWallet,
           deviceId: this.desired.deviceId,
           chainId: this.desired.identity.chainId,
-          sessionId: this.desired.sessionId,
-          dnaHash: this.desired.dnaHash,
-          capabilitiesHash: this.desired.capabilitiesHash,
+          sessionId: this.desired.identity.sessionId || "",
           gossipTopic: this.bootstrap.gossipTopic,
           announceTopic: this.bootstrap.announceTopic,
           manifestTopic: this.bootstrap.manifestTopic,
           conclaveTopic: this.bootstrap.conclaveTopic,
           kadProtocol: this.bootstrap.kadProtocol,
           heartbeatMs: this.bootstrap.heartbeatMs,
-          capabilities: [`agent-${this.desired.agentWallet.toLowerCase().replace(/^0x/, "")}`],
           bootstrapMultiaddrs: this.bootstrap.bootstrapMultiaddrs,
           relayMultiaddrs: this.bootstrap.relayMultiaddrs,
-          publicCard: this.desired.publicCard,
+          publishedAgents: this.desired.publishedAgents,
         })
         : runtimeStatus;
 

@@ -110,7 +110,7 @@ export function buildManifestPayload(input: BuildManifestInput): MeshManifest {
       ...input.skills
         .filter((skill) => skill.enabled)
         .map((skill) => skill.id),
-      ...Object.values(agent.skillStates)
+      ...Object.values(agent.skillStates || {})
         .filter((skillState) => skillState.enabled && skillState.eligible)
         .map((skillState) => skillState.skillId),
     ],

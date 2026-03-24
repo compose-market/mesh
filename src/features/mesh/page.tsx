@@ -13,7 +13,7 @@ import { buildMeshScene, type MeshBootstrapResolution } from "./model";
 import { buildMeshStageModel } from "./stage-model";
 
 interface MeshPageProps {
-  agent: InstalledAgent | null;
+  agents: InstalledAgent[];
   peers: MeshPeerSignal[];
   bootstrapResolution: MeshBootstrapResolution;
 }
@@ -78,10 +78,10 @@ interface HoverTarget {
   detail: string;
 }
 
-const CYAN: [number, number, number] = [26, 226, 255];
-const CYAN_SOFT: [number, number, number] = [97, 239, 255];
-const MAGENTA: [number, number, number] = [255, 78, 170];
-const SLATE: [number, number, number] = [112, 145, 165];
+const CYAN: [number, number, number] = [34, 211, 238];
+const CYAN_SOFT: [number, number, number] = [103, 232, 249];
+const MAGENTA: [number, number, number] = [217, 70, 239];
+const SLATE: [number, number, number] = [148, 163, 184];
 const MAP_STYLE: StyleSpecification = {
   version: 8,
   name: "Compose Mesh Blank",
@@ -91,7 +91,7 @@ const MAP_STYLE: StyleSpecification = {
       id: "mesh-background",
       type: "background",
       paint: {
-        "background-color": "#030c16",
+        "background-color": "#020617",
       },
     },
   ],
@@ -184,7 +184,7 @@ function labelSide(region: { x: number; y: number }): "east" | "west" | "north" 
   return region.y < 38 ? "south" : "north";
 }
 
-export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
+export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) {
   const mapRef = useRef<MapRef | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
@@ -210,12 +210,13 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
 
   const scene = useMemo(() => buildMeshScene({ peers, resolution: bootstrapResolution }), [bootstrapResolution, peers]);
   const stage = useMemo(
-    () => buildMeshStageModel({ agent, peers, scene, selectedNodeId, selectedRegionId }),
-    [agent, peers, scene, selectedNodeId, selectedRegionId],
+    () => buildMeshStageModel({ agents, peers, scene, selectedNodeId, selectedRegionId }),
+    [agents, peers, scene, selectedNodeId, selectedRegionId],
   );
 
   const nodesById = useMemo(() => new Map(stage.nodes.map((node) => [node.id, node])), [stage.nodes]);
   const regionsById = useMemo(() => new Map(stage.regions.map((region) => [region.id, region])), [stage.regions]);
+  const primaryAgent = agents[0] || null;
   const localNode = useMemo(() => stage.nodes.find((node) => node.kind === "local") || null, [stage.nodes]);
   const selectedNode = selectedNodeId ? nodesById.get(selectedNodeId) || null : null;
   const focusedRegion = (
@@ -224,7 +225,7 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
     || null
   );
   const focusedRegionId = focusedRegion?.id || null;
-  const activeRegions = stage.regions.filter((region) => region.peerCount > 0 || region.localNodeId).length;
+  const activeRegions = stage.regions.filter((region) => region.peerCount > 0 || region.localNodeIds.length > 0).length;
   const viewerDormant = !localNode || localNode.lon === null || localNode.lat === null;
 
   useEffect(() => {
@@ -310,7 +311,7 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
       country: region.country,
       longitude: region.lon,
       latitude: region.lat,
-      activityCount: region.peerCount + (region.localNodeId ? 1 : 0),
+      activityCount: region.peerCount + region.localNodeIds.length,
       peerCount: region.peerCount,
       selected: focusedRegionId === region.id,
       highlighted: Boolean(
@@ -383,6 +384,9 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
     }];
   }), [nodesById, regionsById, stage.nodeLinks]);
 
+  const observedNodeLinks = useMemo(() => nodeLinks.filter((link) => link.kind === "observed"), [nodeLinks]);
+  const anchorNodeLinks = useMemo(() => nodeLinks.filter((link) => link.kind === "anchor"), [nodeLinks]);
+
   const handleHover = useCallback((info: PickingInfo<RegionPoint | NodePoint>) => {
     const item = info.object;
     if (!item) {
@@ -433,71 +437,121 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
     handleSelectNode(item.id, item.regionId);
   }, [flyToWorld, handleSelectNode, handleSelectRegion]);
 
-  const layers = useMemo(() => {
+  const handleHoverRef = useRef(handleHover);
+  const handleLayerClickRef = useRef(handleLayerClick);
+  useEffect(() => { handleHoverRef.current = handleHover; }, [handleHover]);
+  useEffect(() => { handleLayerClickRef.current = handleLayerClick; }, [handleLayerClick]);
+  const stableHover = useCallback((info: PickingInfo<RegionPoint | NodePoint>) => handleHoverRef.current(info), []);
+  const stableClick = useCallback((info: PickingInfo<RegionPoint | NodePoint>) => handleLayerClickRef.current(info), []);
+
+  const staticLayers = useMemo(() => [
+    new GeoJsonLayer({
+      id: "mesh-land",
+      data: WORLD_GEOJSON,
+      pickable: false,
+      stroked: true,
+      filled: true,
+      lineWidthUnits: "pixels",
+      lineWidthMinPixels: 1,
+      getFillColor: [6, 15, 30, 168],
+      getLineColor: [38, 76, 102, 124],
+      getLineWidth: 1,
+    }),
+    new PathLayer({
+      id: "mesh-graticule",
+      data: GRATICULE_PATHS,
+      pickable: false,
+      widthUnits: "pixels",
+      rounded: true,
+      getPath: (path) => path.path,
+      getWidth: (path) => (path.emphasis ? 1.2 : 0.75),
+      getColor: (path) => (path.emphasis ? [CYAN[0], CYAN[1], CYAN[2], 50] : [CYAN[0], CYAN[1], CYAN[2], 24]),
+    }),
+    new ArcLayer<RegionArcDatum>({
+      id: "mesh-region-links",
+      data: regionLinks,
+      pickable: false,
+      widthUnits: "pixels",
+      getSourcePosition: (link) => link.sourcePosition,
+      getTargetPosition: (link) => link.targetPosition,
+      getSourceColor: (link) => [CYAN[0], CYAN[1], CYAN[2], link.selected ? 184 : 96],
+      getTargetColor: (link) => [MAGENTA[0], MAGENTA[1], MAGENTA[2], link.selected ? 168 : 86],
+      getWidth: (link) => 1.2 + (link.count * 0.9),
+      getHeight: (link) => 0.18 + (link.count * 0.05),
+      getTilt: () => 12,
+    }),
+    new ArcLayer<NodeLinkDatum>({
+      id: "mesh-observed-links",
+      data: observedNodeLinks,
+      pickable: false,
+      widthUnits: "pixels",
+      getSourcePosition: (link) => link.sourcePosition,
+      getTargetPosition: (link) => link.targetPosition,
+      getSourceColor: (link) => [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], link.selected ? 204 : 62],
+      getTargetColor: (link) => [MAGENTA[0], MAGENTA[1], MAGENTA[2], link.selected ? 184 : 54],
+      getWidth: (link) => 0.8 + (link.intensity * 2.1),
+      getHeight: (link) => 0.12 + (link.intensity * 0.08),
+      getTilt: () => -10,
+    }),
+    new ArcLayer<NodeLinkDatum>({
+      id: "mesh-anchor-links",
+      data: anchorNodeLinks,
+      pickable: false,
+      widthUnits: "pixels",
+      getSourcePosition: (link) => link.sourcePosition,
+      getTargetPosition: (link) => link.targetPosition,
+      getSourceColor: (link) => [CYAN[0], CYAN[1], CYAN[2], link.selected ? 126 : 52],
+      getTargetColor: (link) => [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], link.selected ? 172 : 72],
+      getWidth: (link) => 0.7 + (link.intensity * 1.2),
+      getHeight: (link) => 0.08 + (link.intensity * 0.05),
+      getTilt: () => 0,
+    }),
+    new ScatterplotLayer<RegionPoint>({
+      id: "mesh-region-cores",
+      data: regionPoints,
+      pickable: false,
+      stroked: false,
+      filled: true,
+      radiusUnits: "pixels",
+      getPosition: (region) => [region.longitude, region.latitude],
+      getRadius: (region) => 3.8 + Math.min(region.activityCount, 4),
+      getFillColor: (region) => region.selected ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 255] : [CYAN[0], CYAN[1], CYAN[2], 224],
+    }),
+    new ScatterplotLayer<NodePoint>({
+      id: "mesh-node-cores",
+      data: nodePoints,
+      pickable: false,
+      stroked: true,
+      filled: true,
+      radiusUnits: "pixels",
+      lineWidthUnits: "pixels",
+      getPosition: (node) => [node.longitude, node.latitude],
+      getRadius: (node) => (node.kindLabel === "local" ? 6.6 : node.selected ? 4.8 : 3.5),
+      getFillColor: (node) => {
+        if (node.kindLabel === "local") {
+          return [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 255];
+        }
+        if (node.stale) {
+          return [SLATE[0], SLATE[1], SLATE[2], 205];
+        }
+        return [MAGENTA[0], MAGENTA[1], MAGENTA[2], 240];
+      },
+      getLineColor: (node) => {
+        if (node.kindLabel === "local") {
+          return [CYAN[0], CYAN[1], CYAN[2], 255];
+        }
+        return node.selected
+          ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 255]
+          : [19, 32, 44, 255];
+      },
+      getLineWidth: (node) => (node.selected ? 2.2 : 1.1),
+    }),
+  ], [anchorNodeLinks, nodePoints, observedNodeLinks, regionLinks, regionPoints]);
+
+  const animatedLayers = useMemo(() => {
     const wave = (Math.sin(animationTick / 420) + 1) / 2;
 
     return [
-      new GeoJsonLayer({
-        id: "mesh-land",
-        data: WORLD_GEOJSON,
-        pickable: false,
-        stroked: true,
-        filled: true,
-        lineWidthUnits: "pixels",
-        lineWidthMinPixels: 1,
-        getFillColor: [7, 20, 34, 168],
-        getLineColor: [48, 96, 120, 124],
-        getLineWidth: 1,
-      }),
-      new PathLayer({
-        id: "mesh-graticule",
-        data: GRATICULE_PATHS,
-        pickable: false,
-        widthUnits: "pixels",
-        rounded: true,
-        getPath: (path) => path.path,
-        getWidth: (path) => (path.emphasis ? 1.2 : 0.75),
-        getColor: (path) => (path.emphasis ? [CYAN[0], CYAN[1], CYAN[2], 50] : [CYAN[0], CYAN[1], CYAN[2], 24]),
-      }),
-      new ArcLayer<RegionArcDatum>({
-        id: "mesh-region-links",
-        data: regionLinks,
-        pickable: false,
-        widthUnits: "pixels",
-        getSourcePosition: (link) => link.sourcePosition,
-        getTargetPosition: (link) => link.targetPosition,
-        getSourceColor: (link) => [CYAN[0], CYAN[1], CYAN[2], link.selected ? 184 : 96],
-        getTargetColor: (link) => [MAGENTA[0], MAGENTA[1], MAGENTA[2], link.selected ? 168 : 86],
-        getWidth: (link) => 1.2 + (link.count * 0.9),
-        getHeight: (link) => 0.18 + (link.count * 0.05),
-        getTilt: () => 12,
-      }),
-      new ArcLayer<NodeLinkDatum>({
-        id: "mesh-observed-links",
-        data: nodeLinks.filter((link) => link.kind === "observed"),
-        pickable: false,
-        widthUnits: "pixels",
-        getSourcePosition: (link) => link.sourcePosition,
-        getTargetPosition: (link) => link.targetPosition,
-        getSourceColor: (link) => [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], link.selected ? 204 : 62],
-        getTargetColor: (link) => [MAGENTA[0], MAGENTA[1], MAGENTA[2], link.selected ? 184 : 54],
-        getWidth: (link) => 0.8 + (link.intensity * 2.1),
-        getHeight: (link) => 0.12 + (link.intensity * 0.08),
-        getTilt: () => -10,
-      }),
-      new ArcLayer<NodeLinkDatum>({
-        id: "mesh-anchor-links",
-        data: nodeLinks.filter((link) => link.kind === "anchor"),
-        pickable: false,
-        widthUnits: "pixels",
-        getSourcePosition: (link) => link.sourcePosition,
-        getTargetPosition: (link) => link.targetPosition,
-        getSourceColor: (link) => [CYAN[0], CYAN[1], CYAN[2], link.selected ? 126 : 52],
-        getTargetColor: (link) => [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], link.selected ? 172 : 72],
-        getWidth: (link) => 0.7 + (link.intensity * 1.2),
-        getHeight: (link) => 0.08 + (link.intensity * 0.05),
-        getTilt: () => 0,
-      }),
       new ScatterplotLayer<RegionPoint>({
         id: "mesh-region-halos",
         data: regionPoints,
@@ -511,19 +565,8 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
         getFillColor: (region) => [CYAN[0], CYAN[1], CYAN[2], region.highlighted ? 34 : 18],
         getLineColor: (region) => region.selected ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 210] : [CYAN[0], CYAN[1], CYAN[2], 126],
         getLineWidth: (region) => region.selected ? 2.8 : 1.2,
-        onHover: handleHover,
-        onClick: handleLayerClick,
-      }),
-      new ScatterplotLayer<RegionPoint>({
-        id: "mesh-region-cores",
-        data: regionPoints,
-        pickable: false,
-        stroked: false,
-        filled: true,
-        radiusUnits: "pixels",
-        getPosition: (region) => [region.longitude, region.latitude],
-        getRadius: (region) => 3.8 + Math.min(region.activityCount, 4),
-        getFillColor: (region) => region.selected ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 255] : [CYAN[0], CYAN[1], CYAN[2], 224],
+        onHover: stableHover,
+        onClick: stableClick,
       }),
       new ScatterplotLayer<NodePoint>({
         id: "mesh-node-pulses",
@@ -549,40 +592,13 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
           }
           return [MAGENTA[0], MAGENTA[1], MAGENTA[2], node.selected ? 68 : 34];
         },
-        onHover: handleHover,
-        onClick: handleLayerClick,
-      }),
-      new ScatterplotLayer<NodePoint>({
-        id: "mesh-node-cores",
-        data: nodePoints,
-        pickable: false,
-        stroked: true,
-        filled: true,
-        radiusUnits: "pixels",
-        lineWidthUnits: "pixels",
-        getPosition: (node) => [node.longitude, node.latitude],
-        getRadius: (node) => (node.kindLabel === "local" ? 6.6 : node.selected ? 4.8 : 3.5),
-        getFillColor: (node) => {
-          if (node.kindLabel === "local") {
-            return [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 255];
-          }
-          if (node.stale) {
-            return [SLATE[0], SLATE[1], SLATE[2], 205];
-          }
-          return [MAGENTA[0], MAGENTA[1], MAGENTA[2], 240];
-        },
-        getLineColor: (node) => {
-          if (node.kindLabel === "local") {
-            return [CYAN[0], CYAN[1], CYAN[2], 255];
-          }
-          return node.selected
-            ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 255]
-            : [19, 32, 44, 255];
-        },
-        getLineWidth: (node) => (node.selected ? 2.2 : 1.1),
+        onHover: stableHover,
+        onClick: stableClick,
       }),
     ];
-  }, [animationTick, handleHover, handleLayerClick, nodeLinks, nodePoints, regionLinks, regionPoints]);
+  }, [animationTick, nodePoints, regionPoints, stableClick, stableHover]);
+
+  const layers = useMemo(() => [...staticLayers, ...animatedLayers], [staticLayers, animatedLayers]);
 
   return (
     <section className="mesh-page">
@@ -637,11 +653,11 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
               </ShellPill>
               <ShellPill className="mesh-stat-pill">
                 <Waypoints size={14} />
-                <span>{agent?.network.status || "observer"}</span>
+                <span>{primaryAgent?.network.status || "observer"}</span>
               </ShellPill>
               <ShellPill className="mesh-stat-pill">
                 <Wallet size={14} />
-                <span>{shortWallet(agent?.agentWallet || null)}</span>
+                <span>{shortWallet(localNode?.wallet || null)}</span>
               </ShellPill>
             </div>
           </div>
@@ -658,7 +674,7 @@ export function MeshPage({ agent, peers, bootstrapResolution }: MeshPageProps) {
               </div>
               <div className="mesh-viewer-node__label">
                 <strong>This Device</strong>
-                <span>{agent ? "Locating..." : "Waiting for Mesh activation"}</span>
+                <span>{localNode ? "Locating..." : "Waiting for Mesh activation"}</span>
               </div>
             </div>
           ) : null}
