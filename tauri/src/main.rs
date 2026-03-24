@@ -17,7 +17,6 @@ use libp2p::{
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol,
 };
-use rand::{rngs::OsRng, RngCore};
 use reqwest::Client as HttpClient;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -317,26 +316,6 @@ struct MeshStateAnchorCommandRequest {
     previous_pdp_anchored_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MeshHaiRecord {
-    version: u32,
-    agent_wallet: String,
-    user_wallet: String,
-    device_id: String,
-    hai_id: String,
-    synapse_session_private_key: String,
-    payer_address: Option<String>,
-    session_key_expires_at: Option<u64>,
-    next_update_number: u64,
-    last_update_number: Option<u64>,
-    last_path: Option<String>,
-    last_state_root_hash: Option<String>,
-    last_piece_cid: Option<String>,
-    last_anchored_at: Option<u64>,
-    updated_at: u64,
-}
-
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SignedMeshStateEnvelope {
@@ -357,41 +336,166 @@ struct SignedMeshStateEnvelope {
     signature: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedMeshRequestEnvelope {
+    version: u32,
+    kind: String,
+    action: String,
+    collection: String,
+    requester_hai_id: String,
+    requester_agent_wallet: String,
+    requester_user_wallet: String,
+    requester_device_id: String,
+    requester_peer_id: String,
+    target_path: String,
+    target_piece_cid: Option<String>,
+    target_data_set_id: Option<String>,
+    target_piece_id: Option<String>,
+    artifact_kind: Option<String>,
+    file_name: Option<String>,
+    root_cid: Option<String>,
+    payload_sha256: Option<String>,
+    signed_at: u64,
+    signature: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshLearningPayload {
+    version: u32,
+    kind: String,
+    created_at: u64,
+    title: String,
+    summary: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshHaiRuntimeRow {
+    version: u32,
+    agent_wallet: String,
+    user_wallet: String,
+    device_id: String,
+    hai_id: String,
+    synapse_session_private_key: String,
+    payer_address: Option<String>,
+    session_key_expires_at: Option<u64>,
+    next_update_number: u64,
+    next_learning_number: u64,
+    last_update_number: Option<u64>,
+    last_path: Option<String>,
+    last_state_root_hash: Option<String>,
+    last_piece_cid: Option<String>,
+    last_anchored_at: Option<u64>,
+    last_learning_number: Option<u64>,
+    last_learning_path: Option<String>,
+    updated_at: u64,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MeshStateAnchorRuntimeResponse {
     hai_id: String,
     update_number: u64,
     path: String,
+    file_name: String,
+    latest_alias: String,
     state_root_hash: String,
     pdp_piece_cid: String,
     pdp_anchored_at: u64,
     payload_size: usize,
     provider_id: String,
     data_set_id: Option<String>,
+    piece_id: Option<String>,
     retrieval_url: Option<String>,
     payer_address: String,
     session_key_expires_at: u64,
+    source: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum MeshSharedArtifactKind {
+    Learning,
+    Report,
+    Resource,
+    Ticket,
+}
+
+impl MeshSharedArtifactKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Learning => "learning",
+            Self::Report => "report",
+            Self::Resource => "resource",
+            Self::Ticket => "ticket",
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshSharedArtifactPinRuntimeResponse {
+    hai_id: String,
+    artifact_kind: MeshSharedArtifactKind,
+    artifact_number: u64,
+    path: String,
+    file_name: String,
+    latest_alias: String,
+    root_cid: String,
+    piece_cid: String,
+    payload_size: usize,
+    copy_count: usize,
+    provider_id: String,
+    data_set_id: Option<String>,
+    piece_id: Option<String>,
+    retrieval_url: Option<String>,
+    payer_address: String,
+    session_key_expires_at: u64,
+    source: String,
+    collection: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+enum MeshPublicationQueueKind {
+    #[serde(rename = "manifest.publish")]
+    ManifestPublish,
+    #[serde(rename = "learning.pin")]
+    LearningPin,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MeshPublicationQueueRequest {
     request_id: String,
+    kind: MeshPublicationQueueKind,
     agent_wallet: String,
     requested_at: u64,
     reason: Option<String>,
+    title: Option<String>,
+    summary: Option<String>,
+    content: Option<String>,
+    access_price_usdc: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MeshPublicationQueueResult {
     request_id: String,
+    kind: Option<MeshPublicationQueueKind>,
     success: bool,
     error: Option<String>,
     hai_id: Option<String>,
     update_number: Option<u64>,
+    artifact_kind: Option<MeshSharedArtifactKind>,
+    artifact_number: Option<u64>,
     path: Option<String>,
+    latest_alias: Option<String>,
+    root_cid: Option<String>,
+    piece_cid: Option<String>,
+    collection: Option<String>,
     state_root_hash: Option<String>,
     pdp_piece_cid: Option<String>,
     pdp_anchored_at: Option<u64>,
@@ -496,7 +600,6 @@ enum MeshLoopCommand {
 #[serde(rename_all = "camelCase")]
 struct MeshJoinRequest {
     user_address: String,
-    agent_wallet: String,
     device_id: String,
     chain_id: u32,
     gossip_topic: String,
@@ -511,19 +614,32 @@ struct MeshJoinRequest {
     #[serde(default = "default_kad_protocol")]
     kad_protocol: String,
     #[serde(default)]
-    capabilities: Vec<String>,
-    #[serde(default)]
-    session_id: Option<String>,
-    #[serde(default)]
-    dna_hash: Option<String>,
-    #[serde(default)]
-    capabilities_hash: Option<String>,
-    #[serde(default)]
-    public_card: Option<MeshAgentCard>,
+    session_id: String,
     #[serde(default)]
     bootstrap_multiaddrs: Vec<String>,
     #[serde(default)]
     relay_multiaddrs: Vec<String>,
+    #[serde(default)]
+    published_agents: Vec<MeshPublishedAgent>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshPublishedAgent {
+    agent_wallet: String,
+    dna_hash: String,
+    capabilities_hash: String,
+    capabilities: Vec<String>,
+    public_card: Option<MeshAgentCard>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshPublishedAgentStatus {
+    agent_wallet: String,
+    hai_id: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -532,7 +648,7 @@ struct MeshRuntimeStatus {
     running: bool,
     status: String,
     user_address: Option<String>,
-    agent_wallet: Option<String>,
+    published_agents: Vec<MeshPublishedAgentStatus>,
     device_id: Option<String>,
     peer_id: Option<String>,
     listen_multiaddrs: Vec<String>,
@@ -559,7 +675,7 @@ impl Default for MeshRuntimeStatus {
             running: false,
             status: "dormant".to_string(),
             user_address: None,
-            agent_wallet: None,
+            published_agents: Vec::new(),
             device_id: None,
             peer_id: None,
             listen_multiaddrs: Vec::new(),
@@ -877,172 +993,28 @@ fn hex_encode(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
-fn generate_synapse_private_key() -> String {
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    format!("0x{}", hex_encode(&bytes))
-}
-
 fn normalize_snapshot_receipt_ids(values: &[String]) -> Vec<String> {
     normalize_manifest_atoms(values, 64, 128)
 }
 
-fn hai_registry_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = resolve_base_dir(app)?.join("synapse").join("hai");
-    fs::create_dir_all(&dir).map_err(|err| format!("failed to create Synapse HAI dir: {err}"))?;
-    Ok(dir)
-}
-
-fn hai_record_path(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-    user_wallet: &str,
-    device_id: &str,
-) -> Result<PathBuf, String> {
-    Ok(hai_registry_dir(app)?.join(format!(
-        "{}__{}__{}.json",
-        agent_wallet.to_lowercase(),
-        user_wallet.to_lowercase(),
-        device_id
-    )))
-}
-
-fn normalized_hai_triplet_key(agent_wallet: &str, user_wallet: &str, device_id: &str) -> String {
-    format!(
+fn visible_hai_id(agent_wallet: &str, user_wallet: &str, device_id: &str) -> String {
+    sha256_hex_string(&format!(
         "{}:{}:{}",
         agent_wallet.trim().to_lowercase(),
         user_wallet.trim().to_lowercase(),
         device_id.trim()
-    )
-}
-
-fn same_hai_triplet(
-    record: &MeshHaiRecord,
-    agent_wallet: &str,
-    user_wallet: &str,
-    device_id: &str,
-) -> bool {
-    record.agent_wallet == agent_wallet.trim().to_lowercase()
-        && record.user_wallet == user_wallet.trim().to_lowercase()
-        && record.device_id == device_id.trim()
+    ))
+    .chars()
+    .take(6)
+    .collect()
 }
 
 fn compose_hai_path(hai_id: &str, update_number: u64) -> String {
     format!("compose-{}-#{}", hai_id, update_number)
 }
 
-fn deterministic_hai_candidate(seed: &str) -> String {
-    sha256_hex_string(seed).chars().take(6).collect()
-}
-
-fn load_hai_record_by_id(app: &tauri::AppHandle, hai_id: &str) -> Result<Option<MeshHaiRecord>, String> {
-    let dir = hai_registry_dir(app)?;
-    for entry in fs::read_dir(&dir).map_err(|err| format!("failed to read Synapse HAI dir: {err}"))? {
-        let entry = entry.map_err(|err| format!("failed to inspect Synapse HAI entry: {err}"))?;
-        let raw = match fs::read_to_string(entry.path()) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        let parsed = match serde_json::from_str::<MeshHaiRecord>(&raw) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        if parsed.hai_id == hai_id {
-            return Ok(Some(parsed));
-        }
-    }
-    Ok(None)
-}
-
-fn derive_deterministic_hai_id(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-    user_wallet: &str,
-    device_id: &str,
-) -> Result<String, String> {
-    let triplet_key = normalized_hai_triplet_key(agent_wallet, user_wallet, device_id);
-    for attempt in 0..128usize {
-        let seed = if attempt == 0 {
-            triplet_key.clone()
-        } else {
-            format!("{}:{}", triplet_key, attempt)
-        };
-        let candidate = deterministic_hai_candidate(&seed);
-        match load_hai_record_by_id(app, &candidate)? {
-            None => return Ok(candidate),
-            Some(existing) if same_hai_triplet(&existing, agent_wallet, user_wallet, device_id) => {
-                return Ok(candidate)
-            }
-            Some(_) => continue,
-        }
-    }
-    Err("failed to derive a unique deterministic HAI id".to_string())
-}
-
-fn load_or_create_hai_record(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-    user_wallet: &str,
-    device_id: &str,
-) -> Result<MeshHaiRecord, String> {
-    let path = hai_record_path(app, agent_wallet, user_wallet, device_id)?;
-    let expected_hai_id = derive_deterministic_hai_id(app, agent_wallet, user_wallet, device_id)?;
-    if path.exists() {
-        let raw = fs::read_to_string(&path).map_err(|err| format!("failed to read HAI record: {err}"))?;
-        let mut record =
-            serde_json::from_str::<MeshHaiRecord>(&raw).map_err(|err| format!("failed to parse HAI record: {err}"))?;
-        let mut changed = false;
-        if record.hai_id != expected_hai_id {
-            record.hai_id = expected_hai_id.clone();
-            changed = true;
-        }
-        match record.last_update_number {
-            Some(last_update_number) => {
-                let expected_path = compose_hai_path(&record.hai_id, last_update_number);
-                if record.last_path.as_deref() != Some(expected_path.as_str()) {
-                    record.last_path = Some(expected_path);
-                    changed = true;
-                }
-            }
-            None if record.last_path.is_some() => {
-                record.last_path = None;
-                changed = true;
-            }
-            None => {}
-        }
-        if changed {
-            record.updated_at = now_ms();
-            write_hai_record(app, &record)?;
-        }
-        return Ok(record);
-    }
-
-    let record = MeshHaiRecord {
-        version: 1,
-        agent_wallet: agent_wallet.to_lowercase(),
-        user_wallet: user_wallet.to_lowercase(),
-        device_id: device_id.to_string(),
-        hai_id: expected_hai_id,
-        synapse_session_private_key: generate_synapse_private_key(),
-        payer_address: None,
-        session_key_expires_at: None,
-        next_update_number: 1,
-        last_update_number: None,
-        last_path: None,
-        last_state_root_hash: None,
-        last_piece_cid: None,
-        last_anchored_at: None,
-        updated_at: now_ms(),
-    };
-    write_hai_record(app, &record)?;
-    Ok(record)
-}
-
-fn write_hai_record(app: &tauri::AppHandle, record: &MeshHaiRecord) -> Result<(), String> {
-    let path = hai_record_path(app, &record.agent_wallet, &record.user_wallet, &record.device_id)?;
-    let serialized = serde_json::to_string_pretty(record)
-        .map_err(|err| format!("failed to serialize HAI record: {err}"))?;
-    fs::write(path, serialized).map_err(|err| format!("failed to write HAI record: {err}"))
+fn knowledge_hai_path(hai_id: &str, kind: MeshSharedArtifactKind, artifact_number: u64) -> String {
+    format!("knowledge-{}-{}-#{}", hai_id, kind.as_str(), artifact_number)
 }
 
 fn persist_manifest_update(app: &tauri::AppHandle, manifest: &MeshManifest) -> Result<(), String> {
@@ -1191,19 +1163,27 @@ fn next_manifest_state_version(previous_manifest: Option<&MeshManifest>, next_ma
     }
 }
 
-fn build_current_mesh_publication(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-    live_status: &MeshRuntimeStatus,
-) -> Result<(MeshManifest, MeshStateAnchorCommandRequest), String> {
+#[derive(Debug, Clone)]
+struct MeshPubCtx {
+    api_url: String,
+    compose_key_token: String,
+    user_wallet: String,
+    device_id: String,
+    chain_id: u32,
+    target_synapse_expiry: u64,
+    installed_skills: Vec<PersistedInstalledSkill>,
+    agent: PersistedInstalledAgent,
+}
+
+fn load_mesh_pub_ctx(app: &tauri::AppHandle, agent_wallet: &str) -> Result<MeshPubCtx, String> {
     let state = load_persisted_local_state(app)?;
     let identity = state
         .identity
         .as_ref()
         .ok_or_else(|| "local identity is required for mesh publication".to_string())?;
-    let normalized_user_wallet = normalize_wallet(&identity.user_address)
+    let user_wallet = normalize_wallet(&identity.user_address)
         .ok_or_else(|| "local identity userAddress is invalid".to_string())?;
-    let normalized_device_id = normalize_device_id(&identity.device_id)
+    let device_id = normalize_device_id(&identity.device_id)
         .ok_or_else(|| "local identity deviceId is invalid".to_string())?;
     let compose_key_token = identity.compose_key_token.trim().to_string();
     if compose_key_token.is_empty() {
@@ -1219,6 +1199,33 @@ fn build_current_mesh_publication(
         .cloned()
         .ok_or_else(|| format!("local state is missing installed agent {}", normalized_agent_wallet))?;
 
+    Ok(MeshPubCtx {
+        api_url: normalize_persisted_url(&state.settings.api_url)
+            .ok_or_else(|| "local settings apiUrl is invalid for mesh publication".to_string())?,
+        compose_key_token,
+        user_wallet,
+        device_id,
+        chain_id: if identity.chain_id > 0 {
+            identity.chain_id
+        } else {
+            agent.lock.chain_id
+        },
+        target_synapse_expiry: identity.expires_at,
+        installed_skills: state.installed_skills.clone(),
+        agent,
+    })
+}
+
+fn build_current_mesh_publication(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+    live_status: &MeshRuntimeStatus,
+) -> Result<(MeshManifest, MeshStateAnchorCommandRequest), String> {
+    let ctx = load_mesh_pub_ctx(app, agent_wallet)?;
+    let normalized_agent_wallet = normalize_wallet(agent_wallet)
+        .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
+    let agent = ctx.agent.clone();
+
     let previous_manifest = agent.network.manifest.clone();
     let existing_card = agent.network.public_card.clone();
     let model_id = if !agent.lock.model_id.trim().is_empty() {
@@ -1233,7 +1240,7 @@ fn build_current_mesh_publication(
     let framework = if !agent.metadata.framework.trim().is_empty() {
         agent.metadata.framework.clone()
     } else {
-        "openclaw".to_string()
+        "manowar".to_string()
     };
     let capabilities = {
         let base = existing_card
@@ -1243,7 +1250,7 @@ fn build_current_mesh_publication(
             .unwrap_or_else(|| extract_plugin_capabilities(&agent.metadata.plugins));
         normalize_manifest_atoms(&base, 128, 96)
     };
-    let skills = merge_mesh_skill_ids(&state.installed_skills, &agent.skill_states);
+    let skills = merge_mesh_skill_ids(&ctx.installed_skills, &agent.skill_states);
     let a2a_endpoints = normalize_manifest_urls(
         &[
             agent.metadata.endpoints.chat.clone(),
@@ -1261,10 +1268,10 @@ fn build_current_mesh_publication(
 
     let mut manifest = MeshManifest {
         agent_wallet: normalized_agent_wallet.clone(),
-        user_wallet: normalized_user_wallet.clone(),
-        device_id: normalized_device_id.clone(),
+        user_wallet: ctx.user_wallet.clone(),
+        device_id: ctx.device_id.clone(),
         peer_id,
-        chain_id: if identity.chain_id > 0 { identity.chain_id } else { agent.lock.chain_id },
+        chain_id: ctx.chain_id,
         state_version: 1,
         state_root_hash: previous_manifest.as_ref().and_then(|value| value.state_root_hash.clone()),
         pdp_piece_cid: previous_manifest.as_ref().and_then(|value| value.pdp_piece_cid.clone()),
@@ -1346,12 +1353,11 @@ fn build_current_mesh_publication(
     };
 
     let anchor_request = MeshStateAnchorCommandRequest {
-        api_url: normalize_persisted_url(&state.settings.api_url)
-            .ok_or_else(|| "local settings apiUrl is invalid for mesh publication".to_string())?,
-        compose_key_token,
-        user_address: normalized_user_wallet,
-        device_id: normalized_device_id,
-        target_synapse_expiry: identity.expires_at,
+        api_url: ctx.api_url,
+        compose_key_token: ctx.compose_key_token,
+        user_address: ctx.user_wallet,
+        device_id: ctx.device_id,
+        target_synapse_expiry: ctx.target_synapse_expiry,
         previous_state_root_hash: previous_manifest.as_ref().and_then(|value| value.state_root_hash.clone()),
         previous_pdp_piece_cid: previous_manifest.as_ref().and_then(|value| value.pdp_piece_cid.clone()),
         previous_pdp_anchored_at: previous_manifest.as_ref().and_then(|value| value.pdp_anchored_at),
@@ -1371,7 +1377,7 @@ fn normalize_mesh_state_snapshot_request(
         .ok_or_else(|| "snapshot.agentWallet must be a valid wallet address".to_string())?;
     let device_id = normalize_device_id(&request.device_id)
         .ok_or_else(|| "deviceId format is invalid".to_string())?;
-    if live_status.agent_wallet.as_deref() != Some(agent_wallet.as_str()) {
+    if !status_has_published_agent(live_status, agent_wallet.as_str()) {
         return Err("snapshot agentWallet does not match the running mesh agent".to_string());
     }
     if live_status.device_id.as_deref() != Some(device_id.as_str()) {
@@ -1428,11 +1434,52 @@ fn default_capabilities(agent_wallet: &str) -> Vec<String> {
     vec![format!("agent-{wallet_suffix}")]
 }
 
+fn normalize_published_agent(agent: &MeshPublishedAgent) -> Result<MeshPublishedAgent, String> {
+    let agent_wallet = normalize_wallet(&agent.agent_wallet)
+        .ok_or_else(|| "publishedAgents.agentWallet must be a valid wallet address".to_string())?;
+    let capabilities = {
+        let normalized = agent
+            .capabilities
+            .iter()
+            .filter_map(|cap| normalize_capability(cap))
+            .collect::<Vec<_>>();
+        if normalized.is_empty() {
+            default_capabilities(&agent_wallet)
+        } else {
+            normalized
+        }
+    };
+
+    Ok(MeshPublishedAgent {
+        agent_wallet,
+        dna_hash: truncate_string(agent.dna_hash.clone(), 256),
+        capabilities_hash: truncate_string(agent.capabilities_hash.clone(), 256),
+        capabilities,
+        public_card: sanitize_mesh_agent_card(agent.public_card.clone()),
+    })
+}
+
+fn request_published_statuses(request: &MeshJoinRequest) -> Vec<MeshPublishedAgentStatus> {
+    request
+        .published_agents
+        .iter()
+        .map(|agent| MeshPublishedAgentStatus {
+            agent_wallet: agent.agent_wallet.clone(),
+            hai_id: visible_hai_id(&agent.agent_wallet, &request.user_address, &request.device_id),
+        })
+        .collect()
+}
+
+fn status_has_published_agent(status: &MeshRuntimeStatus, agent_wallet: &str) -> bool {
+    status
+        .published_agents
+        .iter()
+        .any(|item| item.agent_wallet == agent_wallet)
+}
+
 fn validate_mesh_join_request(request: &MeshJoinRequest) -> Result<MeshJoinRequest, String> {
     let user_address = normalize_wallet(&request.user_address)
         .ok_or_else(|| "userAddress must be a valid wallet address".to_string())?;
-    let agent_wallet = normalize_wallet(&request.agent_wallet)
-        .ok_or_else(|| "agentWallet must be a valid wallet address".to_string())?;
     let device_id = normalize_device_id(&request.device_id)
         .ok_or_else(|| "deviceId format is invalid".to_string())?;
 
@@ -1458,22 +1505,29 @@ fn validate_mesh_join_request(request: &MeshJoinRequest) -> Result<MeshJoinReque
         return Err("kadProtocol is required".to_string());
     }
 
-    let capabilities = {
-        let normalized = request
-            .capabilities
+    if request.published_agents.is_empty() {
+        return Err("publishedAgents must contain at least one mesh-enabled agent".to_string());
+    }
+
+    let mut published_agents = request
+        .published_agents
+        .iter()
+        .map(normalize_published_agent)
+        .collect::<Result<Vec<_>, _>>()?;
+    published_agents.sort_by(|left, right| left.agent_wallet.cmp(&right.agent_wallet));
+    published_agents.dedup_by(|left, right| left.agent_wallet == right.agent_wallet);
+
+    let capabilities = normalize_manifest_atoms(
+        &published_agents
             .iter()
-            .filter_map(|cap| normalize_capability(cap))
-            .collect::<Vec<_>>();
-        if normalized.is_empty() {
-            default_capabilities(&agent_wallet)
-        } else {
-            normalized
-        }
-    };
+            .flat_map(|agent| agent.capabilities.iter().cloned())
+            .collect::<Vec<_>>(),
+        256,
+        96,
+    );
 
     Ok(MeshJoinRequest {
         user_address,
-        agent_wallet,
         device_id,
         chain_id: request.chain_id,
         gossip_topic: request.gossip_topic.trim().to_string(),
@@ -1482,11 +1536,7 @@ fn validate_mesh_join_request(request: &MeshJoinRequest) -> Result<MeshJoinReque
         conclave_topic: request.conclave_topic.trim().to_string(),
         heartbeat_ms: request.heartbeat_ms,
         kad_protocol: request.kad_protocol.trim().to_string(),
-        capabilities,
-        session_id: request.session_id.clone(),
-        dna_hash: request.dna_hash.clone(),
-        capabilities_hash: request.capabilities_hash.clone(),
-        public_card: sanitize_mesh_agent_card(request.public_card.clone()),
+        session_id: truncate_string(request.session_id.clone(), 256),
         bootstrap_multiaddrs: request
             .bootstrap_multiaddrs
             .iter()
@@ -1499,6 +1549,8 @@ fn validate_mesh_join_request(request: &MeshJoinRequest) -> Result<MeshJoinReque
             .map(|addr| addr.trim().to_string())
             .filter(|addr| !addr.is_empty())
             .collect(),
+        published_agents,
+        capabilities,
     })
 }
 
@@ -1555,7 +1607,7 @@ fn validate_mesh_manifest(manifest: MeshManifest, status: &MeshRuntimeStatus) ->
     let device_id = normalize_device_id(&manifest.device_id)
         .ok_or_else(|| "manifest.deviceId format is invalid".to_string())?;
 
-    if status.agent_wallet.as_deref() != Some(agent_wallet.as_str()) {
+    if !status_has_published_agent(status, agent_wallet.as_str()) {
         return Err("manifest agentWallet does not match the running mesh agent".to_string());
     }
     if status.device_id.as_deref() != Some(device_id.as_str()) {
@@ -1610,11 +1662,28 @@ fn validate_mesh_manifest(manifest: MeshManifest, status: &MeshRuntimeStatus) ->
 }
 
 pub(crate) fn resolve_base_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let base = app
+    let app_data = app
         .path()
         .app_data_dir()
-        .map_err(|err| format!("failed to resolve app data directory: {err}"))?
-        .join("runtime");
+        .map_err(|err| format!("failed to resolve app data directory: {err}"))?;
+
+    // Check for a user-configured base dir override
+    let override_file = app_data.join("base_dir_override.txt");
+    let base = if override_file.exists() {
+        if let Ok(custom) = fs::read_to_string(&override_file) {
+            let trimmed = custom.trim();
+            if !trimmed.is_empty() {
+                PathBuf::from(trimmed)
+            } else {
+                app_data.join("runtime")
+            }
+        } else {
+            app_data.join("runtime")
+        }
+    } else {
+        app_data.join("runtime")
+    };
+
     fs::create_dir_all(&base).map_err(|err| format!("failed to create app data directory: {err}"))?;
     Ok(base)
 }
@@ -1813,10 +1882,11 @@ fn mark_mesh_status(app: &tauri::AppHandle, request: &MeshJoinRequest, status_va
         status.running = status_value != "dormant";
         status.status = status_value.to_string();
         status.user_address = Some(request.user_address.clone());
-        status.agent_wallet = Some(request.agent_wallet.clone());
+        status.published_agents = request_published_statuses(request);
         status.device_id = Some(request.device_id.clone());
         status.updated_at = now_ms();
         if status_value == "dormant" {
+            status.published_agents.clear();
             status.peer_id = None;
             status.listen_multiaddrs.clear();
             status.peers_discovered = 0;
@@ -1830,7 +1900,7 @@ fn mesh_error(app: &tauri::AppHandle, request: Option<&MeshJoinRequest>, message
     let _ = with_mesh_status(app, |status| {
         if let Some(req) = request {
             status.user_address = Some(req.user_address.clone());
-            status.agent_wallet = Some(req.agent_wallet.clone());
+            status.published_agents = request_published_statuses(req);
             status.device_id = Some(req.device_id.clone());
         }
         status.running = false;
@@ -1865,6 +1935,7 @@ struct MeshEnvelope {
     peer_id: String,
     caps: Vec<String>,
     listen_addrs: Vec<String>,
+    hai_id: String,
     agent_wallet: String,
     device_id: String,
     session_id: String,
@@ -1883,6 +1954,7 @@ struct MeshEnvelopeUnsigned {
     peer_id: String,
     caps: Vec<String>,
     listen_addrs: Vec<String>,
+    hai_id: String,
     agent_wallet: String,
     device_id: String,
     session_id: String,
@@ -1897,6 +1969,7 @@ struct MeshEnvelopeUnsigned {
 struct PeerCacheEntry {
     last_seen_ms: u64,
     stale: bool,
+    hai_id: String,
     agent_wallet: String,
     device_id: String,
     caps: Vec<String>,
@@ -1914,6 +1987,7 @@ fn unsigned_envelope_bytes(value: &MeshEnvelopeUnsigned) -> Result<Vec<u8>, Stri
         &value.peer_id,
         &value.caps,
         &value.listen_addrs,
+        &value.hai_id,
         &value.agent_wallet,
         &value.device_id,
         &value.session_id,
@@ -1929,6 +2003,8 @@ fn unsigned_envelope_bytes(value: &MeshEnvelopeUnsigned) -> Result<Vec<u8>, Stri
 fn build_signed_envelope_payload(
     local_key: &identity::Keypair,
     request: &MeshJoinRequest,
+    published: &MeshPublishedAgent,
+    hai_id: &str,
     msg_type: &str,
     peer_id: &str,
     caps: &[String],
@@ -1946,15 +2022,17 @@ fn build_signed_envelope_payload(
         peer_id: peer_id.to_string(),
         caps: caps.to_vec(),
         listen_addrs: listen_multiaddrs.to_vec(),
-        agent_wallet: request.agent_wallet.clone(),
+        hai_id: hai_id.to_string(),
+        agent_wallet: published.agent_wallet.clone(),
         device_id: request.device_id.clone(),
-        session_id: request.session_id.clone().unwrap_or_default(),
-        dna_hash: request.dna_hash.clone().unwrap_or_default(),
-        capabilities_hash: request
-            .capabilities_hash
-            .clone()
-            .unwrap_or(computed_caps_hash),
-        card: request.public_card.clone(),
+        session_id: request.session_id.clone(),
+        dna_hash: published.dna_hash.clone(),
+        capabilities_hash: if published.capabilities_hash.trim().is_empty() {
+            computed_caps_hash
+        } else {
+            published.capabilities_hash.clone()
+        },
+        card: published.public_card.clone(),
         ts_ms: now_ms(),
         nonce,
     };
@@ -1968,6 +2046,7 @@ fn build_signed_envelope_payload(
         peer_id: unsigned.peer_id,
         caps: unsigned.caps,
         listen_addrs: unsigned.listen_addrs,
+        hai_id: unsigned.hai_id,
         agent_wallet: unsigned.agent_wallet,
         device_id: unsigned.device_id,
         session_id: unsigned.session_id,
@@ -1993,6 +2072,9 @@ fn decode_and_validate_envelope(
     }
     if envelope.msg_type != "presence" && envelope.msg_type != "announce" {
         return Err(format!("unsupported envelope type {}", envelope.msg_type));
+    }
+    if envelope.hai_id.len() != 6 || !envelope.hai_id.chars().all(|char| char.is_ascii_hexdigit()) {
+        return Err("invalid envelope hai_id".to_string());
     }
 
     let now = now_ms();
@@ -2025,6 +2107,7 @@ fn decode_and_validate_envelope(
         peer_id: envelope.peer_id.clone(),
         caps: envelope.caps.clone(),
         listen_addrs: envelope.listen_addrs.clone(),
+        hai_id: envelope.hai_id.clone(),
         agent_wallet: envelope.agent_wallet.clone(),
         device_id: envelope.device_id.clone(),
         session_id: envelope.session_id.clone(),
@@ -2185,6 +2268,7 @@ fn emit_peer_index(app: &tauri::AppHandle, peer_cache: &HashMap<String, PeerCach
             serde_json::json!({
                 "peerId": peer_id,
                 "agentWallet": entry.agent_wallet,
+                "haiId": entry.hai_id,
                 "deviceId": entry.device_id,
                 "lastSeenAt": entry.last_seen_ms,
                 "stale": entry.stale,
@@ -2361,7 +2445,7 @@ async fn run_mesh_loop(
         status.running = true;
         status.status = "connecting".to_string();
         status.user_address = Some(request.user_address.clone());
-        status.agent_wallet = Some(request.agent_wallet.clone());
+        status.published_agents = request_published_statuses(&request);
         status.device_id = Some(request.device_id.clone());
         status.peer_id = Some(local_peer_id.clone());
         status.listen_multiaddrs.clear();
@@ -2439,53 +2523,72 @@ async fn run_mesh_loop(
             }
             _ = heartbeat_interval.tick() => {
                 let listen_multiaddrs = with_mesh_status(&app, |status| status.listen_multiaddrs.clone()).unwrap_or_default();
-                let presence_payload = build_signed_envelope_payload(
-                    &local_key,
-                    &request,
-                    "presence",
-                    &local_peer_id,
-                    &request.capabilities,
-                    &listen_multiaddrs,
-                    next_nonce(&mut nonce_counter, &local_peer_id),
-                );
-                let announce_payload = build_signed_envelope_payload(
-                    &local_key,
-                    &request,
-                    "announce",
-                    &local_peer_id,
-                    &request.capabilities,
-                    &listen_multiaddrs,
-                    next_nonce(&mut nonce_counter, &local_peer_id),
-                );
+                let mut heartbeat_error: Option<String> = None;
 
-                let publish_presence = presence_payload
-                    .and_then(|payload| swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .publish(global_topic.clone(), payload)
-                        .map_err(|err| format!("presence publish failed: {err}")));
-                let publish_announce = announce_payload
-                    .and_then(|payload| swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .publish(announce_topic.clone(), payload)
-                        .map_err(|err| format!("announce publish failed: {err}")));
+                for published in &request.published_agents {
+                    let hai_id = visible_hai_id(&published.agent_wallet, &request.user_address, &request.device_id);
+                    let caps = if published.capabilities.is_empty() {
+                        default_capabilities(&published.agent_wallet)
+                    } else {
+                        published.capabilities.clone()
+                    };
+
+                    let presence_payload = build_signed_envelope_payload(
+                        &local_key,
+                        &request,
+                        published,
+                        &hai_id,
+                        "presence",
+                        &local_peer_id,
+                        &caps,
+                        &listen_multiaddrs,
+                        next_nonce(&mut nonce_counter, &local_peer_id),
+                    );
+                    let announce_payload = build_signed_envelope_payload(
+                        &local_key,
+                        &request,
+                        published,
+                        &hai_id,
+                        "announce",
+                        &local_peer_id,
+                        &caps,
+                        &listen_multiaddrs,
+                        next_nonce(&mut nonce_counter, &local_peer_id),
+                    );
+
+                    let publish_presence = presence_payload.and_then(|payload| {
+                        swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .publish(global_topic.clone(), payload)
+                            .map_err(|err| format!("presence publish failed: {err}"))
+                    });
+                    let publish_announce = announce_payload.and_then(|payload| {
+                        swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .publish(announce_topic.clone(), payload)
+                            .map_err(|err| format!("announce publish failed: {err}"))
+                    });
+
+                    if let Err(err) = publish_presence {
+                        heartbeat_error.get_or_insert(err);
+                    }
+                    if let Err(err) = publish_announce {
+                        heartbeat_error.get_or_insert(err);
+                    }
+                }
 
                 let _ = with_mesh_status(&app, |status| {
                     status.last_heartbeat_at = Some(now_ms());
                     status.updated_at = now_ms();
-                    match (publish_presence, publish_announce) {
-                        (Err(err), _) | (_, Err(err)) => {
-                            status.last_error = Some(err);
-                            if status.peers_discovered == 0 {
-                                status.status = "connecting".to_string();
-                            }
+                    if let Some(err) = heartbeat_error {
+                        status.last_error = Some(err);
+                        if status.peers_discovered == 0 {
+                            status.status = "connecting".to_string();
                         }
-                        _ => {
-                            if status.peers_discovered > 0 || !connected_peers.is_empty() {
-                                status.status = "online".to_string();
-                            }
-                        }
+                    } else if status.peers_discovered > 0 || !connected_peers.is_empty() {
+                        status.status = "online".to_string();
                     }
                 });
             }
@@ -2552,6 +2655,7 @@ async fn run_mesh_loop(
                                         let entry = peer_cache.entry(envelope.peer_id.clone()).or_insert(PeerCacheEntry {
                                             last_seen_ms: envelope.ts_ms,
                                             stale: false,
+                                            hai_id: envelope.hai_id.clone(),
                                             agent_wallet: envelope.agent_wallet.clone(),
                                             device_id: envelope.device_id.clone(),
                                             caps: envelope.caps.clone(),
@@ -2563,6 +2667,7 @@ async fn run_mesh_loop(
                                         });
                                         entry.last_seen_ms = envelope.ts_ms;
                                         entry.stale = false;
+                                        entry.hai_id = envelope.hai_id.clone();
                                         entry.agent_wallet = envelope.agent_wallet.clone();
                                         entry.device_id = envelope.device_id.clone();
                                         entry.caps = envelope.caps;
@@ -2686,6 +2791,52 @@ fn get_local_paths(app: tauri::AppHandle) -> Result<LocalPaths, String> {
         agents_dir: agents_dir.to_string_lossy().to_string(),
         skills_dir: skills_dir.to_string_lossy().to_string(),
     })
+}
+
+#[tauri::command]
+fn set_local_base_dir(app: tauri::AppHandle, new_base_dir: String) -> Result<LocalPaths, String> {
+    let trimmed = new_base_dir.trim();
+    if trimmed.is_empty() {
+        return Err("base directory path cannot be empty".to_string());
+    }
+
+    let new_path = PathBuf::from(trimmed);
+
+    // Must be an absolute path
+    if !new_path.is_absolute() {
+        return Err("base directory must be an absolute path".to_string());
+    }
+
+    // Create the new directory tree
+    fs::create_dir_all(&new_path)
+        .map_err(|err| format!("failed to create new base directory: {err}"))?;
+    fs::create_dir_all(new_path.join("agents"))
+        .map_err(|err| format!("failed to create agents directory: {err}"))?;
+    fs::create_dir_all(new_path.join("skills"))
+        .map_err(|err| format!("failed to create skills directory: {err}"))?;
+
+    // Copy existing state files from the old base to the new base (if they exist)
+    let old_base = resolve_base_dir(&app)?;
+    if old_base != new_path {
+        for name in ["state.json", "daemon_state.json"] {
+            let src = old_base.join(name);
+            let dst = new_path.join(name);
+            if src.exists() && !dst.exists() {
+                let _ = fs::copy(&src, &dst);
+            }
+        }
+    }
+
+    // Persist the override
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("failed to resolve app data directory: {err}"))?;
+    fs::write(app_data.join("base_dir_override.txt"), trimmed)
+        .map_err(|err| format!("failed to persist base dir override: {err}"))?;
+
+    // Return refreshed paths
+    get_local_paths(app)
 }
 
 #[tauri::command]
@@ -3277,6 +3428,101 @@ fn daemon_query_os_permissions() -> Result<OsPermissionSnapshot, String> {
     })
 }
 
+/// Map a frontend permission key to the macOS System Preferences deep-link anchor.
+fn permission_key_to_system_prefs_anchor(key: &str) -> &str {
+    match key {
+        "fullDiskAccess" => "Privacy_AllFiles",
+        "camera" => "Privacy_Camera",
+        "microphone" => "Privacy_Microphone",
+        "screen" => "Privacy_ScreenCapture",
+        "accessibility" => "Privacy_Accessibility",
+        _ => "Privacy",
+    }
+}
+
+#[tauri::command]
+fn daemon_open_system_settings(permission_key: Option<String>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let anchor = permission_key
+            .as_deref()
+            .map(permission_key_to_system_prefs_anchor)
+            .unwrap_or("Privacy");
+
+        // macOS 13+ uses the new System Settings URL scheme
+        let url = format!(
+            "x-apple.systempreferences:com.apple.preference.security?{}",
+            anchor
+        );
+
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("failed to open System Settings: {e}"))?;
+
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = permission_key;
+        Err("System Settings is only available on macOS".to_string())
+    }
+}
+
+#[tauri::command]
+fn daemon_request_os_permission(permission_key: String) -> Result<OsPermissionSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // For camera and microphone, we can trigger the native TCC prompt via AVFoundation.
+        // For other permissions (fullDiskAccess, accessibility, screen), macOS does not allow
+        // programmatic requests — we open System Settings instead and re-query.
+        match permission_key.as_str() {
+            "camera" => {
+                // Trigger the TCC prompt by briefly requesting camera access via osascript
+                let _ = std::process::Command::new("osascript")
+                    .args(["-e", "tell application \"System Events\" to log \"\""])
+                    .output();
+                // Actually trigger camera TCC: use a swift one-liner via osascript
+                let _ = std::process::Command::new("swift")
+                    .args(["-e", r#"
+                        import AVFoundation
+                        import Foundation
+                        let sem = DispatchSemaphore(value: 0)
+                        AVCaptureDevice.requestAccess(for: .video) { _ in sem.signal() }
+                        sem.wait()
+                    "#])
+                    .output();
+            }
+            "microphone" => {
+                let _ = std::process::Command::new("swift")
+                    .args(["-e", r#"
+                        import AVFoundation
+                        import Foundation
+                        let sem = DispatchSemaphore(value: 0)
+                        AVCaptureDevice.requestAccess(for: .audio) { _ in sem.signal() }
+                        sem.wait()
+                    "#])
+                    .output();
+            }
+            "accessibility" | "fullDiskAccess" | "screen" => {
+                // These cannot be requested programmatically — open System Settings
+                let _ = daemon_open_system_settings(Some(permission_key));
+            }
+            _ => {
+                let _ = daemon_open_system_settings(Some(permission_key));
+            }
+        }
+
+        // Re-query and return fresh snapshot
+        daemon_query_os_permissions()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = permission_key;
+        daemon_query_os_permissions()
+    }
+}
+
 #[tauri::command]
 fn daemon_install_launch_agent(app: tauri::AppHandle) -> Result<String, String> {
     let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
@@ -3415,13 +3661,13 @@ async fn local_network_leave(
 fn build_signed_state_envelope(
     local_key: &identity::Keypair,
     snapshot: &MeshStateSnapshot,
-    hai_record: &MeshHaiRecord,
+    hai_id: &str,
+    update_number: u64,
 ) -> Result<(String, String, String), String> {
     let canonical = canonical_snapshot_json(snapshot)?;
     let state_root_hash = sha256_hex_string(&canonical);
     let signed_at = now_ms();
-    let update_number = hai_record.next_update_number;
-    let path = compose_hai_path(&hai_record.hai_id, update_number);
+    let path = compose_hai_path(hai_id, update_number);
     let signature = local_key
         .sign(canonical.as_bytes())
         .map_err(|err| format!("failed to sign mesh state snapshot: {err}"))?;
@@ -3429,7 +3675,7 @@ fn build_signed_state_envelope(
         version: 2,
         kind: "compose.mesh.state.v2".to_string(),
         collection: COMPOSE_SYNAPSE_COLLECTION.to_string(),
-        hai_id: hai_record.hai_id.clone(),
+        hai_id: hai_id.to_string(),
         update_number,
         path,
         peer_id: snapshot.peer_id.clone(),
@@ -3447,6 +3693,145 @@ fn build_signed_state_envelope(
     Ok((canonical, format!("0x{}", state_root_hash), envelope_json))
 }
 
+fn signed_mesh_request_bytes(envelope: &SignedMeshRequestEnvelope) -> Result<String, String> {
+    serde_json::to_string(&serde_json::json!([
+        envelope.version,
+        envelope.kind,
+        envelope.action,
+        envelope.collection,
+        envelope.requester_hai_id,
+        envelope.requester_agent_wallet,
+        envelope.requester_user_wallet,
+        envelope.requester_device_id,
+        envelope.requester_peer_id,
+        envelope.target_path,
+        envelope.target_piece_cid,
+        envelope.target_data_set_id,
+        envelope.target_piece_id,
+        envelope.artifact_kind,
+        envelope.file_name,
+        envelope.root_cid,
+        envelope.payload_sha256,
+        envelope.signed_at,
+    ]))
+    .map_err(|err| format!("failed to encode signed mesh request bytes: {err}"))
+}
+
+fn build_signed_mesh_request_json(
+    local_key: &identity::Keypair,
+    live_status: &MeshRuntimeStatus,
+    agent_wallet: &str,
+    user_wallet: &str,
+    device_id: &str,
+    hai_id: &str,
+    action: &str,
+    collection: &str,
+    path: &str,
+    artifact_kind: Option<MeshSharedArtifactKind>,
+    payload_sha256: Option<String>,
+) -> Result<String, String> {
+    let requester_peer_id = live_status
+        .peer_id
+        .clone()
+        .ok_or_else(|| "mesh runtime does not have a live peerId yet".to_string())?;
+    let unsigned = SignedMeshRequestEnvelope {
+        version: 1,
+        kind: "compose.mesh.request.v1".to_string(),
+        action: action.to_string(),
+        collection: collection.to_string(),
+        requester_hai_id: hai_id.to_string(),
+        requester_agent_wallet: agent_wallet.to_string(),
+        requester_user_wallet: user_wallet.to_string(),
+        requester_device_id: device_id.to_string(),
+        requester_peer_id,
+        target_path: path.to_string(),
+        target_piece_cid: None,
+        target_data_set_id: None,
+        target_piece_id: None,
+        artifact_kind: artifact_kind.map(|value| value.as_str().to_string()),
+        file_name: None,
+        root_cid: None,
+        payload_sha256,
+        signed_at: now_ms(),
+        signature: String::new(),
+    };
+    let sign_bytes = signed_mesh_request_bytes(&unsigned)?;
+    let signature = local_key
+        .sign(sign_bytes.as_bytes())
+        .map_err(|err| format!("failed to sign mesh request envelope: {err}"))?;
+    let envelope = SignedMeshRequestEnvelope {
+        signature: hex_encode(&signature),
+        ..unsigned
+    };
+    serde_json::to_string(&envelope)
+        .map_err(|err| format!("failed to encode signed mesh request envelope: {err}"))
+}
+
+fn build_learning_payload_json(request: &MeshPublicationQueueRequest) -> Result<String, String> {
+    let title = truncate_string(request.title.clone().unwrap_or_default(), 160);
+    let summary = truncate_string(request.summary.clone().unwrap_or_default(), 280);
+    let content = request.content.clone().unwrap_or_default().trim().to_string();
+    if title.trim().is_empty() {
+        return Err("mesh learning title is required".to_string());
+    }
+    if summary.trim().is_empty() {
+        return Err("mesh learning summary is required".to_string());
+    }
+    if content.is_empty() {
+        return Err("mesh learning content is required".to_string());
+    }
+
+    serde_json::to_string(&MeshLearningPayload {
+        version: 1,
+        kind: "compose.mesh.learning.v1".to_string(),
+        created_at: now_ms(),
+        title,
+        summary,
+        content,
+    })
+    .map_err(|err| format!("failed to encode mesh learning payload: {err}"))
+}
+
+async fn runtime_error(route: &str, response: reqwest::Response) -> String {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| String::new());
+    if status.as_u16() == 409 {
+        return "a409: inconsistent agent identity".to_string();
+    }
+    if body.trim().is_empty() {
+        format!("{route} failed: HTTP {status}")
+    } else {
+        format!("{route} failed: HTTP {status}: {body}")
+    }
+}
+
+async fn register_hai_via_local_runtime(
+    base_url: &str,
+    auth_token: &str,
+    body: serde_json::Value,
+) -> Result<MeshHaiRuntimeRow, String> {
+    let client = HttpClient::new();
+    let response = client
+        .post(format!("{}/mesh/hai/register", base_url.trim_end_matches('/')))
+        .header(LOCAL_RUNTIME_AUTH_HEADER, auth_token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("failed to call local runtime HAI route: {err}"))?;
+
+    if !response.status().is_success() {
+        return Err(runtime_error("local runtime HAI route", response).await);
+    }
+
+    response
+        .json::<MeshHaiRuntimeRow>()
+        .await
+        .map_err(|err| format!("failed to decode local runtime HAI response: {err}"))
+}
+
 async fn anchor_mesh_state_via_local_runtime(
     base_url: &str,
     auth_token: &str,
@@ -3462,22 +3847,37 @@ async fn anchor_mesh_state_via_local_runtime(
         .map_err(|err| format!("failed to call local runtime Synapse route: {err}"))?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| String::new());
-        return Err(format!(
-            "local runtime Synapse route failed: HTTP {}: {}",
-            status,
-            body
-        ));
+        return Err(runtime_error("local runtime Synapse route", response).await);
     }
 
     response
         .json::<MeshStateAnchorRuntimeResponse>()
         .await
         .map_err(|err| format!("failed to decode local runtime Synapse response: {err}"))
+}
+
+async fn pin_mesh_learning_via_local_runtime(
+    base_url: &str,
+    auth_token: &str,
+    body: serde_json::Value,
+) -> Result<MeshSharedArtifactPinRuntimeResponse, String> {
+    let client = HttpClient::new();
+    let response = client
+        .post(format!("{}/mesh/filecoin/pin", base_url.trim_end_matches('/')))
+        .header(LOCAL_RUNTIME_AUTH_HEADER, auth_token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("failed to call local runtime Filecoin Pin route: {err}"))?;
+
+    if !response.status().is_success() {
+        return Err(runtime_error("local runtime Filecoin Pin route", response).await);
+    }
+
+    response
+        .json::<MeshSharedArtifactPinRuntimeResponse>()
+        .await
+        .map_err(|err| format!("failed to decode local runtime Filecoin Pin response: {err}"))
 }
 
 async fn anchor_mesh_state_from_command(
@@ -3496,15 +3896,29 @@ async fn anchor_mesh_state_from_command(
     }
 
     let snapshot = normalize_mesh_state_snapshot_request(&request, &live_status)?;
-    let mut hai_record = load_or_create_hai_record(
-        app,
-        &snapshot.agent_wallet,
-        &snapshot.user_wallet,
-        &snapshot.device_id,
-    )?;
+    let runtime_status = runtime_host::current_runtime_host_status(runtime_host)?;
+    if !runtime_status.running {
+        return Err("local runtime host is not running".to_string());
+    }
+    let auth_token = current_runtime_host_auth_token(runtime_host)?;
+    let hai_row = register_hai_via_local_runtime(
+        &runtime_status.base_url,
+        &auth_token,
+        serde_json::json!({
+            "agentWallet": snapshot.agent_wallet,
+            "userAddress": snapshot.user_wallet,
+            "deviceId": snapshot.device_id,
+        }),
+    )
+    .await?;
 
     let (canonical_snapshot_json, state_root_hash, envelope_json) =
-        build_signed_state_envelope(&load_or_create_mesh_identity(app)?, &snapshot, &hai_record)?;
+        build_signed_state_envelope(
+            &load_or_create_mesh_identity(app)?,
+            &snapshot,
+            &hai_row.hai_id,
+            hai_row.next_update_number,
+        )?;
 
     if same_state_root_hash(request.previous_state_root_hash.as_deref(), &state_root_hash)
         && request
@@ -3514,44 +3928,42 @@ async fn anchor_mesh_state_from_command(
             .unwrap_or(false)
         && request.previous_pdp_anchored_at.unwrap_or(0) > 0
     {
-        let last_update_number = hai_record
+        let last_update_number = hai_row
             .last_update_number
-            .unwrap_or_else(|| hai_record.next_update_number.saturating_sub(1));
-        let last_path = hai_record
+            .unwrap_or_else(|| hai_row.next_update_number.saturating_sub(1));
+        let last_path = hai_row
             .last_path
             .clone()
-            .unwrap_or_else(|| compose_hai_path(&hai_record.hai_id, last_update_number));
+            .unwrap_or_else(|| compose_hai_path(&hai_row.hai_id, last_update_number));
         let last_piece_cid = request
             .previous_pdp_piece_cid
             .clone()
-            .or_else(|| hai_record.last_piece_cid.clone())
+            .or_else(|| hai_row.last_piece_cid.clone())
             .ok_or_else(|| "previous PDP piece CID is required for a skipped anchor".to_string())?;
         let last_anchored_at = request
             .previous_pdp_anchored_at
-            .or(hai_record.last_anchored_at)
+            .or(hai_row.last_anchored_at)
             .ok_or_else(|| "previous PDP anchor timestamp is required for a skipped anchor".to_string())?;
 
         return Ok(MeshStateAnchorRuntimeResponse {
-            hai_id: hai_record.hai_id.clone(),
+            hai_id: hai_row.hai_id.clone(),
             update_number: last_update_number,
             path: last_path,
+            file_name: format!("{}.json", compose_hai_path(&hai_row.hai_id, last_update_number)),
+            latest_alias: "manifest:latest".to_string(),
             state_root_hash,
             pdp_piece_cid: last_piece_cid,
             pdp_anchored_at: last_anchored_at,
             payload_size: envelope_json.len(),
             provider_id: String::new(),
             data_set_id: None,
+            piece_id: None,
             retrieval_url: None,
-            payer_address: hai_record.payer_address.clone().unwrap_or_default(),
-            session_key_expires_at: hai_record.session_key_expires_at.unwrap_or(0),
+            payer_address: hai_row.payer_address.clone().unwrap_or_default(),
+            session_key_expires_at: hai_row.session_key_expires_at.unwrap_or(0),
+            source: "local-skip".to_string(),
         });
     }
-
-    let runtime_status = runtime_host::current_runtime_host_status(runtime_host)?;
-    if !runtime_status.running {
-        return Err("local runtime host is not running".to_string());
-    }
-    let auth_token = current_runtime_host_auth_token(runtime_host)?;
 
     let response = anchor_mesh_state_via_local_runtime(
         &runtime_status.base_url,
@@ -3564,33 +3976,18 @@ async fn anchor_mesh_state_from_command(
             "deviceId": snapshot.device_id,
             "chainId": snapshot.runtime.chain_id,
             "targetSynapseExpiry": request.target_synapse_expiry,
-            "haiId": hai_record.hai_id,
-            "updateNumber": hai_record.next_update_number,
-            "path": compose_hai_path(&hai_record.hai_id, hai_record.next_update_number),
+            "haiId": hai_row.hai_id,
+            "updateNumber": hai_row.next_update_number,
+            "path": compose_hai_path(&hai_row.hai_id, hai_row.next_update_number),
             "canonicalSnapshotJson": canonical_snapshot_json,
             "stateRootHash": state_root_hash,
             "envelopeJson": envelope_json,
-            "sessionKeyPrivateKey": hai_record.synapse_session_private_key,
-            "payerAddress": hai_record.payer_address,
-            "sessionKeyExpiresAt": hai_record.session_key_expires_at,
+            "sessionKeyPrivateKey": hai_row.synapse_session_private_key,
+            "payerAddress": hai_row.payer_address,
+            "sessionKeyExpiresAt": hai_row.session_key_expires_at,
         }),
     )
     .await?;
-
-    hai_record.next_update_number = response.update_number.saturating_add(1);
-    hai_record.last_update_number = Some(response.update_number);
-    hai_record.last_path = Some(response.path.clone());
-    hai_record.last_state_root_hash = Some(response.state_root_hash.clone());
-    hai_record.last_piece_cid = Some(response.pdp_piece_cid.clone());
-    hai_record.last_anchored_at = Some(response.pdp_anchored_at);
-    if !response.payer_address.trim().is_empty() {
-        hai_record.payer_address = Some(response.payer_address.clone());
-    }
-    if response.session_key_expires_at > 0 {
-        hai_record.session_key_expires_at = Some(response.session_key_expires_at);
-    }
-    hai_record.updated_at = now_ms();
-    write_hai_record(app, &hai_record)?;
 
     Ok(response)
 }
@@ -3598,8 +3995,8 @@ async fn anchor_mesh_state_from_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        compose_hai_path, deterministic_hai_candidate, normalize_state_root_hash_for_compare,
-        same_state_root_hash,
+        compose_hai_path, knowledge_hai_path, normalize_state_root_hash_for_compare,
+        same_state_root_hash, visible_hai_id, MeshSharedArtifactKind,
     };
 
     #[test]
@@ -3628,18 +4025,36 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_hai_candidate_is_unprefixed_and_stable() {
-        let seed = "0x1111111111111111111111111111111111111111:0x2222222222222222222222222222222222222222:device-12345678";
-        let hai_id = deterministic_hai_candidate(seed);
+    fn visible_hai_id_is_unprefixed_and_stable() {
+        let hai_id = visible_hai_id(
+            "0x1111111111111111111111111111111111111111",
+            "0x2222222222222222222222222222222222222222",
+            "device-12345678",
+        );
 
         assert_eq!(hai_id.len(), 6);
         assert!(hai_id.chars().all(|char| char.is_ascii_hexdigit()));
-        assert_eq!(hai_id, deterministic_hai_candidate(seed));
+        assert_eq!(
+            hai_id,
+            visible_hai_id(
+                "0x1111111111111111111111111111111111111111",
+                "0x2222222222222222222222222222222222222222",
+                "device-12345678",
+            )
+        );
     }
 
     #[test]
     fn compose_hai_path_uses_plain_hai_value() {
         assert_eq!(compose_hai_path("abc123", 7), "compose-abc123-#7");
+    }
+
+    #[test]
+    fn knowledge_hai_path_uses_learning_shape() {
+        assert_eq!(
+            knowledge_hai_path("abc123", MeshSharedArtifactKind::Learning, 7),
+            "knowledge-abc123-learning-#7"
+        );
     }
 }
 
@@ -3691,6 +4106,101 @@ fn write_mesh_publication_result(
     fs::write(file, serialized).map_err(|err| format!("failed to write mesh publication result: {err}"))
 }
 
+async fn process_mesh_learning_request(
+    app: &tauri::AppHandle,
+    runtime_host: &LocalRuntimeHostState,
+    live_status: &MeshRuntimeStatus,
+    request: &MeshPublicationQueueRequest,
+) -> Result<MeshPublicationQueueResult, String> {
+    let requested_wallet = normalize_wallet(&request.agent_wallet)
+        .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
+    if !status_has_published_agent(live_status, requested_wallet.as_str()) {
+        return Err("mesh publication request agentWallet does not match the running mesh agent".to_string());
+    }
+
+    let ctx = load_mesh_pub_ctx(app, &requested_wallet)?;
+    let runtime_status = runtime_host::current_runtime_host_status(runtime_host)?;
+    if !runtime_status.running {
+        return Err("local runtime host is not running".to_string());
+    }
+    let auth_token = current_runtime_host_auth_token(runtime_host)?;
+    let hai_row = register_hai_via_local_runtime(
+        &runtime_status.base_url,
+        &auth_token,
+        serde_json::json!({
+            "agentWallet": requested_wallet,
+            "userAddress": ctx.user_wallet,
+            "deviceId": ctx.device_id,
+        }),
+    )
+    .await?;
+
+    let payload_json = build_learning_payload_json(request)?;
+    let artifact_kind = MeshSharedArtifactKind::Learning;
+    let artifact_number = hai_row.next_learning_number;
+    let path = knowledge_hai_path(&hai_row.hai_id, artifact_kind.clone(), artifact_number);
+    let signed_request_json = build_signed_mesh_request_json(
+        &load_or_create_mesh_identity(app)?,
+        live_status,
+        &requested_wallet,
+        &ctx.user_wallet,
+        &ctx.device_id,
+        &hai_row.hai_id,
+        "knowledge.pin.v1",
+        "knowledge",
+        &path,
+        Some(artifact_kind.clone()),
+        Some(format!("0x{}", sha256_hex_string(&payload_json))),
+    )?;
+
+    let response = pin_mesh_learning_via_local_runtime(
+        &runtime_status.base_url,
+        &auth_token,
+        serde_json::json!({
+            "apiUrl": ctx.api_url,
+            "composeKeyToken": ctx.compose_key_token,
+            "userAddress": ctx.user_wallet,
+            "agentWallet": requested_wallet,
+            "deviceId": ctx.device_id,
+            "chainId": ctx.chain_id,
+            "targetSynapseExpiry": ctx.target_synapse_expiry,
+            "sessionKeyPrivateKey": hai_row.synapse_session_private_key,
+            "payerAddress": hai_row.payer_address,
+            "sessionKeyExpiresAt": hai_row.session_key_expires_at,
+            "signedRequestJson": signed_request_json,
+            "haiId": hai_row.hai_id,
+            "artifactKind": artifact_kind,
+            "artifactNumber": artifact_number,
+            "path": path,
+            "payloadJson": payload_json,
+            "title": request.title.clone(),
+            "summary": request.summary.clone(),
+            "accessPriceUsdc": request.access_price_usdc.clone(),
+        }),
+    )
+    .await?;
+
+    Ok(MeshPublicationQueueResult {
+        request_id: request.request_id.clone(),
+        kind: Some(MeshPublicationQueueKind::LearningPin),
+        success: true,
+        error: None,
+        hai_id: Some(response.hai_id),
+        update_number: None,
+        artifact_kind: Some(response.artifact_kind),
+        artifact_number: Some(response.artifact_number),
+        path: Some(response.path),
+        latest_alias: Some(response.latest_alias),
+        root_cid: Some(response.root_cid),
+        piece_cid: Some(response.piece_cid),
+        collection: Some(response.collection),
+        state_root_hash: None,
+        pdp_piece_cid: None,
+        pdp_anchored_at: None,
+        manifest: None,
+    })
+}
+
 async fn process_mesh_publication_request(
     app: &tauri::AppHandle,
     request: MeshPublicationQueueRequest,
@@ -3708,35 +4218,64 @@ async fn process_mesh_publication_request(
             return Err("mesh runtime is not running".to_string());
         }
 
-        let requested_wallet = normalize_wallet(&request.agent_wallet)
-            .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
-        if live_status.agent_wallet.as_deref() != Some(requested_wallet.as_str()) {
-            return Err("mesh publication request agentWallet does not match the running mesh agent".to_string());
+        match request.kind.clone() {
+            MeshPublicationQueueKind::ManifestPublish => {
+                let requested_wallet = normalize_wallet(&request.agent_wallet)
+                    .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
+                if !status_has_published_agent(&live_status, requested_wallet.as_str()) {
+                    return Err("mesh publication request agentWallet does not match the running mesh agent".to_string());
+                }
+
+                let (mut manifest, anchor_request) =
+                    build_current_mesh_publication(app, &requested_wallet, &live_status)?;
+                let anchor = anchor_mesh_state_from_command(
+                    app,
+                    mesh_state.inner(),
+                    runtime_host.inner(),
+                    anchor_request,
+                )
+                .await?;
+
+                manifest.state_root_hash =
+                    Some(anchor.state_root_hash.clone().trim_start_matches("0x").to_string());
+                manifest.pdp_piece_cid = Some(anchor.pdp_piece_cid.clone());
+                manifest.pdp_anchored_at = Some(anchor.pdp_anchored_at);
+
+                let published =
+                    publish_mesh_manifest_from_command(app, mesh_state.inner(), manifest).await?;
+                persist_manifest_update(app, &published)?;
+                let _ = app.emit("mesh-manifest-updated", &published);
+
+                Ok(MeshPublicationQueueResult {
+                    request_id: request.request_id.clone(),
+                    kind: Some(MeshPublicationQueueKind::ManifestPublish),
+                    success: true,
+                    error: None,
+                    hai_id: Some(anchor.hai_id),
+                    update_number: Some(anchor.update_number),
+                    artifact_kind: None,
+                    artifact_number: None,
+                    path: Some(anchor.path),
+                    latest_alias: Some(anchor.latest_alias),
+                    root_cid: None,
+                    piece_cid: None,
+                    collection: None,
+                    state_root_hash: Some(anchor.state_root_hash),
+                    pdp_piece_cid: Some(anchor.pdp_piece_cid),
+                    pdp_anchored_at: Some(anchor.pdp_anchored_at),
+                    manifest: Some(published),
+                })
+            }
+            MeshPublicationQueueKind::LearningPin => {
+                process_mesh_learning_request(
+                    app,
+                    runtime_host.inner(),
+                    &live_status,
+                    &request,
+                )
+                .await
+            }
         }
-
-        let (mut manifest, anchor_request) = build_current_mesh_publication(app, &requested_wallet, &live_status)?;
-        let anchor = anchor_mesh_state_from_command(app, mesh_state.inner(), runtime_host.inner(), anchor_request).await?;
-
-        manifest.state_root_hash = Some(anchor.state_root_hash.clone().trim_start_matches("0x").to_string());
-        manifest.pdp_piece_cid = Some(anchor.pdp_piece_cid.clone());
-        manifest.pdp_anchored_at = Some(anchor.pdp_anchored_at);
-
-        let published = publish_mesh_manifest_from_command(app, mesh_state.inner(), manifest).await?;
-        persist_manifest_update(app, &published)?;
-        let _ = app.emit("mesh-manifest-updated", &published);
-
-        Ok(MeshPublicationQueueResult {
-            request_id: request.request_id.clone(),
-            success: true,
-            error: None,
-            hai_id: Some(anchor.hai_id),
-            update_number: Some(anchor.update_number),
-            path: Some(anchor.path),
-            state_root_hash: Some(anchor.state_root_hash),
-            pdp_piece_cid: Some(anchor.pdp_piece_cid),
-            pdp_anchored_at: Some(anchor.pdp_anchored_at),
-            manifest: Some(published),
-        })
     }
     .await;
 
@@ -3744,11 +4283,18 @@ async fn process_mesh_publication_request(
         Ok(result) => result,
         Err(error) => MeshPublicationQueueResult {
             request_id: request.request_id,
+            kind: Some(request.kind),
             success: false,
             error: Some(error),
             hai_id: None,
             update_number: None,
+            artifact_kind: None,
+            artifact_number: None,
             path: None,
+            latest_alias: None,
+            root_cid: None,
+            piece_cid: None,
+            collection: None,
             state_root_hash: None,
             pdp_piece_cid: None,
             pdp_anchored_at: None,
@@ -3789,11 +4335,18 @@ async fn process_pending_mesh_publication_requests(app: &tauri::AppHandle) -> Re
                     app,
                     &MeshPublicationQueueResult {
                         request_id: fallback_id,
+                        kind: None,
                         success: false,
                         error: Some(format!("Invalid mesh publication request: {error}")),
                         hai_id: None,
                         update_number: None,
+                        artifact_kind: None,
+                        artifact_number: None,
                         path: None,
+                        latest_alias: None,
+                        root_cid: None,
+                        piece_cid: None,
+                        collection: None,
                         state_root_hash: None,
                         pdp_piece_cid: None,
                         pdp_anchored_at: None,
@@ -3949,6 +4502,7 @@ fn main() {
         .manage(LocalRuntimeHostState::default())
         .invoke_handler(tauri::generate_handler![
             get_local_paths,
+            set_local_base_dir,
             load_local_state,
             save_local_state,
             ensure_local_dir,
@@ -3974,6 +4528,8 @@ fn main() {
             daemon_validate_permission_ticket,
             daemon_check_permission,
             daemon_query_os_permissions,
+            daemon_open_system_settings,
+            daemon_request_os_permission,
             daemon_install_launch_agent,
             daemon_launch_agent_status,
             daemon_runtime_host_status,
