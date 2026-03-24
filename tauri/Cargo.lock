@@ -553,6 +553,7 @@ name = "compose-mesh"
 version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
+ "cc",
  "futures",
  "libp2p",
  "rand 0.8.5",

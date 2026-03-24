@@ -22,15 +22,15 @@
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2.10.0",
-    "lucide-react": "^0.577.0",
-    "maplibre-gl": "^5.20.2",
+    "lucide-react": "^1.1.0",
+    "maplibre-gl": "^5.21.0",
     "prop-types": "^15.8.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-map-gl": "^8.1.0",
     "topojson-client": "^3.1.0",
     "world-atlas": "^2.0.2",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1",
@@ -39,10 +39,10 @@
     "@types/react-dom": "^19.2.3",
     "@types/topojson-client": "^3.1.5",
     "@vitejs/plugin-react": "^6.0.1",
-    "@vitest/coverage-v8": "^4.1.0",
-    "jsdom": "^29.0.0",
-    "typescript": "^5.9.3",
-    "vite": "^8.0.0",
-    "vitest": "^4.1.0"
+    "@vitest/coverage-v8": "^4.1.1",
+    "jsdom": "^29.0.1",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.2",
+    "vitest": "^4.1.1"
   }
 }
