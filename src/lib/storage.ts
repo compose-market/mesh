@@ -6,6 +6,7 @@ import type {
   AgentPermissionPolicy,
   MeshManifest,
   AgentTaskReport,
+  InstalledSkill,
   LocalPaths,
   LocalRuntimeState,
   InstalledAgent,
@@ -38,11 +39,15 @@ const defaultPermissions: AgentPermissionPolicy = {
 const defaultOsPermissions: OsPermissionSnapshot = {
   camera: "unknown",
   microphone: "unknown",
+  screen: "unknown",
+  fullDiskAccess: "unknown",
+  accessibility: "unknown",
 };
 
 const defaultAgentNetworkState: AgentNetworkState = {
   enabled: false,
   status: "dormant",
+  haiId: null,
   peerId: null,
   listenMultiaddrs: [],
   peersDiscovered: 0,
@@ -95,8 +100,12 @@ function normalizeMeshPeerSignal(value: Partial<MeshPeerSignal> | null | undefin
     : null;
 
   return {
+    id: typeof value.id === "string" && value.id.trim().length > 0
+      ? value.id.trim()
+      : `${value.peerId.trim()}:${typeof value.agentWallet === "string" ? value.agentWallet.trim().toLowerCase() : "unknown"}:${typeof value.haiId === "string" ? value.haiId.trim() : ""}`,
     peerId: value.peerId.trim(),
     agentWallet: typeof value.agentWallet === "string" && value.agentWallet.trim().length > 0 ? value.agentWallet.trim().toLowerCase() : null,
+    haiId: typeof value.haiId === "string" && value.haiId.trim().length > 0 ? value.haiId.trim() : null,
     deviceId: typeof value.deviceId === "string" && value.deviceId.trim().length > 0 ? value.deviceId.trim() : null,
     lastSeenAt: Number.isFinite(value.lastSeenAt) ? Number(value.lastSeenAt) : Date.now(),
     stale: Boolean(value.stale),
@@ -266,6 +275,7 @@ function normalizeNetworkState(value: Partial<AgentNetworkState> | null | undefi
   return {
     enabled: Boolean(value?.enabled ?? defaultAgentNetworkState.enabled),
     status: normalizedStatus,
+    haiId: typeof value?.haiId === "string" && value.haiId.trim().length > 0 ? value.haiId.trim() : null,
     peerId: typeof value?.peerId === "string" && value.peerId.trim().length > 0 ? value.peerId.trim() : null,
     listenMultiaddrs: Array.isArray(value?.listenMultiaddrs)
       ? value.listenMultiaddrs.filter((addr): addr is string => typeof addr === "string" && addr.trim().length > 0)
@@ -282,6 +292,46 @@ function normalizeNetworkState(value: Partial<AgentNetworkState> | null | undefi
       ? value.interactions.map((item) => normalizeMeshInteraction(item)).filter((item): item is AgentMeshInteraction => item !== null).slice(0, 64)
       : [],
     manifest: normalizeMeshManifest(value?.manifest),
+  };
+}
+
+function normalizeInstalledSkill(skill: Partial<InstalledSkill> | null | undefined): InstalledSkill | null {
+  if (!skill || typeof skill.id !== "string" || skill.id.trim().length === 0) {
+    return null;
+  }
+
+  const id = skill.id.trim();
+  const relativePath = typeof skill.relativePath === "string" && skill.relativePath.trim().length > 0
+    ? skill.relativePath.trim().replace(/^\/+/, "")
+    : `skills/${id.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+
+  return {
+    id,
+    name: typeof skill.name === "string" && skill.name.trim().length > 0 ? skill.name.trim() : id,
+    fullName: typeof skill.fullName === "string" && skill.fullName.trim().length > 0 ? skill.fullName.trim() : id,
+    description: typeof skill.description === "string" ? skill.description : "",
+    htmlUrl: typeof skill.htmlUrl === "string" ? skill.htmlUrl : "",
+    source: skill.source && typeof skill.source === "object"
+      ? skill.source
+      : {
+        id: "built-in",
+        name: "Built-in",
+        description: "Built-in local skills",
+        catalogUrl: "https://compose.market",
+      },
+    installedAt: Number.isFinite(skill.installedAt) ? Number(skill.installedAt) : Date.now(),
+    enabled: Boolean(skill.enabled),
+    localPath: typeof skill.localPath === "string" && skill.localPath.trim().length > 0 ? skill.localPath.trim() : relativePath,
+    relativePath,
+    installRef: typeof skill.installRef === "string" ? skill.installRef : "",
+    installSha: typeof skill.installSha === "string" && skill.installSha.trim().length > 0 ? skill.installSha.trim() : undefined,
+    requirements: skill.requirements || {
+      bins: [],
+      env: [],
+      os: [],
+      missing: [],
+      eligible: true,
+    },
   };
 }
 
@@ -332,6 +382,7 @@ const defaultState: LocalRuntimeState = {
   settings: {
     apiUrl: DEFAULT_API_URL,
     runtimeUrl: DEFAULT_API_URL,
+    meshEnabled: false,
   },
   identity: null,
   linkedDeployment: null,
@@ -370,7 +421,7 @@ function normalizeLinkedDeploymentIntent(value: Partial<LinkedDeploymentIntent> 
     agentWallet: value.agentWallet.trim().toLowerCase(),
     agentCardCid,
     chainId: Number.isFinite(value.chainId) ? Number(value.chainId) : 0,
-    source: "local-link",
+    source: value.source === "signed-install" ? "signed-install" : "local-link",
     receivedAt: Number.isFinite(value.receivedAt) ? Number(value.receivedAt) : Date.now(),
   };
 }
@@ -394,6 +445,7 @@ function normalizeState(state: Partial<LocalRuntimeState> | null | undefined): L
     settings: {
       apiUrl: state.settings?.apiUrl || base.settings.apiUrl,
       runtimeUrl: state.settings?.runtimeUrl || base.settings.runtimeUrl,
+      meshEnabled: Boolean(state.settings?.meshEnabled ?? base.settings.meshEnabled),
     },
     identity: state.identity || null,
     linkedDeployment: normalizeLinkedDeploymentIntent(state.linkedDeployment),
@@ -401,9 +453,16 @@ function normalizeState(state: Partial<LocalRuntimeState> | null | undefined): L
     osPermissions: {
       camera: state.osPermissions?.camera || base.osPermissions.camera,
       microphone: state.osPermissions?.microphone || base.osPermissions.microphone,
+      screen: state.osPermissions?.screen || base.osPermissions.screen,
+      fullDiskAccess: state.osPermissions?.fullDiskAccess || base.osPermissions.fullDiskAccess,
+      accessibility: state.osPermissions?.accessibility || base.osPermissions.accessibility,
     },
     installedAgents: normalizedAgents,
-    installedSkills: Array.isArray(state.installedSkills) ? state.installedSkills : [],
+    installedSkills: Array.isArray(state.installedSkills)
+      ? state.installedSkills
+        .map((skill) => normalizeInstalledSkill(skill))
+        .filter((skill): skill is InstalledSkill => skill !== null)
+      : [],
   };
 }
 
@@ -478,6 +537,10 @@ export async function getLocalPaths(): Promise<LocalPaths | null> {
     console.error("[storage] Failed to load local paths", error);
     return null;
   }
+}
+
+export async function setLocalBaseDir(newBaseDir: string): Promise<LocalPaths> {
+  return invoke<LocalPaths>("set_local_base_dir", { newBaseDir });
 }
 
 export async function ensureManagedDir(relativePath: string): Promise<string | null> {
@@ -601,6 +664,10 @@ export async function ensureAgentWorkspace(agent: InstalledAgent): Promise<void>
 
 export async function ensureSkillsRoot(): Promise<void> {
   await ensureManagedDir(getGlobalSkillsRelativePath());
+}
+
+export async function syncAgentLocalFiles(agent: InstalledAgent): Promise<void> {
+  await ensureAgentWorkspace(agent);
 }
 
 export function getDefaultPermissionPolicy(): AgentPermissionPolicy {
