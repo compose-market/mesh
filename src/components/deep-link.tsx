@@ -113,17 +113,10 @@ export function DeepLinkHandler({
         apiUrl,
         token: parsedToken,
         deviceId,
-        connectedUserAddress: activeWallet || undefined,
       });
       // Ignore stale redemption responses when multiple deep links are processed.
       if (sequence !== redeemSequenceRef.current) {
         return;
-      }
-      if (
-        activeWallet
-        && activeWallet.trim().toLowerCase() !== context.userAddress.trim().toLowerCase()
-      ) {
-        throw new Error("Deep-link userAddress does not match the connected Mesh wallet");
       }
 
       onContextRedeemedRef.current(context);
@@ -148,7 +141,7 @@ export function DeepLinkHandler({
       const msg = error instanceof Error ? error.message : "Failed to redeem local link token";
       onErrorRef.current(msg);
     }
-  }, [activeWallet, connectSessionStream, deviceId, apiUrl]);
+  }, [connectSessionStream, deviceId, apiUrl]);
 
   useEffect(() => {
     let dispose: (() => void) | null = null;

@@ -18,7 +18,7 @@ Offer:
 Use these Compose surfaces:
 - Telegram link: `/api/backpack/telegram/link`
 - Telegram status: `/api/backpack/telegram/status`
-- Backpack toolkit connect: `/api/backpack/connect`
-- WhatsApp socket: `ws://localhost:<PORT>/whatsapp?userId=<userAddress>`
+- Composio toolkit connect: `/api/backpack/connect` with the provider toolkit slug, including `DISCORD`
+- WhatsApp socket: `ws://localhost:<PORT>/whatsapp?userAddress=<userAddress>`
 
 Do not assume any channel is already connected.

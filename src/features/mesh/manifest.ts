@@ -25,7 +25,7 @@ function dedupeSorted(values: string[]): string[] {
 function manifestComparablePayload(manifest: MeshManifest): string {
   return JSON.stringify({
     agentWallet: manifest.agentWallet,
-    userWallet: manifest.userWallet,
+    userAddress: manifest.userAddress,
     deviceId: manifest.deviceId,
     chainId: manifest.chainId,
     stateRootHash: manifest.stateRootHash,
@@ -51,7 +51,7 @@ function manifestComparablePayload(manifest: MeshManifest): string {
 export function canonicalManifestPayload(manifest: MeshManifest): string {
   return JSON.stringify({
     agentWallet: manifest.agentWallet,
-    userWallet: manifest.userWallet,
+    userAddress: manifest.userAddress,
     deviceId: manifest.deviceId,
     peerId: manifest.peerId,
     chainId: manifest.chainId,
@@ -124,7 +124,7 @@ export function buildManifestPayload(input: BuildManifestInput): MeshManifest {
 
   const draft: MeshManifest = {
     agentWallet: agent.agentWallet,
-    userWallet: input.userAddress.toLowerCase(),
+    userAddress: input.userAddress.toLowerCase(),
     deviceId: input.deviceId,
     peerId: "",
     chainId: input.chainId,

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listBuiltinBootstrapFiles, listBuiltinSkillFiles } from "./skills";
 import type {
   AgentMeshInteraction,
   AgentNetworkState,
@@ -133,12 +134,12 @@ function normalizeMeshManifest(value: Partial<MeshManifest> | null | undefined):
   }
 
   const agentWallet = typeof value.agentWallet === "string" ? value.agentWallet.trim().toLowerCase() : "";
-  const userWallet = typeof value.userWallet === "string" ? value.userWallet.trim().toLowerCase() : "";
+  const userAddress = typeof value.userAddress === "string" ? value.userAddress.trim().toLowerCase() : "";
   const deviceId = typeof value.deviceId === "string" ? value.deviceId.trim() : "";
   const peerId = typeof value.peerId === "string" ? value.peerId.trim() : "";
   const name = typeof value.name === "string" ? value.name.trim() : "";
 
-  if (!agentWallet || !userWallet || !deviceId || !name) {
+  if (!agentWallet || !userAddress || !deviceId || !name) {
     return null;
   }
 
@@ -150,7 +151,7 @@ function normalizeMeshManifest(value: Partial<MeshManifest> | null | undefined):
 
   return {
     agentWallet,
-    userWallet,
+    userAddress,
     deviceId,
     peerId,
     chainId: Number.isFinite(value.chainId) ? Math.max(1, Number(value.chainId)) : 1,
@@ -351,6 +352,12 @@ function normalizeInstalledAgent(
     || (agent as { permissionPolicy?: Partial<AgentPermissionPolicy> }).permissionPolicy
     || permissionDefaults,
   );
+  const normalizedDesiredPermissions = normalizePermissionPolicy(
+    agent.desiredPermissions as Partial<AgentPermissionPolicy> | undefined
+    || agent.permissions as Partial<AgentPermissionPolicy> | undefined
+    || (agent as { permissionPolicy?: Partial<AgentPermissionPolicy> }).permissionPolicy
+    || permissionDefaults,
+  );
   const normalizedNetwork = normalizeNetworkState(agent.network as Partial<AgentNetworkState> | undefined);
 
   const lock = (agent.lock || {}) as Partial<AgentDnaLock>;
@@ -367,6 +374,7 @@ function normalizeInstalledAgent(
       chainId: Number.isFinite(lock.chainId) ? Number(lock.chainId) : 0,
       dnaHash: typeof lock.dnaHash === "string" ? lock.dnaHash : "",
     },
+    desiredPermissions: normalizedDesiredPermissions,
     permissions: normalizedPermissions,
     network: normalizedNetwork,
     skillStates: typeof (agent as InstalledAgent).skillStates === "object" && (agent as InstalledAgent).skillStates !== null
@@ -613,11 +621,11 @@ export async function ensureAgentWorkspace(agent: InstalledAgent): Promise<void>
   await ensureManagedDir(skillsDir);
   await ensureManagedDir(generatedSkillsDir);
 
+  const bootstrapFiles = new Map(
+    listBuiltinBootstrapFiles().map((file) => [file.name, file.content]),
+  );
+
   const files: Array<{ path: string; content: string }> = [
-    {
-      path: getAgentHeartbeatRelativePath(agent.agentWallet),
-      content: "# HEARTBEAT\n\nKeep local checks lightweight. Reply HEARTBEAT_OK when no action is needed.\n",
-    },
     {
       path: `${workspaceDir}/DNA.md`,
       content: [
@@ -634,23 +642,35 @@ export async function ensureAgentWorkspace(agent: InstalledAgent): Promise<void>
     },
     {
       path: `${workspaceDir}/SOUL.md`,
-      content: "# SOUL\n\nMutable behavior and persona notes for this local deployment.\n",
+      content: bootstrapFiles.get("SOUL.md") || "# SOUL\n",
     },
     {
       path: `${workspaceDir}/AGENTS.md`,
-      content: "# AGENTS\n\nPer-agent local operating instructions.\n",
+      content: bootstrapFiles.get("AGENTS.md") || "# AGENTS\n",
     },
     {
       path: `${workspaceDir}/TOOLS.md`,
-      content: "# TOOLS\n\nMCP/GOAT identities are immutable from DNA.md.\n",
+      content: bootstrapFiles.get("TOOLS.md") || "# TOOLS\n",
     },
     {
       path: `${workspaceDir}/IDENTITY.md`,
-      content: `# IDENTITY\n\nagentWallet: ${agent.agentWallet}\n`,
+      content: [
+        bootstrapFiles.get("IDENTITY.md") || "# IDENTITY",
+        "",
+        `agentWallet: ${agent.agentWallet}`,
+        `agentCardCid: ${agent.lock.agentCardCid}`,
+        `modelId: ${agent.lock.modelId}`,
+        `chainId: ${agent.lock.chainId}`,
+        "",
+      ].join("\n"),
     },
     {
       path: `${workspaceDir}/USER.md`,
-      content: "# USER\n\nLocal user preferences and instructions.\n",
+      content: bootstrapFiles.get("USER.md") || "# USER\n",
+    },
+    {
+      path: getAgentHeartbeatRelativePath(agent.agentWallet),
+      content: bootstrapFiles.get("HEARTBEAT.md") || "# HEARTBEAT\n",
     },
   ];
 
@@ -664,6 +684,23 @@ export async function ensureAgentWorkspace(agent: InstalledAgent): Promise<void>
 
 export async function ensureSkillsRoot(): Promise<void> {
   await ensureManagedDir(getGlobalSkillsRelativePath());
+}
+
+export async function ensureBuiltinSkillsInstalled(): Promise<void> {
+  await ensureSkillsRoot();
+
+  for (const file of listBuiltinSkillFiles()) {
+    const parts = file.relativePath.split("/").filter(Boolean);
+    const parent = parts.slice(0, -1).join("/");
+    if (parent) {
+      await ensureManagedDir(parent);
+    }
+
+    const existing = await readManagedFile(file.relativePath);
+    if (existing === null) {
+      await writeManagedFile(file.relativePath, file.content);
+    }
+  }
 }
 
 export async function syncAgentLocalFiles(agent: InstalledAgent): Promise<void> {

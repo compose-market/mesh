@@ -11,8 +11,6 @@ import {
   ShellNotice,
   ShellPageHeader,
   ShellPanel,
-  ShellStat,
-  ShellStatGrid,
   ShellTab,
   ShellTabStrip,
 } from "@compose-market/theme/shell";
@@ -35,9 +33,8 @@ import {
   resolveMeshBootstrap,
   type MeshBootstrapResolution,
 } from "./features/mesh";
-import { callAgent, getActiveSessionStatus } from "./lib/api";
+import { getActiveSessionStatus } from "./lib/api";
 import { daemonGetAgentStatus, mergeDaemonStatusIntoInstalledAgent } from "./lib/daemon";
-import { HeartbeatService } from "./lib/heartbeat";
 import {
   clearLocalConnectionState,
   createLocalWalletDisplay,
@@ -47,9 +44,11 @@ import {
 import {
   canAgentUseMesh,
   formatOsPermissionStatus,
+  openSystemPermissionSettings,
   reconcileStateWithOsPermissions,
   queryOsPermissions,
-  requestOrOpenMissingGlobalPermission,
+  requestOsPermission,
+  type OsPermissionKey,
 } from "./lib/permissions";
 
 import {
@@ -61,11 +60,11 @@ import {
   setLocalUpdatePhase,
 } from "./lib/updater";
 import {
+  ensureBuiltinSkillsInstalled,
   ensureSkillsRoot,
   getLocalPaths,
   setLocalBaseDir,
   loadRuntimeState,
-  permissionPolicyToGrantedList,
   saveRuntimeState,
   syncAgentLocalFiles,
 } from "./lib/storage";
@@ -147,18 +146,18 @@ function applyLocalSessionUpdate(
     return current;
   }
 
-    const nextIdentity = {
-      ...current.identity,
+  const nextIdentity = {
+    ...current.identity,
     expiresAt: update.expiresAt ?? 0,
     budget: update.budget ?? "0",
     sessionId: update.sessionId || "",
     composeKeyId: update.sessionId || "",
     duration: update.duration ?? 0,
-      composeKeyToken: !update.active
+    composeKeyToken: !update.active
+      ? ""
+      : update.sessionId && update.sessionId !== current.identity.composeKeyId
         ? ""
-        : update.sessionId && update.sessionId !== current.identity.composeKeyId
-          ? ""
-          : current.identity.composeKeyToken,
+        : current.identity.composeKeyToken,
   };
 
   return {
@@ -234,7 +233,6 @@ async function syncInstalledAgentsWithDaemon(state: LocalRuntimeState): Promise<
 export default function App() {
   const [state, setState] = useState<LocalRuntimeState | null>(null);
   const stateRef = useRef<LocalRuntimeState | null>(null);
-  const heartbeatServicesRef = useRef<Map<string, HeartbeatService>>(new Map());
   const [activePage, setActivePage] = useState<BasePage>("agents");
   const [meshMounted, setMeshMounted] = useState(false);
   const [session, setSession] = useState<SessionState>({ ...defaultSessionState });
@@ -291,6 +289,7 @@ export default function App() {
       const hydratedState = await syncInstalledAgentsWithDaemon(reconcileStateWithOsPermissions(loaded, osPermissions))
         .catch(() => reconcileStateWithOsPermissions(loaded, osPermissions));
       await ensureSkillsRoot();
+      await ensureBuiltinSkillsInstalled();
       const resolvedPaths = await getLocalPaths();
       setPaths(resolvedPaths);
       await Promise.all(hydratedState.installedAgents.map((agent) => syncAgentLocalFiles(agent)));
@@ -378,125 +377,6 @@ export default function App() {
       setSelectedAgentWallet(null);
     }
   }, [selectedAgentWallet, state]);
-
-  const heartbeatTopologyKey = useMemo(() => (
-    state?.installedAgents
-      .filter((agent) => agent.running && agent.heartbeat.enabled)
-      .map((agent) => `${agent.agentWallet}:${agent.heartbeat.intervalMs}`)
-      .sort()
-      .join("|")
-    || ""
-  ), [state?.installedAgents]);
-
-  const heartbeatSkillKey = useMemo(() => (
-    state?.installedSkills
-      .filter((skill) => skill.enabled)
-      .map((skill) => skill.id)
-      .sort()
-      .join("|")
-    || ""
-  ), [state?.installedSkills]);
-
-  useEffect(() => {
-    const services = heartbeatServicesRef.current;
-
-    if (!state?.identity) {
-      for (const service of services.values()) {
-        service.stop();
-      }
-      services.clear();
-      return;
-    }
-
-    const runningAgents = state.installedAgents.filter((agent) => agent.running && agent.heartbeat.enabled);
-    const runningWallets = new Set(runningAgents.map((agent) => agent.agentWallet));
-
-    for (const [agentWallet, service] of services.entries()) {
-      if (!runningWallets.has(agentWallet)) {
-        service.stop();
-        services.delete(agentWallet);
-      }
-    }
-
-    for (const runningAgent of runningAgents) {
-      const service = services.get(runningAgent.agentWallet) || new HeartbeatService();
-      services.set(runningAgent.agentWallet, service);
-
-      service.start({
-        agentWallet: runningAgent.agentWallet,
-        intervalMs: runningAgent.heartbeat.intervalMs,
-        skillRelativePaths: (stateRef.current?.installedSkills || [])
-          .filter((skill) => skill.enabled)
-          .map((skill) => skill.relativePath),
-        onExecute: async (prompt) => {
-          const current = stateRef.current;
-          if (!current?.identity) {
-            return "HEARTBEAT_OK";
-          }
-
-          const response = await callAgent({
-            runtimeUrl: current.settings.runtimeUrl,
-            identity: current.identity,
-            agentWallet: runningAgent.agentWallet,
-            message: prompt,
-            threadId: `heartbeat-${runningAgent.agentWallet}`,
-            userAddress: current.identity.userAddress,
-            sessionGrants: permissionPolicyToGrantedList(runningAgent.permissions),
-          });
-          return response.output || response.error || "HEARTBEAT_OK";
-        },
-        onAlert: (message) => {
-          showNotification("error", `Heartbeat alert: ${message.slice(0, 160)}`);
-        },
-        onTickComplete: (result) => {
-          void persistState((current) => {
-            return {
-              ...current,
-              installedAgents: current.installedAgents.map((agent) => (
-                agent.agentWallet !== runningAgent.agentWallet
-                  ? agent
-                  : result === "ok"
-                    ? {
-                      ...agent,
-                      heartbeat: {
-                        ...agent.heartbeat,
-                        lastRunAt: Date.now(),
-                        lastResult: result,
-                      },
-                    }
-                    : appendAgentReport(
-                      {
-                        ...agent,
-                        heartbeat: {
-                          ...agent.heartbeat,
-                          lastRunAt: Date.now(),
-                          lastResult: result,
-                        },
-                      },
-                      {
-                        kind: "heartbeat",
-                        title: result === "alert" ? "Heartbeat alert" : "Heartbeat execution failed",
-                        summary: result === "alert"
-                          ? `${agent.metadata.name} raised a local heartbeat alert.`
-                          : `${agent.metadata.name} failed its most recent local heartbeat execution.`,
-                        outcome: result === "alert" ? "warning" : "error",
-                      },
-                    )
-              )),
-            };
-          });
-        },
-      });
-    }
-  }, [heartbeatSkillKey, heartbeatTopologyKey, persistState, showNotification, state?.identity, state?.settings.runtimeUrl]);
-
-  useEffect(() => () => {
-    const services = heartbeatServicesRef.current;
-    for (const service of services.values()) {
-      service.stop();
-    }
-    services.clear();
-  }, []);
 
   useEffect(() => {
     localMeshService.configure((status) => {
@@ -942,6 +822,7 @@ export default function App() {
                 <AgentDetailPage
                   agent={selectedAgent}
                   state={state}
+                  session={session}
                   meshPeers={visibleMeshPeers}
                   onBack={closeAgent}
                   onStateChange={persistState}
@@ -950,7 +831,6 @@ export default function App() {
               ) : (
                 <AgentManagerPage
                   state={state}
-                  session={session}
                   onStateChange={persistState}
                   onOpenAgent={openAgent}
                   onBrowse={() => void openUrl(`${WEB_APP_URL}/market`)}
@@ -1022,41 +902,42 @@ function SettingsPage({
   onBack: () => void;
   onPathsChange: (paths: Awaited<ReturnType<typeof getLocalPaths>>) => void;
 }) {
-  const [refreshingPermissions, setRefreshingPermissions] = useState(false);
+  const [busyPermission, setBusyPermission] = useState<string | null>(null);
   const [editingBaseDir, setEditingBaseDir] = useState(paths?.base_dir || "");
-  const mountedRef = useRef(false);
 
-  /* Proactively request full access on mount */
-  useEffect(() => {
-    if (mountedRef.current) return;
-    mountedRef.current = true;
-    void (async () => {
-      try {
-        const osStatus = await requestOrOpenMissingGlobalPermission(state.osPermissions);
-        await onStateChange(reconcileStateWithOsPermissions(state, osStatus));
-      } catch { /* best-effort on mount */ }
-    })();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const refreshMacPermissions = async () => {
-    setRefreshingPermissions(true);
+  const togglePermission = async (key: OsPermissionKey) => {
+    const current = state.osPermissions[key];
+    if (current === "granted") {
+      // Already granted — just open Settings so user can revoke if they want
+      await openSystemPermissionSettings(key);
+      onNotify("success", `Opened macOS Privacy → ${key}`);
+      return;
+    }
+    setBusyPermission(key);
     try {
-      const osStatus = await queryOsPermissions();
-      await onStateChange(reconcileStateWithOsPermissions(state, osStatus));
-      onNotify("success", "macOS permission status refreshed");
+      const snapshot = await requestOsPermission(key);
+      await onStateChange(reconcileStateWithOsPermissions({ ...state, osPermissions: snapshot }, snapshot));
+      if (snapshot[key] !== "granted") {
+        await openSystemPermissionSettings(key);
+      }
+      onNotify("success", `${key}: ${snapshot[key]}`);
     } catch (error) {
-      onNotify("error", error instanceof Error ? error.message : "Failed to refresh macOS permission status");
+      onNotify("error", error instanceof Error ? error.message : `Failed to request ${key}`);
     } finally {
-      setRefreshingPermissions(false);
+      setBusyPermission(null);
     }
   };
 
-  const openGlobalPermissions = async () => {
+  const refreshPermissions = async () => {
+    setBusyPermission("__all__");
     try {
-      const osStatus = await requestOrOpenMissingGlobalPermission(state.osPermissions);
+      const osStatus = await queryOsPermissions();
       await onStateChange(reconcileStateWithOsPermissions(state, osStatus));
+      onNotify("success", "Permissions refreshed");
     } catch (error) {
-      onNotify("error", error instanceof Error ? error.message : "Failed to open macOS Privacy & Security");
+      onNotify("error", error instanceof Error ? error.message : "Refresh failed");
+    } finally {
+      setBusyPermission(null);
     }
   };
 
@@ -1070,7 +951,6 @@ function SettingsPage({
       onNotify("success", `Runtime root relocated to: ${newPaths.base_dir}`);
     } catch (error) {
       onNotify("error", error instanceof Error ? error.message : "Failed to update runtime root");
-      // Reset to current value
       setEditingBaseDir(paths?.base_dir || "");
     }
   };
@@ -1084,124 +964,138 @@ function SettingsPage({
     onNotify("success", !meshEnabled ? "Mesh network enabled" : "Mesh network disabled");
   };
 
+  type PermRow = { key: OsPermissionKey; label: string };
+  const PERM_ROWS: PermRow[] = [
+    { key: "fullDiskAccess", label: "Full Disk Access" },
+    { key: "camera", label: "Camera" },
+    { key: "microphone", label: "Microphone" },
+    { key: "accessibility", label: "Accessibility" },
+  ];
+
   return (
-    <div className="settings-page">
-      <ShellPageHeader
-        eyebrow="Settings"
-        title="System & Mesh Configuration"
-        subtitle="Updater, macOS permissions, mesh activation, and managed local storage."
-        actions={
-          <ShellButton tone="secondary" onClick={onBack}>
-            ← Back
-          </ShellButton>
-        }
-      />
+    <div className="sp">
+      {/* ── Back button ── */}
+      <div className="sp-topbar">
+        <ShellButton tone="secondary" onClick={onBack}>← Back</ShellButton>
+      </div>
 
-      {/* ── Section 1: Full Access (macOS system permissions) ── */}
-      <ShellPanel className="settings-section-card">
-        <h3>System Permissions</h3>
-        <p className="settings-hint">
-          Compose Mesh requires full system access to operate agents autonomously.
-          Grant permissions in macOS System Settings → Privacy &amp; Security.
-        </p>
-        <ShellStatGrid>
-          <ShellStat label="Camera" value={formatOsPermissionStatus(state.osPermissions.camera)} />
-          <ShellStat label="Microphone" value={formatOsPermissionStatus(state.osPermissions.microphone)} />
-          <ShellStat label="Full Disk Access" value={formatOsPermissionStatus(state.osPermissions.fullDiskAccess)} />
-          <ShellStat label="Accessibility" value={formatOsPermissionStatus(state.osPermissions.accessibility)} />
-        </ShellStatGrid>
-        <div className="settings-actions">
-          <ShellButton tone="primary" onClick={() => void openGlobalPermissions()}>
-            Grant Full Access
-          </ShellButton>
-          <ShellButton tone="secondary" disabled={refreshingPermissions} onClick={() => void refreshMacPermissions()}>
-            <RefreshCw size={14} />
-            Refresh Status
-          </ShellButton>
-        </div>
-      </ShellPanel>
+      {/* ── Grid: 2 columns on desktop, 1 on mobile ── */}
+      <div className="sp-grid">
 
-      {/* ── Section 2: Mesh Activation ── */}
-      <ShellPanel className="settings-section-card">
-        <h3>Mesh Network</h3>
-        <p className="settings-hint">
-          When enabled, your agents broadcast signed manifests and can respond to peer requests over the libp2p mesh.
-        </p>
-        <button
-          type="button"
-          className={`settings-mesh-toggle ${meshEnabled ? "settings-mesh-toggle--on" : ""}`}
-          onClick={() => void toggleMesh()}
-        >
-          <span className="settings-mesh-toggle-label">{meshEnabled ? "Mesh Enabled" : "Mesh Disabled"}</span>
-          <div className={`perm-toggle-switch ${meshEnabled ? "perm-toggle-switch--on" : ""}`}>
-            <div className="perm-toggle-thumb" />
+        {/* ▸ Column 1: System Permissions */}
+        <div className="sp-col">
+          <div className="sp-card">
+            <div className="sp-card-head">
+              <h3>System Permissions</h3>
+              <ShellButton
+                tone="secondary"
+                disabled={busyPermission != null}
+                onClick={() => void refreshPermissions()}
+              >
+                <RefreshCw size={12} />
+              </ShellButton>
+            </div>
+            <div className="sp-perm-list">
+              {PERM_ROWS.map(({ key, label }) => {
+                const status = state.osPermissions[key];
+                const granted = status === "granted";
+                const busy = busyPermission === key || busyPermission === "__all__";
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`sp-perm-row ${granted ? "sp-perm-row--on" : ""}`}
+                    disabled={busy}
+                    onClick={() => void togglePermission(key)}
+                  >
+                    <span className="sp-perm-label">{label}</span>
+                    <span className={`sp-perm-badge ${granted ? "sp-perm-badge--granted" : ""}`}>
+                      {busy ? "…" : formatOsPermissionStatus(status)}
+                    </span>
+                    <div className={`perm-toggle-switch ${granted ? "perm-toggle-switch--on" : ""}`}>
+                      <div className="perm-toggle-thumb" />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </button>
-      </ShellPanel>
 
-      {/* ── Section 3: Directory Paths ── */}
-      <ShellPanel className="settings-section-card">
-        <h3>Local Storage</h3>
-        <p className="settings-hint">
-          Compose Local stores runtime state, agent workspaces, and shared skill installs inside the managed local runtime root.
-        </p>
-        <div className="settings-path-list">
-          <ShellFormGroup label="Runtime Root">
-            <ShellInput
-              value={editingBaseDir}
-              onChange={(e) => setEditingBaseDir(e.target.value)}
-              onBlur={() => void commitBaseDir()}
-              onKeyDown={(e) => { if (e.key === "Enter") void commitBaseDir(); }}
-              placeholder="/path/to/compose-local"
-            />
-          </ShellFormGroup>
-          <ShellFormGroup label="State File">
-            <ShellInput value={paths?.state_file || "Browser fallback mode"} readOnly />
-          </ShellFormGroup>
-          <ShellFormGroup label="Agents Directory">
-            <ShellInput value={paths?.agents_dir || "Browser fallback mode"} readOnly />
-          </ShellFormGroup>
-          <ShellFormGroup label="Skills Directory">
-            <ShellInput value={paths?.skills_dir || "Browser fallback mode"} readOnly />
-          </ShellFormGroup>
+          {/* ▸ Mesh Toggle */}
+          <div className="sp-card">
+            <div className="sp-card-head"><h3>Mesh Network</h3></div>
+            <button
+              type="button"
+              className={`sp-perm-row ${meshEnabled ? "sp-perm-row--on" : ""}`}
+              onClick={() => void toggleMesh()}
+            >
+              <span className="sp-perm-label">{meshEnabled ? "Mesh Enabled" : "Mesh Disabled"}</span>
+              <div className={`perm-toggle-switch ${meshEnabled ? "perm-toggle-switch--on" : ""}`}>
+                <div className="perm-toggle-thumb" />
+              </div>
+            </button>
+          </div>
         </div>
-        <div className="settings-actions">
-          {paths?.base_dir ? (
-            <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.base_dir)}>
-              Open Runtime Folder
-            </ShellButton>
-          ) : null}
-          {paths?.skills_dir ? (
-            <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.skills_dir)}>
-              Open Skills Folder
-            </ShellButton>
-          ) : null}
-        </div>
-      </ShellPanel>
 
-      {/* ── Section 4: Update / Status ── */}
-      <ShellPanel className="settings-section-card">
-        <div className="settings-update-row">
-          <div className="settings-update-info">
-            <span className="settings-update-version">v{appUpdate.currentVersion || "?"}</span>
+        {/* ▸ Column 2: Storage + Update */}
+        <div className="sp-col">
+          <div className="sp-card">
+            <div className="sp-card-head"><h3>Local Storage</h3></div>
+            <div className="sp-path-group">
+              <ShellFormGroup label="Runtime Root">
+                <ShellInput
+                  value={editingBaseDir}
+                  onChange={(e) => setEditingBaseDir(e.target.value)}
+                  onBlur={() => void commitBaseDir()}
+                  onKeyDown={(e) => { if (e.key === "Enter") void commitBaseDir(); }}
+                  placeholder="/path/to/compose-local"
+                />
+              </ShellFormGroup>
+              <div className="sp-path-readonly">
+                <span className="sp-path-label">State</span>
+                <span className="sp-path-value">{paths?.state_file || "Browser mode"}</span>
+              </div>
+              <div className="sp-path-readonly">
+                <span className="sp-path-label">Agents</span>
+                <span className="sp-path-value">{paths?.agents_dir || "Browser mode"}</span>
+              </div>
+              <div className="sp-path-readonly">
+                <span className="sp-path-label">Skills</span>
+                <span className="sp-path-value">{paths?.skills_dir || "Browser mode"}</span>
+              </div>
+            </div>
+            <div className="sp-path-actions">
+              {paths?.base_dir ? (
+                <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.base_dir)}>Open Root</ShellButton>
+              ) : null}
+              {paths?.skills_dir ? (
+                <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.skills_dir)}>Open Skills</ShellButton>
+              ) : null}
+            </div>
+          </div>
+
+          {/* ▸ Version / Update */}
+          <div className="sp-card sp-card--row">
+            <div className="sp-version-info">
+              <strong>v{appUpdate.currentVersion || "?"}</strong>
+              {appUpdate.available ? (
+                <span className="settings-update-badge">Update: {appUpdate.available.version}</span>
+              ) : (
+                <span className="settings-update-hint">Up to date</span>
+              )}
+            </div>
             {appUpdate.available ? (
-              <span className="settings-update-badge">Update available: {appUpdate.available.version}</span>
+              <ShellButton tone="primary" onClick={() => void onInstallUpdate()}>
+                Install {appUpdate.available.version}
+              </ShellButton>
             ) : (
-              <span className="settings-update-hint">Up to date</span>
+              <ShellButton tone="secondary" onClick={() => void onCheckForUpdates()}>
+                <RefreshCw size={12} /> Check
+              </ShellButton>
             )}
           </div>
-          {appUpdate.available ? (
-            <ShellButton tone="primary" onClick={() => void onInstallUpdate()}>
-              Install {appUpdate.available.version}
-            </ShellButton>
-          ) : (
-            <ShellButton tone="secondary" onClick={() => void onCheckForUpdates()}>
-              <RefreshCw size={14} />
-              Check for Updates
-            </ShellButton>
-          )}
         </div>
-      </ShellPanel>
+      </div>
     </div>
   );
 }

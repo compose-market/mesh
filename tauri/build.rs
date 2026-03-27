@@ -1,7 +1,8 @@
 fn main() {
     #[cfg(target_os = "macos")]
     {
-        let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
+        let out_dir =
+            std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
         let bridge_path = out_dir.join("compose_mesh_macos_permissions.m");
         std::fs::write(&bridge_path, MACOS_PERMISSIONS_BRIDGE)
             .expect("failed to write macOS permissions bridge");

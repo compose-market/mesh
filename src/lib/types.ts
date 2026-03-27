@@ -135,7 +135,7 @@ export interface MeshAgentCard {
 
 export interface MeshManifest {
   agentWallet: string;
-  userWallet: string;
+  userAddress: string;
   deviceId: string;
   peerId: string;
   chainId: number;
@@ -212,7 +212,6 @@ export interface AgentNetworkState {
 
 export interface AgentWorkerState {
   running: boolean;
-  desiredRunning: boolean;
   status: "stopped" | "starting" | "running" | "stopping" | "error";
   runtimeId: string | null;
   lastHeartbeatAt: number | null;

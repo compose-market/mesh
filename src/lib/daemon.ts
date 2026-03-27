@@ -18,7 +18,6 @@ export interface DaemonInstallPayload {
 export interface DaemonAgentStatus {
   agentWallet: string;
   runtimeId: string | null;
-  desiredRunning: boolean;
   running: boolean;
   status: "stopped" | "starting" | "running" | "stopping" | "error" | string;
   dnaHash: string;
@@ -26,7 +25,7 @@ export interface DaemonAgentStatus {
   modelId: string;
   mcpToolsHash: string;
   agentCardCid: string;
-  desiredPermissions: AgentPermissionPolicy;
+  desiredPermissions?: AgentPermissionPolicy;
   permissions: AgentPermissionPolicy;
   logsCursor: number;
   lastError: string | null;
@@ -62,7 +61,6 @@ function ensureTauriRuntime(): void {
 function toWorkerState(status: DaemonAgentStatus | null | undefined): AgentWorkerState {
   return {
     running: Boolean(status?.running),
-    desiredRunning: Boolean(status?.desiredRunning),
     status: (status?.status as AgentWorkerState["status"]) || "stopped",
     runtimeId: status?.runtimeId || null,
     lastHeartbeatAt: null,
@@ -76,14 +74,9 @@ export async function daemonInstallAgent(payload: DaemonInstallPayload): Promise
   return invoke<DaemonAgentStatus>("daemon_install_agent", { payload });
 }
 
-export async function daemonStartAgent(agentWallet: string): Promise<DaemonAgentStatus> {
+export async function daemonRemoveAgent(agentWallet: string): Promise<void> {
   ensureTauriRuntime();
-  return invoke<DaemonAgentStatus>("daemon_start_agent", { agentWallet });
-}
-
-export async function daemonStopAgent(agentWallet: string): Promise<DaemonAgentStatus> {
-  ensureTauriRuntime();
-  return invoke<DaemonAgentStatus>("daemon_stop_agent", { agentWallet });
+  await invoke("daemon_remove_agent", { agentWallet });
 }
 
 export async function daemonUpdatePermissions(agentWallet: string, policy: AgentPermissionPolicy): Promise<DaemonAgentStatus> {

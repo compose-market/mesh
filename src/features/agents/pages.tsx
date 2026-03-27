@@ -10,32 +10,27 @@ import {
   FileText,
   Globe,
   Loader2,
+  MessageSquare,
   Play,
   Shield,
   ShieldCheck,
   Sparkles,
-  Square,
   Trash2,
 } from "lucide-react";
 import { ComposeAgentCard, type ComposeAgentBadge, type ComposeAgentMetric, type ComposeAgentMetaRow, type ComposeAgentTag } from "@compose-market/theme/agents";
-import { ShellButton, ShellEmptyState, ShellNotice, ShellPageHeader, ShellPanel, ShellTab, ShellTabStrip } from "@compose-market/theme/shell";
+import { ShellButton, ShellEmptyState, ShellInput, ShellNotice, ShellPageHeader, ShellPanel, ShellTab, ShellTabStrip } from "@compose-market/theme/shell";
 import {
+  daemonRemoveAgent,
   daemonInstallAgent,
-  daemonStartAgent,
   mergeDaemonStatusIntoInstalledAgent,
   daemonStatusToWorkerState,
-  daemonStopAgent,
   daemonTailLogs,
   daemonUpdatePermissions,
 } from "../../lib/daemon";
 import { fetchAgentMetadata } from "../../lib/api";
 import {
-  hasGlobalMeshAccess,
-  openSystemPermissionSettings,
   queryOsPermissions,
   reconcileStateWithOsPermissions,
-  requestOrOpenMissingGlobalPermission,
-  requestOsPermission,
 } from "../../lib/permissions";
 import { getDefaultPermissionPolicy } from "../../lib/storage";
 import type { AgentPermissionPolicy, LocalRuntimeState, InstalledAgent, MeshPeerSignal, SessionState } from "../../lib/types";
@@ -49,13 +44,13 @@ import {
   listPluginIds,
   summarizeAgentReportEconomics,
   syncInstalledAgent,
-  validateAgentLock,
 } from "./model";
 
-type DetailTab = "permissions" | "skills" | "history" | "mesh";
+type DetailTab = "chat" | "permissions" | "skills" | "history" | "mesh";
 type SkillsTab = "installed" | "browse";
 
 const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: typeof Shield }> = [
+  { id: "chat", label: "Chat", icon: MessageSquare },
   { id: "permissions", label: "Permissions", icon: Shield },
   { id: "skills", label: "Skills", icon: Sparkles },
   { id: "history", label: "Reports / History", icon: FileText },
@@ -64,7 +59,6 @@ const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: typeof Shield }> 
 
 interface AgentManagerPageProps {
   state: LocalRuntimeState;
-  session: SessionState;
   onStateChange: (state: LocalRuntimeState) => Promise<void>;
   onOpenAgent: (agentWallet: string) => void;
   onBrowse: () => void;
@@ -73,12 +67,107 @@ interface AgentManagerPageProps {
 interface AgentDetailPageProps {
   agent: InstalledAgent;
   state: LocalRuntimeState;
+  session: SessionState;
   meshPeers: MeshPeerSignal[];
   onBack: () => void;
   onStateChange: (next: LocalRuntimeState) => Promise<void>;
   onNotify: (type: "success" | "error", message: string) => void;
 }
 
+interface LocalChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  failed?: boolean;
+}
+
+async function* parseSseDataBlocks(reader: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<string, void, void> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+
+    while (true) {
+      const boundary = buffer.indexOf("\n\n");
+      if (boundary === -1) {
+        break;
+      }
+
+      const rawBlock = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+
+      const data = rawBlock
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n")
+        .trim();
+
+      if (data) {
+        yield data;
+      }
+    }
+  }
+
+  const trailing = buffer.trim();
+  if (!trailing) {
+    return;
+  }
+
+  const data = trailing
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n")
+    .trim();
+
+  if (data) {
+    yield data;
+  }
+}
+
+function extractChatStreamText(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const record = payload as Record<string, unknown>;
+  const delta = Array.isArray(record.choices)
+    ? record.choices[0] as { delta?: { content?: string } } | undefined
+    : undefined;
+
+  if (typeof delta?.delta?.content === "string" && delta.delta.content.length > 0) {
+    return delta.delta.content;
+  }
+
+  if (typeof record.content === "string" && record.content.length > 0) {
+    return record.content;
+  }
+
+  if (typeof record.text === "string" && record.text.length > 0) {
+    return record.text;
+  }
+
+  return null;
+}
+
+function formatChatTimestamp(value: number): string {
+  return new Date(value).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function normalizeUrlBase(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
 
 
 function formatMicros(value: number): string {
@@ -89,9 +178,27 @@ function shortWallet(value: string): string {
   return `${value.slice(0, 8)}...${value.slice(-4)}`;
 }
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim().length > 0) {
+    return error;
+  }
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    if (typeof record.message === "string" && record.message.trim().length > 0) {
+      return record.message;
+    }
+    if (typeof record.error === "string" && record.error.trim().length > 0) {
+      return record.error;
+    }
+  }
+  return fallback;
+}
+
 export function AgentManagerPage({
   state,
-  session,
   onStateChange,
   onOpenAgent,
   onBrowse,
@@ -100,67 +207,25 @@ export function AgentManagerPage({
   const [error, setError] = useState<string | null>(null);
   const runningCount = useMemo(() => state.installedAgents.filter((agent) => agent.running).length, [state.installedAgents]);
 
-  const toggleAgent = async (agentWallet: string) => {
-    const target = state.installedAgents.find((agent) => agent.agentWallet === agentWallet);
-    if (!target) {
-      return;
-    }
-    if (!target.running && !session.active) {
-      setError("Session is inactive. Start a session from the Local header and try again.");
-      return;
-    }
-
-    setLoading(`toggle:${agentWallet}`);
-    setError(null);
-    try {
-      if (!target.running) {
-        await validateAgentLock(target, state.settings.runtimeUrl);
-      }
-
-      const shouldRun = !target.running;
-      const daemonStatus = shouldRun ? await daemonStartAgent(agentWallet) : await daemonStopAgent(agentWallet);
-      await onStateChange({
-        ...state,
-        installedAgents: state.installedAgents.map((agent) => (
-          agent.agentWallet === agentWallet
-            ? appendAgentReport(
-              mergeDaemonStatusIntoInstalledAgent(
-                {
-                  ...agent,
-                  running: shouldRun,
-                  workerState: daemonStatusToWorkerState(daemonStatus),
-                },
-                daemonStatus,
-              ),
-              {
-                kind: "runtime",
-                title: shouldRun ? "Agent started" : "Agent stopped",
-                summary: shouldRun
-                  ? `${agent.metadata.name} is running with the current session budget.`
-                  : `${agent.metadata.name} stopped on this device.`,
-                outcome: "info",
-              },
-            )
-            : agent
-        )),
-      });
-    } catch (toggleError) {
-      setError(toggleError instanceof Error ? toggleError.message : "Failed to toggle local agent.");
-    } finally {
-      setLoading(null);
-    }
-  };
-
   const removeAgent = async (agentWallet: string) => {
     const target = state.installedAgents.find((agent) => agent.agentWallet === agentWallet);
     if (!target) {
       return;
     }
 
-    await onStateChange({
-      ...state,
-      installedAgents: state.installedAgents.filter((agent) => agent.agentWallet !== agentWallet),
-    });
+    setLoading(`remove:${agentWallet}`);
+    setError(null);
+    try {
+      await daemonRemoveAgent(agentWallet);
+      await onStateChange({
+        ...state,
+        installedAgents: state.installedAgents.filter((agent) => agent.agentWallet !== agentWallet),
+      });
+    } catch (removeError) {
+      setError(getErrorMessage(removeError, "Failed to remove local agent."));
+    } finally {
+      setLoading(null);
+    }
   };
 
 
@@ -241,7 +306,7 @@ export function AgentManagerPage({
             : [...state.installedAgents, deployed],
         });
       } catch (deployError) {
-        setError(deployError instanceof Error ? deployError.message : "Failed to install agent.");
+        setError(getErrorMessage(deployError, "Failed to install agent."));
       } finally {
         setLoading(null);
       }
@@ -353,22 +418,13 @@ export function AgentManagerPage({
                 actions={(
                   <div className="cm-agent-card__action-stack">
                     <ShellButton
-                      tone={agent.running ? "danger" : "secondary"}
+                      tone="secondary"
                       size="sm"
                       iconOnly
-                      onClick={() => {
-                        void toggleAgent(agent.agentWallet);
-                      }}
-                      disabled={loading !== null}
-                      title={agent.running ? "Stop local agent" : "Start local agent"}
+                      disabled
+                      title={agent.running ? "Running locally" : "Syncing local runtime"}
                     >
-                      {loading === `toggle:${agent.agentWallet}` ? (
-                        <Loader2 size={16} className="spinner" />
-                      ) : agent.running ? (
-                        <Square size={16} />
-                      ) : (
-                        <Play size={16} />
-                      )}
+                      {agent.running ? <ShieldCheck size={16} /> : <Loader2 size={16} className="spinner" />}
                     </ShellButton>
                     <ShellButton tone="secondary" size="sm" iconOnly onClick={() => onOpenAgent(agent.agentWallet)} title="Open agent settings">
                       <Eye size={16} />
@@ -378,6 +434,7 @@ export function AgentManagerPage({
                       tone="danger"
                       size="sm"
                       iconOnly
+                      disabled={loading !== null}
                       onClick={() => {
                         void removeAgent(agent.agentWallet);
                       }}
@@ -399,18 +456,36 @@ export function AgentManagerPage({
 export function AgentDetailPage({
   agent,
   state,
+  session,
   meshPeers,
   onBack,
   onStateChange,
   onNotify,
 }: AgentDetailPageProps) {
-  const [activeTab, setActiveTab] = useState<DetailTab>("permissions");
+  const [activeTab, setActiveTab] = useState<DetailTab>("chat");
   const [skillsTab, setSkillsTab] = useState<SkillsTab>("installed");
   const [logLines, setLogLines] = useState<string[]>([]);
   const [logCursor, setLogCursor] = useState<number | undefined>(undefined);
   const [permissionBusy, setPermissionBusy] = useState<null | keyof AgentPermissionPolicy>(null);
+  const [chatMessages, setChatMessages] = useState<LocalChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
   const economics = useMemo(() => summarizeAgentReportEconomics(agent.reports), [agent.reports]);
   const visiblePeers = useMemo(() => meshPeers.filter((peer) => peer.agentWallet !== agent.agentWallet), [agent.agentWallet, meshPeers]);
+  const chatThreadIdRef = useRef<string>(`mesh-local-${agent.agentWallet}-${crypto.randomUUID()}`);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    chatThreadIdRef.current = `mesh-local-${agent.agentWallet}-${crypto.randomUUID()}`;
+    setChatMessages([]);
+    setChatInput("");
+    setChatError(null);
+  }, [agent.agentWallet]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [chatBusy, chatMessages]);
 
   useEffect(() => {
     let cancelled = false;
@@ -449,44 +524,10 @@ export function AgentDetailPage({
 
     try {
       const nextValue = nextPermissionDecision(agent.permissions[key]);
-      const desiredPermissions: AgentPermissionPolicy = { ...(agent.desiredPermissions || agent.permissions) };
-      let nextPermissions: AgentPermissionPolicy = { ...desiredPermissions, [key]: nextValue };
-      let nextOsPermissions = { ...state.osPermissions };
-
-      if (nextValue === "allow" && !hasGlobalMeshAccess(nextOsPermissions)) {
-        const osStatus = await requestOrOpenMissingGlobalPermission(nextOsPermissions);
-        nextOsPermissions = osStatus;
-        if (!hasGlobalMeshAccess(osStatus)) {
-          await onStateChange(reconcileStateWithOsPermissions({
-            ...state,
-            osPermissions: nextOsPermissions,
-          }, nextOsPermissions));
-          return;
-        }
-      }
-
-      if (key === "camera" && nextValue === "allow") {
-        const osStatus = await requestOsPermission("camera");
-        nextOsPermissions = osStatus;
-        if (osStatus.camera !== "granted") {
-          await openSystemPermissionSettings("camera");
-          onNotify("error", "Camera permission was not granted by macOS. Enable it in System Settings → Privacy & Security → Camera.");
-        }
-      }
-
-      if (key === "microphone" && nextValue === "allow") {
-        const osStatus = await requestOsPermission("microphone");
-        nextOsPermissions = osStatus;
-        if (osStatus.microphone !== "granted") {
-          await openSystemPermissionSettings("microphone");
-          onNotify("error", "Microphone permission was not granted by macOS. Enable it in System Settings → Privacy & Security → Microphone.");
-        }
-      }
-
+      const nextPermissions: AgentPermissionPolicy = { ...agent.permissions, [key]: nextValue };
       const daemonStatus = await daemonUpdatePermissions(agent.agentWallet, nextPermissions);
-      await onStateChange(reconcileStateWithOsPermissions({
+      await onStateChange({
         ...state,
-        osPermissions: nextOsPermissions,
         installedAgents: state.installedAgents.map((item) => (
           item.agentWallet === agent.agentWallet
             ? appendAgentReport(
@@ -500,7 +541,7 @@ export function AgentDetailPage({
             )
             : item
         )),
-      }, nextOsPermissions));
+      });
       onNotify("success", `${key} permission updated`);
     } catch (error) {
       onNotify("error", error instanceof Error ? error.message : `Failed to update ${key}`);
@@ -518,9 +559,180 @@ export function AgentDetailPage({
 
   const [mobileCardOpen, setMobileCardOpen] = useState(false);
 
+  const sendChatMessage = async () => {
+    const content = chatInput.trim();
+    if (!content || chatBusy) {
+      return;
+    }
+
+    const identity = state.identity;
+    if (!identity) {
+      const message = "Connect Local first so this device has a user identity and compose key.";
+      setChatError(message);
+      onNotify("error", message);
+      return;
+    }
+
+    if (!session.active || !identity.composeKeyToken || !identity.budget) {
+      const message = "An active session is required. Start one from the Local header, then try again.";
+      setChatError(message);
+      onNotify("error", message);
+      return;
+    }
+
+    const runtimeUrl = normalizeUrlBase(state.settings.runtimeUrl || "");
+    if (!runtimeUrl) {
+      const message = "Local runtime URL is not configured.";
+      setChatError(message);
+      onNotify("error", message);
+      return;
+    }
+
+    const userMessage: LocalChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content,
+      createdAt: Date.now(),
+    };
+    const assistantId = crypto.randomUUID();
+
+    setChatMessages((current) => [
+      ...current,
+      userMessage,
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        createdAt: Date.now(),
+      },
+    ]);
+    setChatInput("");
+    setChatBusy(true);
+    setChatError(null);
+
+    try {
+      const composeRunId = crypto.randomUUID();
+      const response = await fetch(`${runtimeUrl}/agent/${agent.agentWallet}/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${identity.composeKeyToken}`,
+          "x-chain-id": String(identity.chainId),
+          "x-compose-run-id": composeRunId,
+          "x-session-active": "true",
+          "x-session-user-address": identity.userAddress,
+          "x-session-budget-remaining": identity.budget,
+        },
+        body: JSON.stringify({
+          message: content,
+          threadId: chatThreadIdRef.current,
+          composeRunId,
+          userAddress: identity.userAddress,
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as
+          | { error?: string; code?: string }
+          | null;
+        throw new Error(payload?.error || payload?.code || `Chat failed with HTTP ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("Local runtime returned no response body.");
+      }
+
+      let fullResponse = "";
+
+      for await (const block of parseSseDataBlocks(reader)) {
+        if (block === "[DONE]") {
+          continue;
+        }
+
+        let payload: unknown = null;
+        try {
+          payload = JSON.parse(block);
+        } catch {
+          fullResponse += block;
+          setChatMessages((current) => current.map((message) => (
+            message.id === assistantId
+              ? { ...message, content: fullResponse }
+              : message
+          )));
+          continue;
+        }
+
+        if (
+          payload
+          && typeof payload === "object"
+          && (payload as Record<string, unknown>).type === "error"
+        ) {
+          const message = typeof (payload as Record<string, unknown>).error === "string"
+            ? (payload as Record<string, unknown>).error as string
+            : typeof (payload as Record<string, unknown>).content === "string"
+              ? (payload as Record<string, unknown>).content as string
+              : "Local agent stream failed";
+          throw new Error(message);
+        }
+
+        if (
+          payload
+          && typeof payload === "object"
+          && (payload as Record<string, unknown>).type === "done"
+        ) {
+          break;
+        }
+
+        const chunk = extractChatStreamText(payload);
+        if (!chunk) {
+          continue;
+        }
+
+        fullResponse += chunk;
+        setChatMessages((current) => current.map((message) => (
+          message.id === assistantId
+            ? { ...message, content: fullResponse }
+            : message
+        )));
+      }
+
+      if (!fullResponse.trim()) {
+        setChatMessages((current) => current.map((message) => (
+          message.id === assistantId
+            ? { ...message, content: "No response received." }
+            : message
+        )));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Local chat failed";
+      setChatError(message);
+      setChatMessages((current) => current.map((chatMessage) => (
+        chatMessage.id === assistantId
+          ? { ...chatMessage, content: `Error: ${message}`, failed: true }
+          : chatMessage
+      )));
+      onNotify("error", message);
+    } finally {
+      setChatBusy(false);
+    }
+  };
+
+  const handleChatInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter" || event.shiftKey) {
+      return;
+    }
+    event.preventDefault();
+    void sendChatMessage();
+  };
+
   // Build agent card data (mirrors web/src/components/agent-card.tsx pattern)
+  const runtimeStatus = agent.workerState?.status || (agent.running ? "running" : "starting");
   const agentBadges: ComposeAgentBadge[] = [
-    { label: agent.running ? "Running" : "Stopped", tone: agent.running ? "green" : "neutral" },
+    {
+      label: runtimeStatus === "running" ? "Running" : "Syncing",
+      tone: runtimeStatus === "running" ? "green" : "neutral",
+    },
     { label: agent.permissions.network === "allow" ? "Network On" : "Network Off", tone: agent.permissions.network === "allow" ? "fuchsia" : "neutral" },
   ];
   const agentMetrics: ComposeAgentMetric[] = [
@@ -572,6 +784,76 @@ export function AgentDetailPage({
               </ShellTab>
             ))}
           </ShellTabStrip>
+
+          {activeTab === "chat" ? (
+            <ShellPanel className="detail-panel">
+              <div className="detail-panel-header">
+                <h3>Local Chat</h3>
+                <ShellButton
+                  tone="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setChatMessages([]);
+                    setChatError(null);
+                    chatThreadIdRef.current = `mesh-local-${agent.agentWallet}-${crypto.randomUUID()}`;
+                  }}
+                  disabled={chatBusy || chatMessages.length === 0}
+                >
+                  Clear
+                </ShellButton>
+              </div>
+
+              {!session.active ? (
+                <ShellNotice tone="warning">
+                  Start a session from the Local header to send paid/local chat requests with the same compose-key session flow used by web.
+                </ShellNotice>
+              ) : null}
+
+              {chatError ? (
+                <ShellNotice tone="error">{chatError}</ShellNotice>
+              ) : null}
+
+              <div className="local-chat-thread">
+                {chatMessages.length === 0 ? (
+                  <div className="empty-inline">
+                    Hello, friend.
+                  </div>
+                ) : (
+                  chatMessages.map((message) => (
+                    <article
+                      key={message.id}
+                      className={`local-chat-message local-chat-message--${message.role}${message.failed ? " local-chat-message--failed" : ""}`}
+                    >
+                      <div className="local-chat-message-head">
+                        <strong>{message.role === "user" ? "You" : agent.metadata.name}</strong>
+                        <span>{formatChatTimestamp(message.createdAt)}</span>
+                      </div>
+                      <p>{message.content || (chatBusy && message.role === "assistant" ? "Thinking..." : " ")}</p>
+                    </article>
+                  ))
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              <div className="local-chat-composer">
+                <ShellInput
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  onKeyDown={handleChatInputKeyDown}
+                  placeholder="Message your local agent..."
+                  disabled={chatBusy || !session.active}
+                />
+                <ShellButton
+                  tone="primary"
+                  onClick={() => void sendChatMessage()}
+                  disabled={chatBusy || !chatInput.trim() || !session.active}
+                >
+                  {chatBusy ? <Loader2 size={14} className="spinner" /> : null}
+                  Send
+                </ShellButton>
+              </div>
+            </ShellPanel>
+          ) : null}
 
           {activeTab === "permissions" ? (
             <PermissionsPanel

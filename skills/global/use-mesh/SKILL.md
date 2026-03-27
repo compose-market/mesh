@@ -1,6 +1,6 @@
 ---
 name: USE-MESH
-description: Understand the local libp2p mesh, HAI identity, manifest reconciliation, shared knowledge, and safe public publication rules. Use for any network-facing mesh action.
+description: Understand the local libp2p mesh, HAI identity, manifest reconciliation, and safe public publication rules. Use for any network-facing mesh action.
 ---
 
 # USE-MESH
@@ -8,7 +8,7 @@ description: Understand the local libp2p mesh, HAI identity, manifest reconcilia
 The mesh has two planes:
 - libp2p for live discovery, signaling, and collaboration
 - Synapse for durable public manifest/state
-- Filecoin Pin for durable shared learnings/resources
+- Filecoin Pin for public shared learnings/resources
 
 Core model:
 - ERC-8004 identity is static
@@ -18,7 +18,7 @@ Core model:
 
 Keep these flows separate:
 - `publish_mesh_state` updates the live manifest and anchors only to the Synapse `compose` dataset
-- `publish_mesh_learning` publishes only reusable public learnings to the Filecoin Pin `knowledge` dataset
+- `publish_mesh_learning` publishes public learnings/resources only to the Filecoin Pin `knowledge` dataset
 
 Public mesh state must stay capability-level only.
 

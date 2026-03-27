@@ -15,7 +15,7 @@ const REPORT_LIMIT = 128;
 const SIGNAL_LIMIT = 32;
 const INTERACTION_LIMIT = 64;
 
-export type AgentDetailTab = "permissions" | "skills" | "history" | "mesh";
+export type AgentDetailTab = "chat" | "permissions" | "skills" | "history" | "mesh";
 
 export interface AgentExecutionPolicy {
   grantedPermissions: string[];
@@ -177,7 +177,7 @@ export function createInstalledAgent(input: CreateInstalledAgentInput): Installe
     metadata: input.metadata,
     lock: input.lock,
     addedAt: createdAt,
-    running: false,
+    running: true,
     runtimeId: input.runtimeId || crypto.randomUUID(),
     heartbeat: {
       enabled: true,

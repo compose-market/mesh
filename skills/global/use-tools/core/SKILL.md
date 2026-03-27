@@ -15,7 +15,7 @@ Use these local Compose surfaces:
 - MCP spawn: `/mcp/spawn`
 - Backpack accounts: `/api/backpack/connections`
 - Backpack toolkit actions: `/api/backpack/toolkits`, `/api/backpack/toolkits/:toolkit/actions`
-- WhatsApp pairing socket: `ws://localhost:<PORT>/whatsapp?userId=<userAddress>`
+- WhatsApp pairing socket: `ws://localhost:<PORT>/whatsapp?userAddress=<userAddress>`
 
 Order of work:
 1. inspect registry and available MCPs

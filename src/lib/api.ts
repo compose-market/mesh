@@ -231,7 +231,7 @@ export function normalizeAgentMetadata(
     walletAddress,
     dnaHash: requireAgentField(optionalString(source.dnaHash), "dnaHash"),
     model: requireAgentField(optionalString(source.model), "model"),
-    framework: optionalString(source.framework) || "openclaw",
+    framework: optionalString(source.framework) || "manowar",
     plugins: Array.isArray(source.plugins) ? source.plugins as AgentMetadata["plugins"] : [],
     createdAt: optionalString(source.createdAt) || new Date().toISOString(),
     endpoints: normalizeAgentEndpoints(source),
@@ -413,10 +413,10 @@ export async function callAgent(params: {
 
 export async function fetchBackpackConnections(params: {
   apiUrl: string;
-  userId: string;
+  userAddress: string;
 }): Promise<BackpackConnectionInfo[]> {
   const response = await requestJson<{ connections?: BackpackConnectionInfo[] }>(
-    `${normalizeBase(params.apiUrl)}/api/backpack/connections?userId=${encodeURIComponent(params.userId)}`,
+    `${normalizeBase(params.apiUrl)}/api/backpack/connections?userAddress=${encodeURIComponent(params.userAddress)}`,
     { method: "GET" },
   );
   return Array.isArray(response.connections) ? response.connections : [];

@@ -14,4 +14,4 @@ Relevant paths:
 - Telegram link: `/api/backpack/telegram/link`
 - Telegram status: `/api/backpack/telegram/status`
 - Backpack connect flow: `/api/backpack/connect`
-- WhatsApp pairing socket: `ws://localhost:<PORT>/whatsapp?userId=<userAddress>`
+- WhatsApp pairing socket: `ws://localhost:<PORT>/whatsapp?userAddress=<userAddress>`

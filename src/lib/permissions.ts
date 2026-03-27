@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentPermissionPolicy, InstalledAgent, LocalRuntimeState, OsPermissionSnapshot, OsPermissionStatus } from "./types";
+import type { InstalledAgent, LocalRuntimeState, OsPermissionSnapshot, OsPermissionStatus } from "./types";
 
 interface RawOsPermissionSnapshot {
   camera: string;
@@ -10,70 +10,6 @@ interface RawOsPermissionSnapshot {
 }
 
 export type OsPermissionKey = keyof RawOsPermissionSnapshot;
-
-function deniedAgentPermissionPolicy(): AgentPermissionPolicy {
-  return {
-    shell: "deny",
-    filesystemRead: "deny",
-    filesystemWrite: "deny",
-    filesystemEdit: "deny",
-    filesystemDelete: "deny",
-    camera: "deny",
-    microphone: "deny",
-    network: "deny",
-  };
-}
-
-function desiredAgentPermissionPolicy(agent: InstalledAgent): AgentPermissionPolicy {
-  return {
-    ...(agent.desiredPermissions || agent.permissions),
-  };
-}
-
-export function collapseAgentNetworkState(
-  agent: Pick<InstalledAgent, "network">,
-  updatedAt = Date.now(),
-): InstalledAgent["network"] {
-  return {
-    ...agent.network,
-    enabled: false,
-    status: "dormant",
-    haiId: null,
-    peerId: null,
-    listenMultiaddrs: [],
-    peersDiscovered: 0,
-    lastHeartbeatAt: null,
-    lastError: null,
-    updatedAt,
-  };
-}
-
-function reconcileAgentWithOsPermissions(agent: InstalledAgent, osPermissions: OsPermissionSnapshot): InstalledAgent {
-  const desiredPermissions = desiredAgentPermissionPolicy(agent);
-  const updatedAt = Date.now();
-
-  if (!hasGlobalMeshAccess(osPermissions)) {
-    return {
-      ...agent,
-      desiredPermissions,
-      permissions: deniedAgentPermissionPolicy(),
-      network: collapseAgentNetworkState(agent, updatedAt),
-    };
-  }
-
-  return {
-    ...agent,
-    desiredPermissions,
-    permissions: { ...desiredPermissions },
-    network: desiredPermissions.network === "allow"
-      ? {
-      ...agent.network,
-      enabled: Boolean(agent.network.enabled),
-      updatedAt,
-    }
-      : collapseAgentNetworkState(agent, updatedAt),
-  };
-}
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -133,10 +69,6 @@ export function formatOsPermissionStatus(status: OsPermissionStatus): string {
   }
 }
 
-export function hasGlobalMeshAccess(osPermissions: OsPermissionSnapshot): boolean {
-  return osPermissions.fullDiskAccess === "granted";
-}
-
 export function reconcileStateWithOsPermissions(
   state: LocalRuntimeState,
   osPermissions: OsPermissionSnapshot,
@@ -144,20 +76,14 @@ export function reconcileStateWithOsPermissions(
   return {
     ...state,
     osPermissions,
-    installedAgents: state.installedAgents.map((agent) => reconcileAgentWithOsPermissions(agent, osPermissions)),
   };
 }
 
 export function canAgentUseMesh(
-  agent: Pick<InstalledAgent, "running" | "permissions"> | null | undefined,
+  agent: Pick<InstalledAgent, "permissions"> | null | undefined,
   meshEnabled = true,
 ): boolean {
-  return Boolean(meshEnabled && agent?.running && agent.permissions.network === "allow");
-}
-
-export function nextMissingGlobalPermission(osPermissions: OsPermissionSnapshot): OsPermissionKey | null {
-  const orderedKeys: OsPermissionKey[] = ["fullDiskAccess", "accessibility", "screen", "camera", "microphone"];
-  return orderedKeys.find((key) => osPermissions[key] !== "granted") || null;
+  return Boolean(meshEnabled && agent?.permissions.network === "allow");
 }
 
 export async function queryOsPermissions(): Promise<OsPermissionSnapshot> {
@@ -184,24 +110,6 @@ export async function openSystemPermissionSettings(permissionKey?: OsPermissionK
   }
 
   await invoke("daemon_open_system_settings", { permissionKey });
-}
-
-export async function requestOrOpenMissingGlobalPermission(osPermissions: OsPermissionSnapshot): Promise<OsPermissionSnapshot> {
-  const nextPermission = nextMissingGlobalPermission(osPermissions);
-  if (!nextPermission) {
-    return queryOsPermissions();
-  }
-
-  if (nextPermission === "fullDiskAccess") {
-    await openSystemPermissionSettings(nextPermission);
-    return queryOsPermissions();
-  }
-
-  const snapshot = await requestOsPermission(nextPermission);
-  if (snapshot[nextPermission] !== "granted") {
-    await openSystemPermissionSettings(nextPermission);
-  }
-  return snapshot;
 }
 
 export async function checkAgentPermission(agentWallet: string, permissionKey: string): Promise<boolean> {

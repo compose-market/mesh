@@ -448,14 +448,212 @@ button.primary:hover {
 .skill-detail-modal {
   max-width: 550px;
 }
+/* ── Settings Page (sp-*) ── */
 
-.settings-page {
-  max-width: 720px;
-  margin: 0 auto;
+.sp {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding-bottom: 40px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sp-topbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 0;
+}
+
+.sp-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  overflow: hidden;
+}
+
+.sp-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border) / 0.5) transparent;
+}
+
+.sp-card {
+  border: 1px solid hsl(var(--border) / 0.88);
+  border-radius: max(var(--radius, 0.25rem), 0.3rem);
+  background: linear-gradient(180deg, hsl(var(--card) / 0.96), hsl(var(--card) / 0.82));
+  box-shadow:
+    0 4px 16px hsl(240 30% 2% / 0.2),
+    inset 0 1px 0 hsl(0 0% 100% / 0.04);
+  backdrop-filter: blur(16px);
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.sp-card--row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sp-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.sp-card-head h3 {
+  margin: 0;
+  font-family: var(--font-display), sans-serif;
+  font-size: 0.88rem;
+  letter-spacing: 0.04em;
+  color: hsl(var(--foreground));
+}
+
+/* ── Permission toggle row ── */
+.sp-perm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.sp-perm-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid hsl(var(--border) / 0.6);
+  border-radius: max(var(--radius, 0.25rem), 0.3rem);
+  background: hsl(var(--muted) / 0.18);
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.sp-perm-row:hover:not(:disabled) {
+  border-color: hsl(var(--primary) / 0.4);
+  background: hsl(var(--muted) / 0.3);
+}
+
+.sp-perm-row:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sp-perm-row--on {
+  border-color: hsl(142 71% 45% / 0.4);
+  background: hsl(142 71% 45% / 0.06);
+}
+
+.sp-perm-label {
+  flex: 1;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sp-perm-badge {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: hsl(var(--muted) / 0.4);
+}
+
+.sp-perm-badge--granted {
+  color: hsl(142 71% 45%);
+  background: hsl(142 71% 45% / 0.12);
+}
+
+/* ── Paths section ── */
+.sp-path-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.sp-path-group .cm-form-group {
+  margin-bottom: 0;
+}
+
+.sp-path-readonly {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: max(var(--radius, 0.25rem), 0.3rem);
+  background: hsl(var(--muted) / 0.12);
+  border: 1px solid hsl(var(--border) / 0.35);
+}
+
+.sp-path-label {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+  flex-shrink: 0;
+  min-width: 3.5rem;
+}
+
+.sp-path-value {
+  font-size: 0.72rem;
+  color: hsl(var(--foreground) / 0.75);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono), monospace;
+}
+
+.sp-path-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* ── Version row ── */
+.sp-version-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sp-version-info strong {
+  font-family: var(--font-display), sans-serif;
+  font-size: 0.82rem;
+  color: hsl(var(--foreground));
+  letter-spacing: 0.04em;
+}
+
+/* ── Responsive: stack on narrow viewports ── */
+@media (max-width: 720px) {
+  .sp-grid {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .sp-col {
+    overflow-y: visible;
+  }
 }
 
 .modal-header {
@@ -1196,6 +1394,72 @@ button.primary:hover {
   padding-right: 4px;
 }
 
+.local-chat-thread {
+  display: grid;
+  gap: 12px;
+  flex: 1;
+  min-height: 280px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.local-chat-message {
+  display: grid;
+  gap: 8px;
+  max-width: min(92%, 760px);
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.55);
+}
+
+.local-chat-message--user {
+  justify-self: end;
+  background: hsl(var(--primary) / 0.1);
+  border-color: hsl(var(--primary) / 0.35);
+}
+
+.local-chat-message--assistant {
+  justify-self: start;
+}
+
+.local-chat-message--failed {
+  border-color: hsl(var(--destructive) / 0.48);
+}
+
+.local-chat-message-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.local-chat-message-head strong {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+
+.local-chat-message-head span {
+  color: hsl(var(--muted-foreground));
+}
+
+.local-chat-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: hsl(var(--foreground));
+  line-height: 1.65;
+}
+
+.local-chat-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
 /* ── Permission toggle cards ── */
 
 .perm-toggle-grid {
@@ -1498,7 +1762,7 @@ button.primary:hover {
 
 .mesh-stat-pill {
   white-space: nowrap;
-  background: rgb(3 10 24 / 0.8);
+  background: hsl(var(--background) / 0.8);
   backdrop-filter: blur(18px);
 }
 
@@ -1511,12 +1775,12 @@ button.primary:hover {
   background:
     radial-gradient(circle at 18% 18%, hsl(var(--primary) / 0.14), transparent 24%),
     radial-gradient(circle at 84% 16%, hsl(var(--accent) / 0.14), transparent 24%),
-    radial-gradient(circle at 50% 110%, rgb(10 28 48 / 0.48), transparent 48%),
-    linear-gradient(180deg, rgb(1 7 15 / 0.98), rgb(3 11 24 / 0.98));
+    radial-gradient(circle at 50% 110%, hsl(var(--muted) / 0.48), transparent 48%),
+    linear-gradient(180deg, hsl(var(--background) / 0.98), hsl(var(--background) / 0.98));
   box-shadow:
     inset 0 0 0 1px hsl(var(--primary) / 0.04),
-    inset 0 40px 100px rgb(6 182 212 / 0.04),
-    0 30px 60px rgb(0 0 0 / 0.22);
+    inset 0 40px 100px hsl(var(--primary) / 0.04),
+    0 30px 60px hsl(0 0% 0% / 0.22);
 }
 
 .mesh-stage__canvas {
@@ -1525,6 +1789,7 @@ button.primary:hover {
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  contain: layout style paint;
 }
 
 .mesh-stage__aurora,
@@ -1534,20 +1799,22 @@ button.primary:hover {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  z-index: 2;
 }
 
 .mesh-stage__aurora {
   background:
-    radial-gradient(circle at 22% 30%, hsl(var(--primary) / 0.16), transparent 24%),
-    radial-gradient(circle at 72% 24%, hsl(var(--accent) / 0.12), transparent 20%),
-    radial-gradient(circle at 50% 74%, rgb(12 40 68 / 0.3), transparent 36%);
+    radial-gradient(circle at 22% 30%, hsl(var(--primary) / 0.18), transparent 28%),
+    radial-gradient(circle at 72% 24%, hsl(var(--accent) / 0.14), transparent 24%),
+    radial-gradient(circle at 50% 74%, hsl(var(--muted) / 0.32), transparent 40%);
+  will-change: opacity;
 }
 
 .mesh-stage__noise {
   background-image:
-    linear-gradient(hsl(0 0% 100% / 0.02) 1px, transparent 1px),
-    linear-gradient(90deg, hsl(0 0% 100% / 0.02) 1px, transparent 1px),
-    linear-gradient(180deg, transparent, rgb(6 182 212 / 0.06), transparent);
+    linear-gradient(hsl(var(--border) / 0.12) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--border) / 0.12) 1px, transparent 1px),
+    linear-gradient(180deg, transparent, hsl(var(--primary) / 0.06), transparent);
   background-size: 40px 40px, 40px 40px, 100% 220px;
   background-position: 0 0, 0 0, 0 12%;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.1));
@@ -1562,16 +1829,17 @@ button.primary:hover {
 
 .mesh-stage__scanband {
   background:
-    linear-gradient(120deg, transparent 0%, transparent 36%, rgb(26 226 255 / 0.04) 50%, transparent 64%, transparent 100%);
+    linear-gradient(120deg, transparent 0%, transparent 36%, hsl(var(--primary) / 0.04) 50%, transparent 64%, transparent 100%);
   transform: translateX(-55%);
   animation: mesh-stage-scanband 14s linear infinite;
   opacity: 0.9;
+  will-change: transform;
 }
 
 .mesh-stage__vignette {
   background:
-    radial-gradient(circle at 50% 50%, transparent 44%, rgb(1 7 15 / 0.3) 100%),
-    linear-gradient(180deg, rgb(1 7 15 / 0.28), transparent 18%, transparent 76%, rgb(1 7 15 / 0.38));
+    radial-gradient(circle at 50% 50%, transparent 38%, hsl(var(--background) / 0.38) 100%),
+    linear-gradient(180deg, hsl(var(--background) / 0.32), transparent 18%, transparent 72%, hsl(var(--background) / 0.44));
 }
 
 .mesh-stage__hud {
@@ -1592,9 +1860,9 @@ button.primary:hover {
 .mesh-manifest-card {
   border: 1px solid hsl(var(--border) / 0.72);
   background:
-    linear-gradient(180deg, rgb(3 10 22 / 0.94), rgb(4 12 28 / 0.82));
+    linear-gradient(180deg, hsl(var(--card) / 0.94), hsl(var(--card) / 0.82));
   backdrop-filter: blur(18px);
-  box-shadow: 0 22px 48px rgb(0 0 0 / 0.24);
+  box-shadow: 0 22px 48px hsl(0 0% 0% / 0.24);
 }
 
 .mesh-stage__titleblock {
@@ -1691,7 +1959,7 @@ button.primary:hover {
   width: 16px;
   height: 2px;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgb(26 226 255 / 0.3), rgb(255 78 170 / 0.3));
+  background: linear-gradient(90deg, hsl(var(--primary) / 0.3), hsl(var(--accent) / 0.3));
 }
 
 .mesh-region-label {
@@ -1759,10 +2027,10 @@ button.primary:hover {
   width: 64px;
   height: 64px;
   border-radius: 999px;
-  border: 1px solid rgb(26 226 255 / 0.22);
+  border: 1px solid hsl(var(--primary) / 0.22);
   box-shadow:
-    inset 0 0 28px rgb(26 226 255 / 0.06),
-    0 0 28px rgb(26 226 255 / 0.08);
+    inset 0 0 28px hsl(var(--primary) / 0.06),
+    0 0 28px hsl(var(--primary) / 0.08);
   animation: mesh-sonar-ring 4.8s ease-out infinite;
 }
 
@@ -1781,15 +2049,15 @@ button.primary:hover {
   border-radius: 999px;
   display: grid;
   place-items: center;
-  border: 1px solid rgb(26 226 255 / 0.36);
+  border: 1px solid hsl(var(--primary) / 0.36);
   background:
-    radial-gradient(circle at 50% 50%, rgb(26 226 255 / 0.22), transparent 72%),
-    linear-gradient(180deg, rgb(2 14 26 / 0.96), rgb(3 18 34 / 0.92));
+    radial-gradient(circle at 50% 50%, hsl(var(--primary) / 0.22), transparent 72%),
+    linear-gradient(180deg, hsl(var(--background) / 0.96), hsl(var(--card) / 0.92));
   color: hsl(var(--primary));
   box-shadow:
-    inset 0 0 18px rgb(26 226 255 / 0.1),
-    0 0 22px rgb(26 226 255 / 0.12),
-    0 0 56px rgb(255 78 170 / 0.08);
+    inset 0 0 18px hsl(var(--primary) / 0.1),
+    0 0 22px hsl(var(--primary) / 0.12),
+    0 0 56px hsl(var(--accent) / 0.08);
 }
 
 .mesh-viewer-node__label {
@@ -1955,6 +2223,23 @@ button.primary:hover {
 
   100% {
     transform: translateX(55%);
+  }
+}
+
+/* ── Reduced motion ── */
+@media (prefers-reduced-motion: reduce) {
+  .mesh-stage__scanband {
+    animation: none;
+    opacity: 0;
+  }
+
+  .mesh-stage__aurora {
+    opacity: 0.5;
+  }
+
+  .mesh-viewer-node__rings span {
+    animation: none;
+    opacity: 0.3;
   }
 }
 

@@ -1,6 +1,6 @@
 # HEARTBEAT
 
-Read `SOUL.md` and the installed global skills on every heartbeat.
+Read `AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, and the installed global skills on every heartbeat.
 
 If no action is needed, reply exactly with `HEARTBEAT_OK`.
 

@@ -1,10 +1,10 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeckProps, PickingInfo } from "@deck.gl/core";
-import { ArcLayer, GeoJsonLayer, PathLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { ArcLayer, GeoJsonLayer, PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import { Activity, Minus, Radio, ScanSearch, Wallet, Waypoints, X } from "lucide-react";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
-import MapView, { Marker, useControl, type MapRef } from "react-map-gl/maplibre";
+import MapView, { useControl, type MapRef } from "react-map-gl/maplibre";
 import { feature } from "topojson-client";
 import worldAtlas from "world-atlas/countries-110m.json";
 import { ShellPanel, ShellPill } from "@compose-market/theme/shell";
@@ -78,10 +78,23 @@ interface HoverTarget {
   detail: string;
 }
 
-const CYAN: [number, number, number] = [34, 211, 238];
-const CYAN_SOFT: [number, number, number] = [103, 232, 249];
-const MAGENTA: [number, number, number] = [217, 70, 239];
-const SLATE: [number, number, number] = [148, 163, 184];
+interface RegionLabelDatum {
+  id: string;
+  position: [number, number];
+  city: string;
+  code: string;
+  selected: boolean;
+  side: "east" | "west" | "north" | "south";
+}
+
+/* ── Brand-exact color palette ───────────────────────────────────── */
+/* Primary  hsl(188 95% 43%)  → rgb(5, 175, 214)  */
+/* Accent   hsl(292 85% 55%)  → rgb(198, 41, 224) */
+const CYAN: [number, number, number] = [5, 175, 214];
+const CYAN_SOFT: [number, number, number] = [76, 211, 235];
+const MAGENTA: [number, number, number] = [198, 41, 224];
+const SLATE: [number, number, number] = [107, 114, 128];
+
 const MAP_STYLE: StyleSpecification = {
   version: 8,
   name: "Compose Mesh Blank",
@@ -109,9 +122,14 @@ const WORLD_GEOJSON = feature(
 ) as unknown as GeoJSON.FeatureCollection;
 const GRATICULE_PATHS = buildGraticulePaths();
 
-function DeckGLOverlay(props: DeckProps) {
+/* ── DeckGL overlay with imperative ref ──────────────────────────── */
+
+function DeckGLOverlay(props: DeckProps & { overlayRef?: React.RefObject<MapboxOverlay | null> }) {
   const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay({ interleaved: false, ...props }));
   overlay.setProps(props);
+  if (props.overlayRef && "current" in props.overlayRef) {
+    (props.overlayRef as React.MutableRefObject<MapboxOverlay | null>).current = overlay;
+  }
   return null;
 }
 
@@ -119,8 +137,8 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function buildGraticulePaths(): Array<{ id: string; path: [number, number][]; emphasis: boolean }> {
-  const paths: Array<{ id: string; path: [number, number][]; emphasis: boolean }> = [];
+function buildGraticulePaths(): Array<{ id: string; path: [number, number][]; emphasis: boolean; isLatitude: boolean }> {
+  const paths: Array<{ id: string; path: [number, number][]; emphasis: boolean; isLatitude: boolean }> = [];
 
   for (let longitude = -150; longitude <= 180; longitude += 30) {
     const path: [number, number][] = [];
@@ -131,6 +149,7 @@ function buildGraticulePaths(): Array<{ id: string; path: [number, number][]; em
       id: `lon-${longitude}`,
       path,
       emphasis: longitude % 60 === 0,
+      isLatitude: false,
     });
   }
 
@@ -143,6 +162,7 @@ function buildGraticulePaths(): Array<{ id: string; path: [number, number][]; em
       id: `lat-${latitude}`,
       path,
       emphasis: latitude === 0,
+      isLatitude: true,
     });
   }
 
@@ -184,29 +204,26 @@ function labelSide(region: { x: number; y: number }): "east" | "west" | "north" 
   return region.y < 38 ? "south" : "north";
 }
 
+function labelAnchor(side: "east" | "west" | "north" | "south"): "start" | "end" | "middle" {
+  if (side === "east") return "start";
+  if (side === "west") return "end";
+  return "middle";
+}
+
+function labelOffset(side: "east" | "west" | "north" | "south"): [number, number] {
+  if (side === "east") return [20, -2];
+  if (side === "west") return [-20, -2];
+  if (side === "north") return [0, -18];
+  return [0, 18];
+}
+
 export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) {
   const mapRef = useRef<MapRef | null>(null);
+  const overlayRef = useRef<MapboxOverlay | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [cardCollapsed, setCardCollapsed] = useState(false);
   const [hoverTarget, setHoverTarget] = useState<HoverTarget | null>(null);
-  const [animationTick, setAnimationTick] = useState(0);
-
-  useEffect(() => {
-    let frameId = 0;
-    let previousCommit = 0;
-
-    const step = (timestamp: number) => {
-      if (timestamp - previousCommit >= 48) {
-        previousCommit = timestamp;
-        setAnimationTick(timestamp);
-      }
-      frameId = window.requestAnimationFrame(step);
-    };
-
-    frameId = window.requestAnimationFrame(step);
-    return () => window.cancelAnimationFrame(frameId);
-  }, []);
 
   const scene = useMemo(() => buildMeshScene({ peers, resolution: bootstrapResolution }), [bootstrapResolution, peers]);
   const stage = useMemo(
@@ -387,6 +404,19 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
   const observedNodeLinks = useMemo(() => nodeLinks.filter((link) => link.kind === "observed"), [nodeLinks]);
   const anchorNodeLinks = useMemo(() => nodeLinks.filter((link) => link.kind === "anchor"), [nodeLinks]);
 
+  /* ── GPU text labels derived from region points ──────────────── */
+  const regionLabels = useMemo(() => regionPoints.map((region) => {
+    const side = labelSide(regionsById.get(region.id) || { x: 50, y: 50 });
+    return {
+      id: region.id,
+      position: [region.longitude, region.latitude] as [number, number],
+      city: region.city,
+      code: formatRegionMeta(region),
+      selected: region.selected,
+      side,
+    };
+  }), [regionPoints, regionsById]);
+
   const handleHover = useCallback((info: PickingInfo<RegionPoint | NodePoint>) => {
     const item = info.object;
     if (!item) {
@@ -444,6 +474,7 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
   const stableHover = useCallback((info: PickingInfo<RegionPoint | NodePoint>) => handleHoverRef.current(info), []);
   const stableClick = useCallback((info: PickingInfo<RegionPoint | NodePoint>) => handleLayerClickRef.current(info), []);
 
+  /* ── Static layers (rebuilt only when data changes) ──────────── */
   const staticLayers = useMemo(() => [
     new GeoJsonLayer({
       id: "mesh-land",
@@ -453,9 +484,9 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
       filled: true,
       lineWidthUnits: "pixels",
       lineWidthMinPixels: 1,
-      getFillColor: [6, 15, 30, 168],
-      getLineColor: [38, 76, 102, 124],
-      getLineWidth: 1,
+      getFillColor: [4, 12, 28, 178],
+      getLineColor: [CYAN[0], CYAN[1], CYAN[2], 72],
+      getLineWidth: 1.4,
     }),
     new PathLayer({
       id: "mesh-graticule",
@@ -464,8 +495,15 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
       widthUnits: "pixels",
       rounded: true,
       getPath: (path) => path.path,
-      getWidth: (path) => (path.emphasis ? 1.2 : 0.75),
-      getColor: (path) => (path.emphasis ? [CYAN[0], CYAN[1], CYAN[2], 50] : [CYAN[0], CYAN[1], CYAN[2], 24]),
+      getWidth: (path) => (path.emphasis ? 1.2 : 0.65),
+      getColor: (path) => {
+        if (path.emphasis) {
+          return [CYAN[0], CYAN[1], CYAN[2], 55];
+        }
+        return path.isLatitude
+          ? [MAGENTA[0], MAGENTA[1], MAGENTA[2], 18]
+          : [CYAN[0], CYAN[1], CYAN[2], 22];
+      },
     }),
     new ArcLayer<RegionArcDatum>({
       id: "mesh-region-links",
@@ -474,10 +512,10 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
       widthUnits: "pixels",
       getSourcePosition: (link) => link.sourcePosition,
       getTargetPosition: (link) => link.targetPosition,
-      getSourceColor: (link) => [CYAN[0], CYAN[1], CYAN[2], link.selected ? 184 : 96],
-      getTargetColor: (link) => [MAGENTA[0], MAGENTA[1], MAGENTA[2], link.selected ? 168 : 86],
-      getWidth: (link) => 1.2 + (link.count * 0.9),
-      getHeight: (link) => 0.18 + (link.count * 0.05),
+      getSourceColor: (link) => [CYAN[0], CYAN[1], CYAN[2], link.selected ? 200 : 110],
+      getTargetColor: (link) => [MAGENTA[0], MAGENTA[1], MAGENTA[2], link.selected ? 185 : 100],
+      getWidth: (link) => 1.6 + (link.count * 1.1),
+      getHeight: (link) => 0.22 + (link.count * 0.06),
       getTilt: () => 12,
     }),
     new ArcLayer<NodeLinkDatum>({
@@ -487,10 +525,10 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
       widthUnits: "pixels",
       getSourcePosition: (link) => link.sourcePosition,
       getTargetPosition: (link) => link.targetPosition,
-      getSourceColor: (link) => [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], link.selected ? 204 : 62],
-      getTargetColor: (link) => [MAGENTA[0], MAGENTA[1], MAGENTA[2], link.selected ? 184 : 54],
-      getWidth: (link) => 0.8 + (link.intensity * 2.1),
-      getHeight: (link) => 0.12 + (link.intensity * 0.08),
+      getSourceColor: (link) => [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], link.selected ? 215 : 72],
+      getTargetColor: (link) => [MAGENTA[0], MAGENTA[1], MAGENTA[2], link.selected ? 200 : 62],
+      getWidth: (link) => 0.9 + (link.intensity * 2.4),
+      getHeight: (link) => 0.16 + (link.intensity * 0.1),
       getTilt: () => -10,
     }),
     new ArcLayer<NodeLinkDatum>({
@@ -500,22 +538,29 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
       widthUnits: "pixels",
       getSourcePosition: (link) => link.sourcePosition,
       getTargetPosition: (link) => link.targetPosition,
-      getSourceColor: (link) => [CYAN[0], CYAN[1], CYAN[2], link.selected ? 126 : 52],
-      getTargetColor: (link) => [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], link.selected ? 172 : 72],
-      getWidth: (link) => 0.7 + (link.intensity * 1.2),
-      getHeight: (link) => 0.08 + (link.intensity * 0.05),
+      getSourceColor: (link) => [CYAN[0], CYAN[1], CYAN[2], link.selected ? 140 : 58],
+      getTargetColor: (link) => [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], link.selected ? 185 : 82],
+      getWidth: (link) => 0.8 + (link.intensity * 1.4),
+      getHeight: (link) => 0.1 + (link.intensity * 0.06),
       getTilt: () => 0,
     }),
     new ScatterplotLayer<RegionPoint>({
       id: "mesh-region-cores",
       data: regionPoints,
       pickable: false,
-      stroked: false,
+      stroked: true,
       filled: true,
       radiusUnits: "pixels",
+      lineWidthUnits: "pixels",
       getPosition: (region) => [region.longitude, region.latitude],
-      getRadius: (region) => 3.8 + Math.min(region.activityCount, 4),
-      getFillColor: (region) => region.selected ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 255] : [CYAN[0], CYAN[1], CYAN[2], 224],
+      getRadius: (region) => 4.2 + Math.min(region.activityCount, 5),
+      getFillColor: (region) => region.selected
+        ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 255]
+        : [CYAN[0], CYAN[1], CYAN[2], 235],
+      getLineColor: (region) => region.selected
+        ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 180]
+        : [CYAN[0], CYAN[1], CYAN[2], 110],
+      getLineWidth: (region) => region.selected ? 2.4 : 1.2,
     }),
     new ScatterplotLayer<NodePoint>({
       id: "mesh-node-cores",
@@ -526,15 +571,15 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
       radiusUnits: "pixels",
       lineWidthUnits: "pixels",
       getPosition: (node) => [node.longitude, node.latitude],
-      getRadius: (node) => (node.kindLabel === "local" ? 6.6 : node.selected ? 4.8 : 3.5),
+      getRadius: (node) => (node.kindLabel === "local" ? 7 : node.selected ? 5.2 : 3.8),
       getFillColor: (node) => {
         if (node.kindLabel === "local") {
           return [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 255];
         }
         if (node.stale) {
-          return [SLATE[0], SLATE[1], SLATE[2], 205];
+          return [SLATE[0], SLATE[1], SLATE[2], 195];
         }
-        return [MAGENTA[0], MAGENTA[1], MAGENTA[2], 240];
+        return [MAGENTA[0], MAGENTA[1], MAGENTA[2], 245];
       },
       getLineColor: (node) => {
         if (node.kindLabel === "local") {
@@ -542,63 +587,148 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
         }
         return node.selected
           ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 255]
-          : [19, 32, 44, 255];
+          : [12, 24, 38, 255];
       },
-      getLineWidth: (node) => (node.selected ? 2.2 : 1.1),
+      getLineWidth: (node) => (node.selected ? 2.4 : 1.2),
     }),
-  ], [anchorNodeLinks, nodePoints, observedNodeLinks, regionLinks, regionPoints]);
+    /* GPU-rendered region labels — city name */
+    new TextLayer<RegionLabelDatum>({
+      id: "mesh-label-city",
+      data: regionLabels,
+      pickable: false,
+      getPosition: (d) => d.position,
+      getText: (d) => d.city,
+      getColor: (d) => d.selected
+        ? [CYAN[0], CYAN[1], CYAN[2], 255]
+        : [210, 220, 230, 215],
+      getSize: 11,
+      getTextAnchor: (d) => labelAnchor(d.side),
+      getAlignmentBaseline: "center",
+      getPixelOffset: (d) => labelOffset(d.side),
+      fontFamily: "Orbitron, sans-serif",
+      fontWeight: 700,
+      fontSettings: { sdf: true },
+      outlineWidth: 4,
+      outlineColor: [2, 6, 17, 200],
+      sizeUnits: "pixels",
+      sizeScale: 1,
+      characterSet: "auto",
+    }),
+    /* GPU-rendered region labels — region code */
+    new TextLayer<RegionLabelDatum>({
+      id: "mesh-label-code",
+      data: regionLabels,
+      pickable: false,
+      getPosition: (d) => d.position,
+      getText: (d) => d.code,
+      getColor: [SLATE[0], SLATE[1], SLATE[2], 180],
+      getSize: 9,
+      getTextAnchor: (d) => labelAnchor(d.side),
+      getAlignmentBaseline: "center",
+      getPixelOffset: (d) => {
+        const base = labelOffset(d.side);
+        if (d.side === "north") return [base[0], base[1] - 13];
+        if (d.side === "south") return [base[0], base[1] + 13];
+        return [base[0], base[1] + 13];
+      },
+      fontFamily: "'Fira Code', monospace",
+      fontWeight: 500,
+      fontSettings: { sdf: true },
+      outlineWidth: 3,
+      outlineColor: [2, 6, 17, 180],
+      sizeUnits: "pixels",
+      sizeScale: 1,
+      characterSet: "auto",
+    }),
+  ], [anchorNodeLinks, nodePoints, observedNodeLinks, regionLabels, regionLinks, regionPoints]);
 
-  const animatedLayers = useMemo(() => {
-    const wave = (Math.sin(animationTick / 420) + 1) / 2;
+  /* ── Ref-based animated layers (no React re-renders) ─────────── */
+  const staticLayersRef = useRef(staticLayers);
+  useEffect(() => { staticLayersRef.current = staticLayers; }, [staticLayers]);
 
-    return [
-      new ScatterplotLayer<RegionPoint>({
-        id: "mesh-region-halos",
-        data: regionPoints,
-        pickable: true,
-        stroked: true,
-        filled: true,
-        radiusUnits: "pixels",
-        lineWidthUnits: "pixels",
-        getPosition: (region) => [region.longitude, region.latitude],
-        getRadius: (region) => 12 + (region.activityCount * 2.8) + (wave * (region.activityCount > 0 ? 12 : 5)),
-        getFillColor: (region) => [CYAN[0], CYAN[1], CYAN[2], region.highlighted ? 34 : 18],
-        getLineColor: (region) => region.selected ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 210] : [CYAN[0], CYAN[1], CYAN[2], 126],
-        getLineWidth: (region) => region.selected ? 2.8 : 1.2,
-        onHover: stableHover,
-        onClick: stableClick,
-      }),
-      new ScatterplotLayer<NodePoint>({
-        id: "mesh-node-pulses",
-        data: nodePoints,
-        pickable: true,
-        stroked: false,
-        filled: true,
-        radiusUnits: "pixels",
-        getPosition: (node) => [node.longitude, node.latitude],
-        getRadius: (node) => {
-          if (node.kindLabel === "local") {
-            return 12 + (wave * 14);
-          }
-          const freshness = node.stale ? 0.55 : 1;
-          return 5 + (freshness * 9) + (wave * (6 + Math.min(node.signalCount, 4)));
-        },
-        getFillColor: (node) => {
-          if (node.kindLabel === "local") {
-            return [CYAN[0], CYAN[1], CYAN[2], node.selected ? 62 : 34];
-          }
-          if (node.stale) {
-            return [SLATE[0], SLATE[1], SLATE[2], 28];
-          }
-          return [MAGENTA[0], MAGENTA[1], MAGENTA[2], node.selected ? 68 : 34];
-        },
-        onHover: stableHover,
-        onClick: stableClick,
-      }),
-    ];
-  }, [animationTick, nodePoints, regionPoints, stableClick, stableHover]);
+  const regionPointsRef = useRef(regionPoints);
+  const nodePointsRef = useRef(nodePoints);
+  useEffect(() => { regionPointsRef.current = regionPoints; }, [regionPoints]);
+  useEffect(() => { nodePointsRef.current = nodePoints; }, [nodePoints]);
 
-  const layers = useMemo(() => [...staticLayers, ...animatedLayers], [staticLayers, animatedLayers]);
+  const stableHoverRef = useRef(stableHover);
+  const stableClickRef = useRef(stableClick);
+  useEffect(() => { stableHoverRef.current = stableHover; }, [stableHover]);
+  useEffect(() => { stableClickRef.current = stableClick; }, [stableClick]);
+
+  useEffect(() => {
+    let frameId = 0;
+    let previousCommit = 0;
+
+    const step = (timestamp: number) => {
+      if (timestamp - previousCommit >= 48) {
+        previousCommit = timestamp;
+        const wave = (Math.sin(timestamp / 420) + 1) / 2;
+        const rp = regionPointsRef.current;
+        const np = nodePointsRef.current;
+
+        const animatedLayers = [
+          new ScatterplotLayer<RegionPoint>({
+            id: "mesh-region-halos",
+            data: rp,
+            pickable: true,
+            stroked: true,
+            filled: true,
+            radiusUnits: "pixels",
+            lineWidthUnits: "pixels",
+            getPosition: (region) => [region.longitude, region.latitude],
+            getRadius: (region) => 14 + (region.activityCount * 3.2) + (wave * (region.activityCount > 0 ? 14 : 6)),
+            getFillColor: (region) => [CYAN[0], CYAN[1], CYAN[2], region.highlighted ? 38 : 20],
+            getLineColor: (region) => region.selected
+              ? [CYAN_SOFT[0], CYAN_SOFT[1], CYAN_SOFT[2], 220]
+              : [CYAN[0], CYAN[1], CYAN[2], 130 + Math.round(wave * 40)],
+            getLineWidth: (region) => region.selected ? 3 : 1.4 + (wave * 0.8),
+            onHover: stableHoverRef.current,
+            onClick: stableClickRef.current,
+          }),
+          new ScatterplotLayer<NodePoint>({
+            id: "mesh-node-pulses",
+            data: np,
+            pickable: true,
+            stroked: false,
+            filled: true,
+            radiusUnits: "pixels",
+            getPosition: (node) => [node.longitude, node.latitude],
+            getRadius: (node) => {
+              if (node.kindLabel === "local") {
+                return 14 + (wave * 16);
+              }
+              const freshness = node.stale ? 0.45 : 1;
+              return 6 + (freshness * 10) + (wave * (7 + Math.min(node.signalCount, 5)));
+            },
+            getFillColor: (node) => {
+              if (node.kindLabel === "local") {
+                return [CYAN[0], CYAN[1], CYAN[2], node.selected ? 68 : 38];
+              }
+              if (node.stale) {
+                return [SLATE[0], SLATE[1], SLATE[2], 24];
+              }
+              return [MAGENTA[0], MAGENTA[1], MAGENTA[2], node.selected ? 74 : 38];
+            },
+            onHover: stableHoverRef.current,
+            onClick: stableClickRef.current,
+          }),
+        ];
+
+        const overlay = overlayRef.current;
+        if (overlay) {
+          overlay.setProps({ layers: [...staticLayersRef.current, ...animatedLayers] });
+        }
+      }
+      frameId = window.requestAnimationFrame(step);
+    };
+
+    frameId = window.requestAnimationFrame(step);
+    return () => window.cancelAnimationFrame(frameId);
+  }, []);
+
+  /* ── Initial layers for first paint ──────────────────────────── */
+  const initialLayers = useMemo(() => staticLayers, [staticLayers]);
 
   return (
     <section className="mesh-page">
@@ -622,16 +752,7 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
               renderWorldCopies={false}
               style={{ width: "100%", height: "100%" }}
             >
-              <DeckGLOverlay layers={layers} />
-
-              {regionPoints.map((region) => (
-                <Marker key={region.id} longitude={region.longitude} latitude={region.latitude} anchor="center">
-                  <div className={`mesh-region-label ${region.selected ? "selected" : ""}`} data-side={labelSide(regionsById.get(region.id) || { x: 50, y: 50 })}>
-                    <strong>{region.city}</strong>
-                    <span>{formatRegionMeta(region)}</span>
-                  </div>
-                </Marker>
-              ))}
+              <DeckGLOverlay layers={initialLayers} overlayRef={overlayRef} />
             </MapView>
           </div>
 

@@ -19,6 +19,11 @@ export interface BuiltinSkillRoot {
   relativePath: string;
 }
 
+export interface BuiltinBootstrapFile {
+  name: string;
+  content: string;
+}
+
 const BUILTIN_SKILL_SOURCE: SkillSource = {
   id: "built-in",
   name: "Built-in",
@@ -36,6 +41,12 @@ const ROOTS = [
 ] as const;
 
 const RAW = import.meta.glob<string>("../../skills/global/**/SKILL.md", {
+  eager: true,
+  import: "default",
+  query: "?raw",
+});
+
+const BOOTSTRAP_RAW = import.meta.glob<string>("../../skills/agent/*.md", {
   eager: true,
   import: "default",
   query: "?raw",
@@ -82,6 +93,14 @@ const builtinSkillFiles: BuiltinSkillFile[] = Object.entries(RAW)
 const builtinSkillFileMap = new Map(
   builtinSkillFiles.map((entry) => [entry.relativePath, entry.content]),
 );
+
+const builtinBootstrapFiles: BuiltinBootstrapFile[] = Object.entries(BOOTSTRAP_RAW)
+  .sort(([left], [right]) => left.localeCompare(right))
+  .map(([sourcePath, content]) => ({
+    name: sourcePath.split("/").pop() || "",
+    content,
+  }))
+  .filter((entry) => entry.name.length > 0);
 
 export function parseSkillFrontmatter(content: string): ParsedFrontmatter {
   const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
@@ -196,4 +215,8 @@ export function listBuiltinSkillFiles(): BuiltinSkillFile[] {
 
 export function listBuiltinSkillRoots(): BuiltinSkillRoot[] {
   return builtinSkillRoots.map((entry) => ({ ...entry }));
+}
+
+export function listBuiltinBootstrapFiles(): BuiltinBootstrapFile[] {
+  return builtinBootstrapFiles.map((entry) => ({ ...entry }));
 }
