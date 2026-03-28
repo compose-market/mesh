@@ -8,6 +8,9 @@ description: Core rules for MCPs, connectors, accounts, and local Compose tool s
 Check what already exists before asking the user for anything.
 
 Use these local Compose surfaces:
+- central MCP registry list: `/registry/servers?origin=mcp&available=true`
+- central MCP registry search: `/registry/servers/search?q=<query>&limit=20`
+- central MCP registry detail: `/registry/servers/:registryId`
 - connector registry spawn: `/registry/servers/:id/spawn`
 - MCP servers list: `/mcp/servers`
 - MCP tools list: `/mcp/servers/:slug/tools`
@@ -19,6 +22,7 @@ Use these local Compose surfaces:
 
 Order of work:
 1. inspect registry and available MCPs
-2. inspect connected accounts
-3. ask for missing access only when required
-4. execute the tool
+2. inspect the chosen registry record before spawning
+3. inspect connected accounts
+4. ask for missing access only when required
+5. execute the tool
