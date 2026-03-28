@@ -83,7 +83,7 @@ export function MachineStatusCard({ label, value }: MachineStatusCardProps) {
 
 interface PermissionsPanelProps {
   permissions: AgentPermissionPolicy;
-  osPermissions: { camera: string; microphone: string };
+  osPermissions: { camera: string; microphone: string; fullDiskAccess?: string; accessibility?: string };
   agentWallet: string;
   permissionBusy: keyof AgentPermissionPolicy | null;
   onToggle: (key: keyof AgentPermissionPolicy) => void;
@@ -106,6 +106,8 @@ export function PermissionsPanel({ permissions, osPermissions, agentWallet, perm
       </div>
       <div className="perm-machine-row">
         <MachineStatusCard label="Wallet" value={`${agentWallet.slice(0, 8)}...${agentWallet.slice(-4)}`} />
+        <MachineStatusCard label="Camera" value={osPermissions.camera} />
+        <MachineStatusCard label="Microphone" value={osPermissions.microphone} />
       </div>
     </ShellPanel>
   );
