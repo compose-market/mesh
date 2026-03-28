@@ -285,8 +285,8 @@ export default function App() {
     void (async () => {
       const loaded = await loadRuntimeState();
       const osPermissions = await queryOsPermissions().catch(() => loaded.osPermissions);
-      const hydratedState = await syncInstalledAgentsWithDaemon(reconcileStateWithOsPermissions(loaded, osPermissions))
-        .catch(() => reconcileStateWithOsPermissions(loaded, osPermissions));
+      const daemonHydratedState = await syncInstalledAgentsWithDaemon(loaded).catch(() => loaded);
+      const hydratedState = reconcileStateWithOsPermissions(daemonHydratedState, osPermissions);
       await ensureSkillsRoot();
       await ensureBuiltinSkillsInstalled();
       const resolvedPaths = await getLocalPaths();
@@ -297,6 +297,42 @@ export default function App() {
       setState(hydratedState);
       setSession(sessionFromIdentity(hydratedState.identity));
     })();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const refresh = async () => {
+      const current = stateRef.current;
+      if (!current) {
+        return;
+      }
+
+      const loaded = await loadRuntimeState();
+      const daemonHydratedState = await syncInstalledAgentsWithDaemon(loaded).catch(() => loaded);
+      const hydratedState = reconcileStateWithOsPermissions(daemonHydratedState, current.osPermissions);
+
+      if (cancelled) {
+        return;
+      }
+
+      stateRef.current = hydratedState;
+      setState(hydratedState);
+      setSession(sessionFromIdentity(hydratedState.identity));
+    };
+
+    const intervalId = window.setInterval(() => {
+      void refresh();
+    }, 3_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   useEffect(() => {
