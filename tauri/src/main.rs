@@ -28,7 +28,7 @@ use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::{mpsc, oneshot};
 
 use runtime_host::{
-    current_runtime_host_auth_token, LocalRuntimeHostState, LocalRuntimeHostStatus,
+    current_runtime_host_auth_token, LocalRuntimeHostState,
 };
 
 const LOCAL_RUNTIME_AUTH_HEADER: &str = "x-compose-local-runtime-token";
@@ -72,16 +72,6 @@ impl Default for DaemonPermissionPolicy {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DaemonSkillState {
-    enabled: bool,
-    eligible: bool,
-    source: String,
-    revision: String,
-    updated_at: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct DaemonAgentState {
     agent_wallet: String,
     runtime_id: Option<String>,
@@ -94,7 +84,6 @@ struct DaemonAgentState {
     mcp_tools_hash: String,
     agent_card_cid: String,
     permissions: DaemonPermissionPolicy,
-    skills: HashMap<String, DaemonSkillState>,
     logs_cursor: usize,
     last_error: Option<String>,
     updated_at: u64,
@@ -102,22 +91,9 @@ struct DaemonAgentState {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PermissionDecisionTicket {
-    id: String,
-    agent_wallet: String,
-    action: String,
-    decision: String,
-    issued_at: u64,
-    expires_at: u64,
-    nonce: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct DaemonStateFile {
     version: u32,
     agents: HashMap<String, DaemonAgentState>,
-    tickets: HashMap<String, PermissionDecisionTicket>,
 }
 
 impl Default for DaemonStateFile {
@@ -125,7 +101,6 @@ impl Default for DaemonStateFile {
         Self {
             version: 1,
             agents: HashMap::new(),
-            tickets: HashMap::new(),
         }
     }
 }
@@ -996,7 +971,12 @@ fn compose_hai_path(hai_id: &str, update_number: u64) -> String {
 }
 
 fn knowledge_hai_path(hai_id: &str, kind: MeshSharedArtifactKind, artifact_number: u64) -> String {
-    format!("knowledge-{}-{}-#{}", hai_id, kind.as_str(), artifact_number)
+    format!(
+        "knowledge-{}-{}-#{}",
+        hai_id,
+        kind.as_str(),
+        artifact_number
+    )
 }
 
 fn persist_manifest_update(app: &tauri::AppHandle, manifest: &MeshManifest) -> Result<(), String> {
@@ -1762,6 +1742,79 @@ fn local_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(resolve_base_dir(app)?.join("state.json"))
 }
 
+fn normalize_local_state_json(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok("{}".to_string());
+    }
+
+    let mut state = serde_json::from_str::<serde_json::Value>(trimmed)
+        .map_err(|err| format!("failed to parse local state: {err}"))?;
+    let Some(root) = state.as_object_mut() else {
+        return Err("local state root must be a JSON object".to_string());
+    };
+
+    let identity = root
+        .get("identity")
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let user_address = identity
+        .get("userAddress")
+        .and_then(|value| value.as_str())
+        .and_then(normalize_wallet);
+    let device_id = identity
+        .get("deviceId")
+        .and_then(|value| value.as_str())
+        .and_then(normalize_device_id);
+
+    if let (Some(user_address), Some(device_id)) = (user_address, device_id) {
+        if let Some(installed_agents) = root
+            .get_mut("installedAgents")
+            .and_then(|value| value.as_array_mut())
+        {
+            for agent in installed_agents {
+                let Some(agent_object) = agent.as_object_mut() else {
+                    continue;
+                };
+                let Some(agent_wallet) = agent_object
+                    .get("agentWallet")
+                    .and_then(|value| value.as_str())
+                    .and_then(normalize_wallet)
+                else {
+                    continue;
+                };
+
+                let network_value = agent_object
+                    .entry("network".to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                let Some(network_object) = network_value.as_object_mut() else {
+                    continue;
+                };
+
+                let missing_hai = network_object
+                    .get("haiId")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true);
+                if missing_hai {
+                    network_object.insert(
+                        "haiId".to_string(),
+                        serde_json::Value::String(derive_hai_id(
+                            &agent_wallet,
+                            &user_address,
+                            &device_id,
+                        )),
+                    );
+                }
+            }
+        }
+    }
+
+    serde_json::to_string(&state)
+        .map_err(|err| format!("failed to serialize normalized local state: {err}"))
+}
+
 fn mesh_publication_requests_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = resolve_base_dir(app)?
         .join("mesh")
@@ -1811,55 +1864,6 @@ fn normalize_daemon_permission_policy(policy: DaemonPermissionPolicy) -> DaemonP
         microphone: normalize_daemon_decision(&policy.microphone),
         network: normalize_daemon_decision(&policy.network),
     }
-}
-
-fn check_agent_permission(
-    daemon: &DaemonStateFile,
-    agent_wallet: &str,
-    permission_key: &str,
-) -> Result<(), String> {
-    let agent = daemon
-        .agents
-        .get(agent_wallet)
-        .ok_or_else(|| format!("agent not installed: {}", agent_wallet))?;
-
-    let decision = match permission_key {
-        "shell" => &agent.permissions.shell,
-        "fs.read" => &agent.permissions.filesystem_read,
-        "fs.write" => &agent.permissions.filesystem_write,
-        "fs.edit" => &agent.permissions.filesystem_edit,
-        "fs.delete" => &agent.permissions.filesystem_delete,
-        "camera" => &agent.permissions.camera,
-        "microphone" => &agent.permissions.microphone,
-        "network" => &agent.permissions.network,
-        _ => return Err(format!("unknown permission key: {}", permission_key)),
-    };
-
-    if decision.as_str() != "allow" {
-        return Err(format!(
-            "permission '{}' is denied for agent {}",
-            permission_key, agent_wallet
-        ));
-    }
-
-    match permission_key {
-        "camera" if query_tcc_status("kTCCServiceCamera") != "granted" => {
-            Err("camera access is not granted to Compose Mesh".to_string())
-        }
-        "microphone" if query_tcc_status("kTCCServiceMicrophone") != "granted" => {
-            Err("microphone access is not granted to Compose Mesh".to_string())
-        }
-        "fs.read" | "fs.write" | "fs.edit" | "fs.delete"
-            if query_tcc_status("kTCCServiceSystemPolicyAllFiles") != "granted" =>
-        {
-            Err("full disk access is not granted to Compose Mesh".to_string())
-        }
-        _ => Ok(()),
-    }
-}
-
-fn now_nonce() -> String {
-    format!("{}-{}", now_ms(), std::process::id())
 }
 
 fn mesh_key_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -2961,7 +2965,9 @@ fn load_local_state(app: tauri::AppHandle) -> Result<String, String> {
         return Ok("{}".to_string());
     }
 
-    fs::read_to_string(&state_file).map_err(|err| format!("failed to read state file: {err}"))
+    let raw = fs::read_to_string(&state_file)
+        .map_err(|err| format!("failed to read state file: {err}"))?;
+    normalize_local_state_json(&raw)
 }
 
 #[tauri::command]
@@ -2973,7 +2979,8 @@ fn save_local_state(app: tauri::AppHandle, state_json: String) -> Result<(), Str
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create state parent directory: {err}"))?;
     }
-    fs::write(&state_file, state_json)
+    let normalized = normalize_local_state_json(&state_json)?;
+    fs::write(&state_file, normalized)
         .map_err(|err| format!("failed to write state file: {err}"))?;
     Ok(())
 }
@@ -3071,57 +3078,6 @@ fn bootstrap_agent_workspace(
     fs::create_dir_all(workspace.join("skills").join("generated"))
         .map_err(|err| format!("failed to create generated skills dir: {err}"))?;
 
-    let files = vec![
-        (
-            workspace.join("DNA.md"),
-            format!(
-                "# DNA\nagentWallet: {}\nmodelId: {}\nchainId: {}\nagentCardCid: {}\nmcpToolsHash: {}\ndnaHash: {}\nlockedAt: {}\n",
-                payload.agent_wallet.to_lowercase(),
-                payload.model_id,
-                payload.chain_id,
-                payload.agent_card_cid,
-                payload.mcp_tools_hash,
-                payload.dna_hash,
-                now_ms()
-            ),
-        ),
-        (
-            workspace.join("SOUL.md"),
-            "# SOUL\n\nMutable behavior and persona notes for this local deployment.\n".to_string(),
-        ),
-        (
-            workspace.join("AGENTS.md"),
-            "# AGENTS\n\nPer-agent local operating instructions.\n".to_string(),
-        ),
-        (
-            workspace.join("TOOLS.md"),
-            "# TOOLS\n\nTool identities are immutable from DNA.md.\n".to_string(),
-        ),
-        (
-            workspace.join("IDENTITY.md"),
-            format!("# IDENTITY\n\nagentWallet: {}\n", payload.agent_wallet.to_lowercase()),
-        ),
-        (
-            workspace.join("USER.md"),
-            "# USER\n\nLocal user preferences and runtime instructions.\n".to_string(),
-        ),
-        (
-            workspace.join("HEARTBEAT.md"),
-            "# HEARTBEAT\n\nKeep checks lightweight. Reply HEARTBEAT_OK when idle.\n".to_string(),
-        ),
-        (
-            workspace.join("runtime.log"),
-            "".to_string(),
-        ),
-    ];
-
-    for (file, content) in files {
-        if !file.exists() {
-            fs::write(&file, content)
-                .map_err(|err| format!("failed to write bootstrap file: {err}"))?;
-        }
-    }
-
     Ok(())
 }
 
@@ -3139,46 +3095,21 @@ fn with_daemon_state<T>(
     Ok(output)
 }
 
-fn daemon_state_snapshot(
-    state: &tauri::State<'_, LocalDaemonState>,
-) -> Result<DaemonStateFile, String> {
-    state
-        .state
-        .lock()
-        .map(|guard| guard.clone())
-        .map_err(|_| "failed to snapshot daemon state".to_string())
-}
-
-fn activate_installed_agents(daemon: &mut DaemonStateFile) {
+fn normalize_daemon_state_for_local_mode(daemon: &mut DaemonStateFile) {
     for agent in daemon.agents.values_mut() {
-        agent.desired_running = true;
-        if agent.status == "stopped" || agent.status == "stopping" {
-            agent.status = "starting".to_string();
-            agent.runtime_id = None;
-            agent.last_error = None;
-            agent.updated_at = now_ms();
-        }
+        agent.desired_running = false;
+        agent.running = false;
+        agent.status = "stopped".to_string();
+        agent.runtime_id = None;
+        agent.last_error = None;
+        agent.updated_at = now_ms();
     }
-}
-
-fn fallback_runtime_host_status(
-    runtime_host_state: &LocalRuntimeHostState,
-    error: String,
-) -> LocalRuntimeHostStatus {
-    let mut status =
-        runtime_host::current_runtime_host_status(runtime_host_state).unwrap_or_default();
-    status.running = false;
-    status.status = "error".to_string();
-    status.last_error = Some(error);
-    status.updated_at = now_ms();
-    status
 }
 
 #[tauri::command]
 fn daemon_install_agent(
     app: tauri::AppHandle,
     state: tauri::State<'_, LocalDaemonState>,
-    runtime_host_state: tauri::State<'_, LocalRuntimeHostState>,
     payload: DaemonInstallPayload,
 ) -> Result<DaemonAgentState, String> {
     let normalized_wallet = normalize_wallet(&payload.agent_wallet)
@@ -3211,16 +3142,15 @@ fn daemon_install_agent(
             .or_insert(DaemonAgentState {
                 agent_wallet: normalized_wallet.clone(),
                 runtime_id: None,
-                desired_running: true,
+                desired_running: false,
                 running: false,
-                status: "starting".to_string(),
+                status: "stopped".to_string(),
                 dna_hash: normalized_payload.dna_hash.clone(),
                 chain_id: normalized_payload.chain_id,
                 model_id: normalized_payload.model_id.clone(),
                 mcp_tools_hash: normalized_payload.mcp_tools_hash.clone(),
                 agent_card_cid: normalized_payload.agent_card_cid.clone(),
                 permissions: DaemonPermissionPolicy::default(),
-                skills: HashMap::new(),
                 logs_cursor: 0,
                 last_error: None,
                 updated_at: now_ms(),
@@ -3231,22 +3161,12 @@ fn daemon_install_agent(
         entry.mcp_tools_hash = normalized_payload.mcp_tools_hash.clone();
         entry.agent_card_cid = normalized_payload.agent_card_cid.clone();
         entry.dna_hash = normalized_payload.dna_hash.clone();
-        entry.desired_running = true;
+        entry.desired_running = false;
         entry.running = false;
-        entry.status = "starting".to_string();
+        entry.status = "stopped".to_string();
         entry.runtime_id = None;
         entry.last_error = None;
         entry.updated_at = now_ms();
-        Ok(())
-    })?;
-
-    let snapshot = daemon_state_snapshot(&state)?;
-    let host_status =
-        runtime_host::reconcile_local_runtime_host(&app, runtime_host_state.inner(), &snapshot)
-            .unwrap_or_else(|error| fallback_runtime_host_status(runtime_host_state.inner(), error));
-
-    with_daemon_state(&app, &state, |daemon| {
-        runtime_host::apply_runtime_host_status(daemon, &host_status);
         daemon
             .agents
             .get(&normalized_wallet)
@@ -3259,7 +3179,6 @@ fn daemon_install_agent(
 fn daemon_remove_agent(
     app: tauri::AppHandle,
     state: tauri::State<'_, LocalDaemonState>,
-    runtime_host_state: tauri::State<'_, LocalRuntimeHostState>,
     agent_wallet: String,
 ) -> Result<(), String> {
     let wallet =
@@ -3270,16 +3189,6 @@ fn daemon_remove_agent(
             .agents
             .remove(&wallet)
             .ok_or_else(|| format!("agent not installed: {wallet}"))?;
-        Ok(())
-    })?;
-
-    let snapshot = daemon_state_snapshot(&state)?;
-    let host_status =
-        runtime_host::reconcile_local_runtime_host(&app, runtime_host_state.inner(), &snapshot)
-            .or_else(|_| runtime_host::current_runtime_host_status(runtime_host_state.inner()))?;
-
-    with_daemon_state(&app, &state, |daemon| {
-        runtime_host::apply_runtime_host_status(daemon, &host_status);
         Ok(())
     })?;
 
@@ -3304,50 +3213,6 @@ fn daemon_update_permissions(
             .ok_or_else(|| format!("agent not installed: {wallet}"))?;
         entry.permissions = normalized_policy.clone();
         entry.updated_at = now_ms();
-        Ok(entry.clone())
-    })
-}
-
-#[tauri::command]
-fn daemon_update_skill(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, LocalDaemonState>,
-    agent_wallet: String,
-    skill_key: String,
-    enabled: bool,
-) -> Result<DaemonAgentState, String> {
-    let wallet =
-        normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
-    let normalized_skill_key = skill_key.trim().to_string();
-    if normalized_skill_key.is_empty() {
-        return Err("skillKey is required".to_string());
-    }
-
-    with_daemon_state(&app, &state, |daemon| {
-        let entry = daemon
-            .agents
-            .get_mut(&wallet)
-            .ok_or_else(|| format!("agent not installed: {wallet}"))?;
-
-        let updated_at = now_ms();
-        let existing = entry.skills.get(&normalized_skill_key).cloned();
-        entry.skills.insert(
-            normalized_skill_key.clone(),
-            DaemonSkillState {
-                enabled,
-                eligible: existing.as_ref().map(|v| v.eligible).unwrap_or(true),
-                source: existing
-                    .as_ref()
-                    .map(|v| v.source.clone())
-                    .unwrap_or_else(|| "agent".to_string()),
-                revision: existing
-                    .as_ref()
-                    .map(|v| v.revision.clone())
-                    .unwrap_or_else(|| format!("rev-{}", updated_at)),
-                updated_at,
-            },
-        );
-        entry.updated_at = updated_at;
         Ok(entry.clone())
     })
 }
@@ -3391,87 +3256,6 @@ fn daemon_tail_logs(
     Ok(DaemonLogTail {
         lines: slice,
         cursor: all_lines.len(),
-    })
-}
-
-#[tauri::command]
-fn daemon_issue_permission_ticket(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, LocalDaemonState>,
-    agent_wallet: String,
-    action: String,
-    decision: String,
-    ttl_seconds: Option<u64>,
-) -> Result<PermissionDecisionTicket, String> {
-    let wallet =
-        normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
-    let normalized_action = action.trim().to_string();
-    if normalized_action.is_empty() {
-        return Err("action is required".to_string());
-    }
-    let normalized_decision = normalize_daemon_decision(&decision);
-    let ttl_ms = ttl_seconds.unwrap_or(120).clamp(1, 3600) * 1000;
-    let issued_at = now_ms();
-
-    with_daemon_state(&app, &state, |daemon| {
-        let ticket = PermissionDecisionTicket {
-            id: format!("ticket-{}-{}", wallet, issued_at),
-            agent_wallet: wallet.clone(),
-            action: normalized_action.clone(),
-            decision: normalized_decision.clone(),
-            issued_at,
-            expires_at: issued_at.saturating_add(ttl_ms),
-            nonce: now_nonce(),
-        };
-        daemon.tickets.insert(ticket.id.clone(), ticket.clone());
-        Ok(ticket)
-    })
-}
-
-#[tauri::command]
-fn daemon_validate_permission_ticket(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, LocalDaemonState>,
-    ticket_id: String,
-    action: String,
-) -> Result<bool, String> {
-    with_daemon_state(&app, &state, |daemon| {
-        daemon
-            .tickets
-            .retain(|_, value| value.expires_at > now_ms());
-        let Some(ticket) = daemon.tickets.get(&ticket_id).cloned() else {
-            return Ok(false);
-        };
-        if ticket.expires_at <= now_ms() {
-            daemon.tickets.remove(&ticket_id);
-            return Ok(false);
-        }
-        if ticket.action != action.trim() {
-            return Ok(false);
-        }
-        Ok(ticket.decision == "allow")
-    })
-}
-
-#[tauri::command]
-fn daemon_check_permission(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, LocalDaemonState>,
-    agent_wallet: String,
-    permission_key: String,
-) -> Result<bool, String> {
-    let wallet =
-        normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
-    let key = permission_key.trim().to_string();
-    if key.is_empty() {
-        return Err("permissionKey is required".to_string());
-    }
-
-    with_daemon_state(&app, &state, |daemon| {
-        match check_agent_permission(daemon, &wallet, &key) {
-            Ok(()) => Ok(true),
-            Err(_) => Ok(false),
-        }
     })
 }
 
@@ -3632,72 +3416,6 @@ fn daemon_request_os_permission(permission_key: String) -> Result<OsPermissionSn
 }
 
 #[tauri::command]
-fn daemon_install_launch_agent(app: tauri::AppHandle) -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
-    let launch_agents_dir = Path::new(&home).join("Library").join("LaunchAgents");
-    fs::create_dir_all(&launch_agents_dir)
-        .map_err(|err| format!("failed to create LaunchAgents directory: {err}"))?;
-
-    let plist_path = launch_agents_dir.join("compose.market.daemon.plist");
-    let exe_path = std::env::current_exe()
-        .map_err(|err| format!("failed to resolve current executable: {err}"))?;
-    let label = "compose.market.daemon";
-
-    let plist = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>{label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{}</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>ProcessType</key>
-  <string>Background</string>
-  <key>WorkingDirectory</key>
-  <string>{}</string>
-  <key>StandardOutPath</key>
-  <string>{}</string>
-  <key>StandardErrorPath</key>
-  <string>{}</string>
-</dict>
-</plist>
-"#,
-        exe_path.display(),
-        resolve_base_dir(&app)?.display(),
-        resolve_base_dir(&app)?.join("daemon.stdout.log").display(),
-        resolve_base_dir(&app)?.join("daemon.stderr.log").display(),
-    );
-
-    fs::write(&plist_path, plist)
-        .map_err(|err| format!("failed to write LaunchAgent plist: {err}"))?;
-    Ok(plist_path.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-fn daemon_launch_agent_status() -> Result<bool, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
-    let plist_path = Path::new(&home)
-        .join("Library")
-        .join("LaunchAgents")
-        .join("compose.market.daemon.plist");
-    Ok(plist_path.exists())
-}
-
-#[tauri::command]
-fn daemon_runtime_host_status(
-    state: tauri::State<'_, LocalRuntimeHostState>,
-) -> Result<LocalRuntimeHostStatus, String> {
-    runtime_host::current_runtime_host_status(state.inner())
-}
-
-#[tauri::command]
 fn local_network_status(
     state: tauri::State<MeshRuntimeState>,
 ) -> Result<MeshRuntimeStatus, String> {
@@ -3848,19 +3566,9 @@ struct MeshSharedArtifactPinRuntimeResponse {
     artifact_kind: MeshSharedArtifactKind,
     artifact_number: u64,
     path: String,
-    file_name: String,
     latest_alias: String,
     root_cid: String,
     piece_cid: String,
-    payload_size: usize,
-    copy_count: Option<u64>,
-    provider_id: String,
-    data_set_id: Option<String>,
-    piece_id: Option<String>,
-    retrieval_url: Option<String>,
-    payer_address: String,
-    session_key_expires_at: u64,
-    source: String,
     collection: String,
 }
 
@@ -3919,7 +3627,8 @@ fn build_signed_mesh_request_json(
         target_piece_cid: None,
         target_data_set_id: None,
         target_piece_id: None,
-        artifact_kind: artifact_kind.map(|value: MeshSharedArtifactKind| value.as_str().to_string()),
+        artifact_kind: artifact_kind
+            .map(|value: MeshSharedArtifactKind| value.as_str().to_string()),
         file_name: None,
         root_cid: None,
         payload_sha256,
@@ -3941,7 +3650,12 @@ fn build_signed_mesh_request_json(
 fn build_learning_payload_json(request: &MeshPublicationQueueRequest) -> Result<String, String> {
     let title = truncate_string(request.title.clone().unwrap_or_default(), 160);
     let summary = truncate_string(request.summary.clone().unwrap_or_default(), 280);
-    let content = request.content.clone().unwrap_or_default().trim().to_string();
+    let content = request
+        .content
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if title.trim().is_empty() {
         return Err("mesh learning title is required".to_string());
     }
@@ -4037,7 +3751,10 @@ async fn pin_mesh_learning_via_local_runtime(
 ) -> Result<MeshSharedArtifactPinRuntimeResponse, String> {
     let client = HttpClient::new();
     let response = client
-        .post(format!("{}/mesh/filecoin/pin", base_url.trim_end_matches('/')))
+        .post(format!(
+            "{}/mesh/filecoin/pin",
+            base_url.trim_end_matches('/')
+        ))
         .header(LOCAL_RUNTIME_AUTH_HEADER, auth_token)
         .json(&body)
         .send()
@@ -4175,9 +3892,11 @@ async fn anchor_mesh_state_from_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        compose_hai_path, derive_hai_id, normalize_state_root_hash_for_compare,
-        same_state_root_hash,
+        compose_hai_path, derive_hai_id, normalize_daemon_state_for_local_mode,
+        normalize_local_state_json, normalize_state_root_hash_for_compare, same_state_root_hash,
+        DaemonAgentState, DaemonPermissionPolicy, DaemonStateFile,
     };
+    use std::collections::HashMap;
 
     #[test]
     fn normalize_state_root_hash_handles_optional_prefix() {
@@ -4228,6 +3947,81 @@ mod tests {
     fn compose_hai_path_uses_plain_hai_value() {
         assert_eq!(compose_hai_path("abc123", 7), "compose-abc123-#7");
     }
+
+    #[test]
+    fn normalize_local_state_json_backfills_missing_agent_hai_ids() {
+        let normalized = normalize_local_state_json(
+            r#"{
+                "identity": {
+                    "userAddress": "0x2222222222222222222222222222222222222222",
+                    "deviceId": "device-12345678"
+                },
+                "installedAgents": [
+                    {
+                        "agentWallet": "0x1111111111111111111111111111111111111111",
+                        "network": {
+                            "haiId": null
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .expect("state should normalize");
+
+        let parsed = serde_json::from_str::<serde_json::Value>(&normalized)
+            .expect("normalized state should remain valid JSON");
+        let hai_id = parsed["installedAgents"][0]["network"]["haiId"]
+            .as_str()
+            .expect("haiId should be present");
+        assert_eq!(
+            hai_id,
+            derive_hai_id(
+                "0x1111111111111111111111111111111111111111",
+                "0x2222222222222222222222222222222222222222",
+                "device-12345678",
+            )
+        );
+    }
+
+    #[test]
+    fn normalize_daemon_state_for_local_mode_keeps_agents_dormant() {
+        let mut daemon = DaemonStateFile {
+            version: 1,
+            agents: HashMap::from([(
+                "0x1111111111111111111111111111111111111111".to_string(),
+                DaemonAgentState {
+                    agent_wallet: "0x1111111111111111111111111111111111111111".to_string(),
+                    runtime_id: Some("local-runtime-host:4310".to_string()),
+                    desired_running: true,
+                    running: true,
+                    status: "running".to_string(),
+                    dna_hash: "dna".to_string(),
+                    chain_id: 43113,
+                    model_id: "gpt-4.1".to_string(),
+                    mcp_tools_hash: "hash".to_string(),
+                    agent_card_cid: "cid".to_string(),
+                    permissions: DaemonPermissionPolicy::default(),
+                    logs_cursor: 0,
+                    last_error: Some("boom".to_string()),
+                    updated_at: 1,
+                },
+            )]),
+        };
+
+        normalize_daemon_state_for_local_mode(&mut daemon);
+
+        let agent = daemon
+            .agents
+            .get("0x1111111111111111111111111111111111111111")
+            .expect("agent should remain present");
+        assert!(!agent.desired_running);
+        assert!(!agent.running);
+        assert_eq!(agent.status, "stopped");
+        assert_eq!(agent.runtime_id, None);
+        assert_eq!(agent.last_error, None);
+        assert!(agent.updated_at > 1);
+    }
+
 }
 
 async fn publish_mesh_manifest_from_command(
@@ -4288,7 +4082,10 @@ async fn process_mesh_learning_request(
     let requested_wallet = normalize_wallet(&request.agent_wallet)
         .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
     if !status_has_published_agent(live_status, requested_wallet.as_str()) {
-        return Err("mesh publication request agentWallet does not match the running mesh agent".to_string());
+        return Err(
+            "mesh publication request agentWallet does not match the running mesh agent"
+                .to_string(),
+        );
     }
 
     let ctx = load_mesh_pub_ctx(app, &requested_wallet)?;
@@ -4552,25 +4349,6 @@ async fn process_pending_mesh_publication_requests(app: &tauri::AppHandle) -> Re
     Ok(())
 }
 
-#[tauri::command]
-async fn local_mesh_anchor_state(
-    app: tauri::AppHandle,
-    mesh_state: tauri::State<'_, MeshRuntimeState>,
-    runtime_host: tauri::State<'_, LocalRuntimeHostState>,
-    request: MeshStateAnchorCommandRequest,
-) -> Result<MeshStateAnchorRuntimeResponse, String> {
-    anchor_mesh_state_from_command(&app, mesh_state.inner(), runtime_host.inner(), request).await
-}
-
-#[tauri::command]
-async fn local_mesh_publish_manifest(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, MeshRuntimeState>,
-    manifest: MeshManifest,
-) -> Result<MeshManifest, String> {
-    publish_mesh_manifest_from_command(&app, state.inner(), manifest).await
-}
-
 fn normalize_api_base(api_url: &str) -> Result<String, String> {
     let trimmed = api_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -4698,60 +4476,28 @@ fn main() {
             local_network_status,
             local_network_join,
             local_network_leave,
-            local_mesh_anchor_state,
-            local_mesh_publish_manifest,
             daemon_install_agent,
             daemon_remove_agent,
             daemon_update_permissions,
-            daemon_update_skill,
             daemon_get_agent_status,
             daemon_tail_logs,
-            daemon_issue_permission_ticket,
-            daemon_validate_permission_ticket,
-            daemon_check_permission,
             daemon_query_os_permissions,
             daemon_open_system_settings,
             daemon_request_os_permission,
-            daemon_install_launch_agent,
-            daemon_launch_agent_status,
-            daemon_runtime_host_status,
             local_check_for_updates,
             local_install_update
         ])
         .setup(|app| {
             let mut daemon_disk_state =
                 read_daemon_state_from_disk(&app.handle()).unwrap_or_default();
-            activate_installed_agents(&mut daemon_disk_state);
+            normalize_daemon_state_for_local_mode(&mut daemon_disk_state);
             let daemon_state = app.state::<LocalDaemonState>();
-            let runtime_host_state = app.state::<LocalRuntimeHostState>();
 
             if let Ok(mut guard) = daemon_state.state.lock() {
                 *guard = daemon_disk_state;
             }
-            if let Ok(snapshot) = daemon_state_snapshot(&daemon_state) {
-                match runtime_host::reconcile_local_runtime_host(
-                    &app.handle(),
-                    runtime_host_state.inner(),
-                    &snapshot,
-                ) {
-                    Ok(host_status) => {
-                        if let Ok(mut guard) = daemon_state.state.lock() {
-                            runtime_host::apply_runtime_host_status(&mut guard, &host_status);
-                            let _ = write_daemon_state_to_disk(&app.handle(), &guard);
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("[daemon] failed to reconcile local runtime host: {}", error);
-                        if let Ok(host_status) =
-                            runtime_host::current_runtime_host_status(runtime_host_state.inner())
-                        {
-                            if let Ok(mut guard) = daemon_state.state.lock() {
-                                runtime_host::apply_runtime_host_status(&mut guard, &host_status);
-                                let _ = write_daemon_state_to_disk(&app.handle(), &guard);
-                            }
-                        }
-                    }
-                }
+            if let Ok(guard) = daemon_state.state.lock() {
+                let _ = write_daemon_state_to_disk(&app.handle(), &guard);
             }
 
             {
@@ -4800,15 +4546,6 @@ fn main() {
                     }
                 });
 
-                // Register the protocol on macOS
-                #[cfg(target_os = "macos")]
-                {
-                    if let Err(e) = app.deep_link().register("manowar") {
-                        eprintln!("[DeepLink] Failed to register 'manowar' scheme: {}", e);
-                    } else {
-                        println!("[DeepLink] Registered 'manowar' scheme");
-                    }
-                }
             }
 
             Ok(())
