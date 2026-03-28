@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   ArrowLeft,
@@ -27,12 +27,14 @@ import {
   daemonTailLogs,
   daemonUpdatePermissions,
 } from "../../lib/daemon";
-import { fetchAgentMetadata } from "../../lib/api";
+import { createPaymentFetch, fetchAgentMetadata, parseEventStream } from "../../lib/api";
 import {
   queryOsPermissions,
   reconcileStateWithOsPermissions,
 } from "../../lib/permissions";
-import { getDefaultPermissionPolicy } from "../../lib/storage";
+import {
+  getDefaultPermissionPolicy,
+} from "../../lib/storage";
 import type { AgentPermissionPolicy, LocalRuntimeState, InstalledAgent, MeshPeerSignal, SessionState } from "../../lib/types";
 import { SkillsManager } from "../../components/skills-manager";
 import { SkillsMarketplace } from "../../components/skills-store";
@@ -82,93 +84,12 @@ interface LocalChatMessage {
   failed?: boolean;
 }
 
-async function* parseSseDataBlocks(reader: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<string, void, void> {
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-
-    while (true) {
-      const boundary = buffer.indexOf("\n\n");
-      if (boundary === -1) {
-        break;
-      }
-
-      const rawBlock = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-
-      const data = rawBlock
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n")
-        .trim();
-
-      if (data) {
-        yield data;
-      }
-    }
-  }
-
-  const trailing = buffer.trim();
-  if (!trailing) {
-    return;
-  }
-
-  const data = trailing
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart())
-    .join("\n")
-    .trim();
-
-  if (data) {
-    yield data;
-  }
-}
-
-function extractChatStreamText(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-
-  const record = payload as Record<string, unknown>;
-  const delta = Array.isArray(record.choices)
-    ? record.choices[0] as { delta?: { content?: string } } | undefined
-    : undefined;
-
-  if (typeof delta?.delta?.content === "string" && delta.delta.content.length > 0) {
-    return delta.delta.content;
-  }
-
-  if (typeof record.content === "string" && record.content.length > 0) {
-    return record.content;
-  }
-
-  if (typeof record.text === "string" && record.text.length > 0) {
-    return record.text;
-  }
-
-  return null;
-}
-
 function formatChatTimestamp(value: number): string {
   return new Date(value).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
   });
 }
-
-function normalizeUrlBase(value: string): string {
-  return value.trim().replace(/\/+$/, "");
-}
-
 
 function formatMicros(value: number): string {
   return `$${(value / 1_000_000).toFixed(2)}`;
@@ -249,7 +170,7 @@ export function AgentManagerPage({
       setError(null);
       try {
         const metadata = await fetchAgentMetadata({
-          runtimeUrl: state.settings.runtimeUrl,
+          apiUrl: state.settings.apiUrl,
           agentWallet: wallet,
           agentCardCid: cid,
         });
@@ -264,7 +185,7 @@ export function AgentManagerPage({
         const existing = state.installedAgents.find((agent) => agent.agentWallet === lock.agentWallet);
         const synced = existing
           ? syncInstalledAgent(existing, metadata, lock)
-          : createInstalledAgent({
+          : await createInstalledAgent({
             metadata,
             lock,
             permissions: getDefaultPermissionPolicy(),
@@ -473,15 +394,47 @@ export function AgentDetailPage({
   const [chatError, setChatError] = useState<string | null>(null);
   const economics = useMemo(() => summarizeAgentReportEconomics(agent.reports), [agent.reports]);
   const visiblePeers = useMemo(() => meshPeers.filter((peer) => peer.agentWallet !== agent.agentWallet), [agent.agentWallet, meshPeers]);
-  const chatThreadIdRef = useRef<string>(`mesh-local-${agent.agentWallet}-${crypto.randomUUID()}`);
+  const chatThreadIdRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const identity = state.identity;
+
+  const resetConversationThread = useCallback(() => {
+    if (!identity?.userAddress) {
+      chatThreadIdRef.current = null;
+      return null;
+    }
+
+    const nextThreadId = `thread-${identity.userAddress}-${agent.agentWallet}-${crypto.randomUUID()}`;
+    chatThreadIdRef.current = nextThreadId;
+    return nextThreadId;
+  }, [agent.agentWallet, identity?.userAddress]);
+
+  const ensureConversationThread = useCallback(() => {
+    if (chatThreadIdRef.current) {
+      return chatThreadIdRef.current;
+    }
+
+    const createdThreadId = resetConversationThread();
+    if (!createdThreadId) {
+      throw new Error("Unable to initialize agent conversation thread");
+    }
+    return createdThreadId;
+  }, [resetConversationThread]);
+
+  const updateAssistantMessage = useCallback((assistantId: string, content: string) => {
+    setChatMessages((current) => current.map((message) => (
+      message.id === assistantId
+        ? { ...message, content }
+        : message
+    )));
+  }, []);
 
   useEffect(() => {
-    chatThreadIdRef.current = `mesh-local-${agent.agentWallet}-${crypto.randomUUID()}`;
+    resetConversationThread();
     setChatMessages([]);
     setChatInput("");
     setChatError(null);
-  }, [agent.agentWallet]);
+  }, [resetConversationThread]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -565,28 +518,14 @@ export function AgentDetailPage({
       return;
     }
 
-    const identity = state.identity;
-    if (!identity) {
-      const message = "Connect Local first so this device has a user identity and compose key.";
+    if (!identity?.composeKeyToken) {
+      const message = "Connect Local first so this device has a compose key.";
       setChatError(message);
       onNotify("error", message);
       return;
     }
 
-    if (!session.active || !identity.composeKeyToken || !identity.budget) {
-      const message = "An active session is required. Start one from the Local header, then try again.";
-      setChatError(message);
-      onNotify("error", message);
-      return;
-    }
-
-    const runtimeUrl = normalizeUrlBase(state.settings.runtimeUrl || "");
-    if (!runtimeUrl) {
-      const message = "Local runtime URL is not configured.";
-      setChatError(message);
-      onNotify("error", message);
-      return;
-    }
+    const apiUrl = state.settings.apiUrl.replace(/\/+$/, "");
 
     const userMessage: LocalChatMessage = {
       id: crypto.randomUUID(),
@@ -595,6 +534,8 @@ export function AgentDetailPage({
       createdAt: Date.now(),
     };
     const assistantId = crypto.randomUUID();
+    const composeRunId = crypto.randomUUID();
+    const runStorageKey = `agent-active-run:${agent.agentWallet}`;
 
     setChatMessages((current) => [
       ...current,
@@ -611,99 +552,181 @@ export function AgentDetailPage({
     setChatError(null);
 
     try {
-      const composeRunId = crypto.randomUUID();
-      const response = await fetch(`${runtimeUrl}/agent/${agent.agentWallet}/stream`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${identity.composeKeyToken}`,
-          "x-chain-id": String(identity.chainId),
-          "x-compose-run-id": composeRunId,
-          "x-session-active": "true",
-          "x-session-user-address": identity.userAddress,
-          "x-session-budget-remaining": identity.budget,
-        },
-        body: JSON.stringify({
-          message: content,
-          threadId: chatThreadIdRef.current,
-          composeRunId,
-          userAddress: identity.userAddress,
-        }),
+      const fetchWithPayment = createPaymentFetch({
+        chainId: identity.chainId,
+        sessionToken: identity.composeKeyToken,
+        sessionUserAddress: session.active ? identity.userAddress : undefined,
+        sessionBudgetRemaining: session.active
+          ? (session.budgetRemaining || identity.budget)
+          : undefined,
       });
+
+      const makeChatRequest = async (): Promise<Response> => {
+        const threadId = ensureConversationThread();
+        sessionStorage.setItem(runStorageKey, JSON.stringify({
+          runId: composeRunId,
+          threadId,
+          startedAt: Date.now(),
+        }));
+
+        return fetchWithPayment(`${apiUrl}/agent/${agent.agentWallet}/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-compose-run-id": composeRunId,
+          },
+          body: JSON.stringify({
+            message: content,
+            threadId,
+            composeRunId,
+            userAddress: identity.userAddress,
+          }),
+        });
+      };
+
+      let response = await makeChatRequest();
+
+      if (response.status === 503) {
+        const warmupPayload = await response.clone().json().catch(() => null) as
+          | { code?: string; retryAfterMs?: number }
+          | null;
+        if (warmupPayload?.code === "AGENT_WARMING") {
+          const retryAfterMs = Math.min(Math.max(warmupPayload.retryAfterMs || 2000, 1000), 10000);
+          await new Promise((resolve) => globalThis.setTimeout(resolve, retryAfterMs));
+          response = await makeChatRequest();
+        }
+      }
 
       if (!response.ok) {
         const payload = await response.json().catch(() => null) as
           | { error?: string; code?: string }
           | null;
-        throw new Error(payload?.error || payload?.code || `Chat failed with HTTP ${response.status}`);
+        throw new Error(payload?.error || payload?.code || `Chat failed: ${response.status}`);
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error("Local runtime returned no response body.");
-      }
-
+      const contentType = response.headers.get("content-type") || "";
       let fullResponse = "";
 
-      for await (const block of parseSseDataBlocks(reader)) {
-        if (block === "[DONE]") {
-          continue;
+      if (contentType.includes("text/event-stream") || contentType.includes("text/plain")) {
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error("No response body");
         }
 
-        let payload: unknown = null;
-        try {
-          payload = JSON.parse(block);
-        } catch {
-          fullResponse += block;
-          setChatMessages((current) => current.map((message) => (
-            message.id === assistantId
-              ? { ...message, content: fullResponse }
-              : message
-          )));
-          continue;
+        let streamError: string | null = null;
+        const cancelStream = async () => {
+          try {
+            await reader.cancel();
+          } catch {
+            // Ignore terminal stream cancellation failures.
+          }
+        };
+
+        for await (const block of parseEventStream(reader)) {
+          const data = block.data.trim();
+          if (!data || data === "[DONE]") {
+            continue;
+          }
+
+          let payload: Record<string, unknown> | null = null;
+          try {
+            payload = JSON.parse(data) as Record<string, unknown>;
+          } catch {
+            fullResponse += data;
+            updateAssistantMessage(assistantId, fullResponse);
+            continue;
+          }
+
+          const delta = payload.choices as Array<{ delta?: { content?: string } }> | undefined;
+          const streamedChunk = typeof delta?.[0]?.delta?.content === "string" ? delta[0].delta.content : null;
+          if (streamedChunk) {
+            fullResponse += streamedChunk;
+            updateAssistantMessage(assistantId, fullResponse);
+            continue;
+          }
+
+          if (payload.type === "thinking_start" || payload.type === "thinking_end" || payload.type === "tool_end") {
+            continue;
+          }
+
+          if (payload.type === "tool_start") {
+            const summary = typeof payload.content === "string" ? payload.content : undefined;
+            if (summary) {
+              fullResponse += summary;
+              updateAssistantMessage(assistantId, fullResponse);
+            }
+            continue;
+          }
+
+          if (payload.type === "error") {
+            streamError = typeof payload.content === "string"
+              ? payload.content
+              : typeof payload.error === "string"
+                ? payload.error
+                : "Agent stream failed";
+            fullResponse += streamError;
+            updateAssistantMessage(assistantId, fullResponse);
+            await cancelStream();
+            break;
+          }
+
+          if (payload.type === "done") {
+            await cancelStream();
+            break;
+          }
+
+          if (typeof payload.content === "string") {
+            fullResponse += payload.content;
+            updateAssistantMessage(assistantId, fullResponse);
+          } else if (typeof payload.text === "string") {
+            fullResponse += payload.text;
+            updateAssistantMessage(assistantId, fullResponse);
+          }
         }
 
-        if (
-          payload
-          && typeof payload === "object"
-          && (payload as Record<string, unknown>).type === "error"
-        ) {
-          const message = typeof (payload as Record<string, unknown>).error === "string"
-            ? (payload as Record<string, unknown>).error as string
-            : typeof (payload as Record<string, unknown>).content === "string"
-              ? (payload as Record<string, unknown>).content as string
-              : "Local agent stream failed";
-          throw new Error(message);
+        if (streamError) {
+          throw new Error(streamError);
         }
-
-        if (
-          payload
-          && typeof payload === "object"
-          && (payload as Record<string, unknown>).type === "done"
-        ) {
-          break;
+      } else {
+        const rawResponse = await response.text();
+        if (rawResponse.trim()) {
+          try {
+            const payload = JSON.parse(rawResponse) as Record<string, unknown>;
+            fullResponse = typeof payload.content === "string"
+              ? payload.content
+              : typeof payload.text === "string"
+                ? payload.text
+                : rawResponse;
+          } catch {
+            fullResponse = rawResponse;
+          }
+          updateAssistantMessage(assistantId, fullResponse);
         }
-
-        const chunk = extractChatStreamText(payload);
-        if (!chunk) {
-          continue;
-        }
-
-        fullResponse += chunk;
-        setChatMessages((current) => current.map((message) => (
-          message.id === assistantId
-            ? { ...message, content: fullResponse }
-            : message
-        )));
       }
 
       if (!fullResponse.trim()) {
-        setChatMessages((current) => current.map((message) => (
-          message.id === assistantId
-            ? { ...message, content: "No response received." }
-            : message
-        )));
+        updateAssistantMessage(assistantId, "No response received.");
       }
+
+      await onStateChange({
+        ...state,
+        installedAgents: state.installedAgents.map((item) => (
+          item.agentWallet === agent.agentWallet
+            ? appendAgentReport(item, {
+              kind: "runtime",
+              title: "Conversation completed",
+              summary: fullResponse.trim().length > 0
+                ? "Local agent responded successfully."
+                : "Local agent completed the request without returning text.",
+              details: [
+                `User: ${content}`,
+                fullResponse.trim().length > 0 ? `Assistant: ${fullResponse.trim()}` : "Assistant: No response received.",
+              ].join("\n\n"),
+              outcome: "success",
+            })
+            : item
+        )),
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Local chat failed";
       setChatError(message);
@@ -712,6 +735,20 @@ export function AgentDetailPage({
           ? { ...chatMessage, content: `Error: ${message}`, failed: true }
           : chatMessage
       )));
+      await onStateChange({
+        ...state,
+        installedAgents: state.installedAgents.map((item) => (
+          item.agentWallet === agent.agentWallet
+            ? appendAgentReport(item, {
+              kind: "runtime",
+              title: "Conversation failed",
+              summary: message,
+              details: `User: ${content}`,
+              outcome: "error",
+            })
+            : item
+        )),
+      });
       onNotify("error", message);
     } finally {
       setChatBusy(false);
@@ -727,10 +764,10 @@ export function AgentDetailPage({
   };
 
   // Build agent card data (mirrors web/src/components/agent-card.tsx pattern)
-  const runtimeStatus = agent.workerState?.status || (agent.running ? "running" : "starting");
+  const runtimeStatus = agent.workerState?.status || (agent.running ? "running" : "stopped");
   const agentBadges: ComposeAgentBadge[] = [
     {
-      label: runtimeStatus === "running" ? "Running" : "Syncing",
+      label: runtimeStatus === "running" ? "Running" : runtimeStatus === "starting" ? "Syncing" : "Ready",
       tone: runtimeStatus === "running" ? "green" : "neutral",
     },
     { label: agent.permissions.network === "allow" ? "Network On" : "Network Off", tone: agent.permissions.network === "allow" ? "fuchsia" : "neutral" },
@@ -795,7 +832,8 @@ export function AgentDetailPage({
                   onClick={() => {
                     setChatMessages([]);
                     setChatError(null);
-                    chatThreadIdRef.current = `mesh-local-${agent.agentWallet}-${crypto.randomUUID()}`;
+                    resetConversationThread();
+                    sessionStorage.removeItem(`agent-active-run:${agent.agentWallet}`);
                   }}
                   disabled={chatBusy || chatMessages.length === 0}
                 >
@@ -803,11 +841,7 @@ export function AgentDetailPage({
                 </ShellButton>
               </div>
 
-              {!session.active ? (
-                <ShellNotice tone="warning">
-                  Start a session from the Local header to send paid/local chat requests with the same compose-key session flow used by web.
-                </ShellNotice>
-              ) : null}
+
 
               {chatError ? (
                 <ShellNotice tone="error">{chatError}</ShellNotice>
@@ -841,12 +875,12 @@ export function AgentDetailPage({
                   onChange={(event) => setChatInput(event.target.value)}
                   onKeyDown={handleChatInputKeyDown}
                   placeholder="Message your local agent..."
-                  disabled={chatBusy || !session.active}
+                  disabled={chatBusy}
                 />
                 <ShellButton
                   tone="primary"
                   onClick={() => void sendChatMessage()}
-                  disabled={chatBusy || !chatInput.trim() || !session.active}
+                  disabled={chatBusy || !chatInput.trim()}
                 >
                   {chatBusy ? <Loader2 size={14} className="spinner" /> : null}
                   Send

@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { InstalledAgent, LocalRuntimeState, OsPermissionSnapshot, OsPermissionStatus } from "./types";
+import type {
+  AgentPermissionPolicy,
+  InstalledAgent,
+  LocalRuntimeState,
+  OsPermissionSnapshot,
+  OsPermissionStatus,
+} from "./types";
 
 interface RawOsPermissionSnapshot {
   camera: string;
@@ -69,6 +75,37 @@ export function formatOsPermissionStatus(status: OsPermissionStatus): string {
   }
 }
 
+const DENY_ALL_POLICY: AgentPermissionPolicy = {
+  shell: "deny",
+  filesystemRead: "deny",
+  filesystemWrite: "deny",
+  filesystemEdit: "deny",
+  filesystemDelete: "deny",
+  camera: "deny",
+  microphone: "deny",
+  network: "deny",
+};
+
+function toEffectivePermissions(
+  desired: AgentPermissionPolicy,
+  osPermissions: OsPermissionSnapshot,
+): AgentPermissionPolicy {
+  if (osPermissions.fullDiskAccess !== "granted") {
+    return { ...DENY_ALL_POLICY };
+  }
+
+  return {
+    shell: desired.shell,
+    filesystemRead: desired.filesystemRead,
+    filesystemWrite: desired.filesystemWrite,
+    filesystemEdit: desired.filesystemEdit,
+    filesystemDelete: desired.filesystemDelete,
+    camera: osPermissions.camera === "granted" ? desired.camera : "deny",
+    microphone: osPermissions.microphone === "granted" ? desired.microphone : "deny",
+    network: desired.network,
+  };
+}
+
 export function reconcileStateWithOsPermissions(
   state: LocalRuntimeState,
   osPermissions: OsPermissionSnapshot,
@@ -76,6 +113,22 @@ export function reconcileStateWithOsPermissions(
   return {
     ...state,
     osPermissions,
+    installedAgents: state.installedAgents.map((agent) => {
+      const desiredPermissions = agent.desiredPermissions || agent.permissions;
+      const permissions = toEffectivePermissions(desiredPermissions, osPermissions);
+      const networkAllowed = permissions.network === "allow";
+
+      return {
+        ...agent,
+        desiredPermissions: { ...desiredPermissions },
+        permissions,
+        network: {
+          ...agent.network,
+          enabled: networkAllowed ? agent.network.enabled : false,
+          status: networkAllowed ? agent.network.status : "dormant",
+        },
+      };
+    }),
   };
 }
 
@@ -110,12 +163,4 @@ export async function openSystemPermissionSettings(permissionKey?: OsPermissionK
   }
 
   await invoke("daemon_open_system_settings", { permissionKey });
-}
-
-export async function checkAgentPermission(agentWallet: string, permissionKey: string): Promise<boolean> {
-  if (!isTauriRuntime()) {
-    return false;
-  }
-
-  return invoke<boolean>("daemon_check_permission", { agentWallet, permissionKey });
 }

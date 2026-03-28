@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listBuiltinBootstrapFiles, listBuiltinSkillFiles } from "./skills";
+import {
+  getBuiltinSkillSource,
+  listBuiltinBootstrapFiles,
+  listBuiltinSkillFiles,
+  listBuiltinSkillRoots,
+} from "./skills";
 import type {
   AgentMeshInteraction,
   AgentNetworkState,
@@ -389,7 +394,6 @@ function normalizeInstalledAgent(
 const defaultState: LocalRuntimeState = {
   settings: {
     apiUrl: DEFAULT_API_URL,
-    runtimeUrl: DEFAULT_API_URL,
     meshEnabled: false,
   },
   identity: null,
@@ -414,6 +418,50 @@ function cloneDefaultState(): LocalRuntimeState {
     installedAgents: [],
     installedSkills: [],
   };
+}
+
+function createEmptyRequirements() {
+  return {
+    bins: [],
+    env: [],
+    os: [],
+    missing: [],
+    eligible: true,
+  };
+}
+
+function mergeBuiltinInstalledSkills(skills: InstalledSkill[]): InstalledSkill[] {
+  const merged = new Map(skills.map((skill) => [skill.id, skill]));
+  const builtinSource = getBuiltinSkillSource();
+
+  for (const builtin of listBuiltinSkillRoots()) {
+    const existing = merged.get(builtin.id);
+    merged.set(builtin.id, {
+      id: builtin.id,
+      name: builtin.name,
+      fullName: builtin.fullName,
+      description: builtin.description,
+      htmlUrl: builtinSource.catalogUrl,
+      source: builtinSource,
+      installedAt: existing?.installedAt || 0,
+      enabled: true,
+      localPath: existing?.localPath || builtin.relativePath,
+      relativePath: builtin.relativePath,
+      installRef: existing?.installRef || "built-in",
+      installSha: existing?.installSha,
+      requirements: existing?.requirements || createEmptyRequirements(),
+    });
+  }
+
+  return [...merged.values()].sort((left, right) => {
+    if (left.source.id === "built-in" && right.source.id !== "built-in") {
+      return -1;
+    }
+    if (left.source.id !== "built-in" && right.source.id === "built-in") {
+      return 1;
+    }
+    return left.name.localeCompare(right.name);
+  });
 }
 
 function normalizeLinkedDeploymentIntent(value: Partial<LinkedDeploymentIntent> | null | undefined): LinkedDeploymentIntent | null {
@@ -449,10 +497,40 @@ function normalizeState(state: Partial<LocalRuntimeState> | null | undefined): L
       .filter((agent): agent is InstalledAgent => agent !== null)
     : [];
 
+  const mergedSkills = mergeBuiltinInstalledSkills(
+    Array.isArray(state.installedSkills)
+      ? state.installedSkills
+        .map((skill) => normalizeInstalledSkill(skill))
+        .filter((skill): skill is InstalledSkill => skill !== null)
+      : [],
+  );
+
+  const agentsWithSkills = normalizedAgents.map((agent) => {
+    const nextSkillStates = { ...agent.skillStates };
+    for (const skill of mergedSkills) {
+      if (!(skill.id in nextSkillStates)) {
+        nextSkillStates[skill.id] = {
+          enabled: skill.enabled,
+          eligible: skill.requirements?.eligible ?? true,
+          skillId: skill.id,
+          source: skill.source?.id === "built-in" ? "bundled" : "shared",
+          revision: skill.installSha || "",
+          updatedAt: Date.now(),
+        };
+      }
+    }
+    const validSkillIds = new Set(mergedSkills.map((skill) => skill.id));
+    for (const id of Object.keys(nextSkillStates)) {
+      if (!validSkillIds.has(id)) {
+        delete nextSkillStates[id];
+      }
+    }
+    return { ...agent, skillStates: nextSkillStates };
+  });
+
   return {
     settings: {
       apiUrl: state.settings?.apiUrl || base.settings.apiUrl,
-      runtimeUrl: state.settings?.runtimeUrl || base.settings.runtimeUrl,
       meshEnabled: Boolean(state.settings?.meshEnabled ?? base.settings.meshEnabled),
     },
     identity: state.identity || null,
@@ -465,12 +543,8 @@ function normalizeState(state: Partial<LocalRuntimeState> | null | undefined): L
       fullDiskAccess: state.osPermissions?.fullDiskAccess || base.osPermissions.fullDiskAccess,
       accessibility: state.osPermissions?.accessibility || base.osPermissions.accessibility,
     },
-    installedAgents: normalizedAgents,
-    installedSkills: Array.isArray(state.installedSkills)
-      ? state.installedSkills
-        .map((skill) => normalizeInstalledSkill(skill))
-        .filter((skill): skill is InstalledSkill => skill !== null)
-      : [],
+    installedAgents: agentsWithSkills,
+    installedSkills: mergedSkills,
   };
 }
 
@@ -526,15 +600,6 @@ export async function saveRuntimeState(state: LocalRuntimeState): Promise<void> 
   writeStateToFallback(normalized);
 }
 
-export async function updateRuntimeState(
-  updater: (current: LocalRuntimeState) => LocalRuntimeState,
-): Promise<LocalRuntimeState> {
-  const current = await loadRuntimeState();
-  const next = normalizeState(updater(current));
-  await saveRuntimeState(next);
-  return next;
-}
-
 export async function getLocalPaths(): Promise<LocalPaths | null> {
   if (!isTauriRuntime()) {
     return null;
@@ -575,7 +640,7 @@ export async function writeManagedFile(relativePath: string, content: string): P
   }
 }
 
-export async function readManagedFile(relativePath: string): Promise<string | null> {
+async function readManagedFile(relativePath: string): Promise<string | null> {
   if (!isTauriRuntime()) {
     return null;
   }
@@ -601,7 +666,7 @@ export function getAgentWorkspaceRelativePath(agentWallet: string): string {
   return `agents/${agentWallet.toLowerCase()}`;
 }
 
-export function getAgentHeartbeatRelativePath(agentWallet: string): string {
+function getAgentHeartbeatRelativePath(agentWallet: string): string {
   return `${getAgentWorkspaceRelativePath(agentWallet)}/HEARTBEAT.md`;
 }
 
@@ -613,7 +678,7 @@ export function getGlobalSkillsRelativePath(): string {
   return "skills";
 }
 
-export async function ensureAgentWorkspace(agent: InstalledAgent): Promise<void> {
+async function ensureAgentWorkspace(agent: InstalledAgent): Promise<void> {
   const workspaceDir = getAgentWorkspaceRelativePath(agent.agentWallet);
   const skillsDir = getAgentSkillsRelativePath(agent.agentWallet);
   const generatedSkillsDir = `${skillsDir}/generated`;
@@ -705,6 +770,11 @@ export async function ensureBuiltinSkillsInstalled(): Promise<void> {
 
 export async function syncAgentLocalFiles(agent: InstalledAgent): Promise<void> {
   await ensureAgentWorkspace(agent);
+
+  if (agent.reports.length > 0) {
+    const reportsPath = `${getAgentWorkspaceRelativePath(agent.agentWallet)}/reports.json`;
+    await writeManagedFile(reportsPath, JSON.stringify(agent.reports, null, 2));
+  }
 }
 
 export function getDefaultPermissionPolicy(): AgentPermissionPolicy {
@@ -713,24 +783,4 @@ export function getDefaultPermissionPolicy(): AgentPermissionPolicy {
 
 export function permissionAllows(value: PermissionDecision): boolean {
   return value === "allow";
-}
-
-export function permissionPolicyToGrantedList(policy: AgentPermissionPolicy): string[] {
-  const granted: string[] = ["runtime.main", "runtime.cron", "runtime.subagent"];
-  if (policy.shell === "allow") granted.push("shell");
-  if (policy.filesystemRead === "allow") granted.push("fs.read");
-  if (policy.filesystemWrite === "allow") granted.push("fs.write");
-  if (policy.filesystemEdit === "allow") granted.push("fs.edit");
-  if (policy.filesystemDelete === "allow") granted.push("fs.delete");
-  if (policy.camera === "allow") granted.push("camera");
-  if (policy.microphone === "allow") granted.push("microphone");
-  if (policy.network === "allow") granted.push("network");
-  return granted;
-}
-
-export function getDefaultAgentNetworkState(): AgentNetworkState {
-  return {
-    ...defaultAgentNetworkState,
-    listenMultiaddrs: [],
-  };
 }

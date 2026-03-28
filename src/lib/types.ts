@@ -103,7 +103,6 @@ export interface LocalIdentityContext {
 
 export interface LocalSettings {
   apiUrl: string;
-  runtimeUrl: string;
   meshEnabled: boolean;
 }
 
@@ -217,16 +216,6 @@ export interface AgentWorkerState {
   lastHeartbeatAt: number | null;
   lastError: string | null;
   updatedAt: number;
-}
-
-export interface PermissionDecisionTicket {
-  id: string;
-  agentWallet: string;
-  action: string;
-  decision: "allow" | "deny";
-  issuedAt: number;
-  expiresAt: number;
-  nonce: string;
 }
 
 export type OsPermissionStatus = "unknown" | "granted" | "denied" | "unsupported";

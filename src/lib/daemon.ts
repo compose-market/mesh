@@ -3,7 +3,6 @@ import type {
   AgentPermissionPolicy,
   AgentWorkerState,
   InstalledAgent,
-  PermissionDecisionTicket,
 } from "./types";
 
 export interface DaemonInstallPayload {
@@ -35,17 +34,6 @@ export interface DaemonAgentStatus {
 export interface DaemonLogTail {
   lines: string[];
   cursor: number;
-}
-
-export interface DaemonRuntimeHostStatus {
-  running: boolean;
-  status: string;
-  port: number;
-  baseUrl: string;
-  pid: number | null;
-  startedAt: number | null;
-  lastError: string | null;
-  updatedAt: number;
 }
 
 function isTauriRuntime(): boolean {
@@ -92,41 +80,6 @@ export async function daemonGetAgentStatus(agentWallet: string): Promise<DaemonA
 export async function daemonTailLogs(agentWallet: string, cursor?: number): Promise<DaemonLogTail> {
   ensureTauriRuntime();
   return invoke<DaemonLogTail>("daemon_tail_logs", { agentWallet, cursor });
-}
-
-export async function daemonIssuePermissionTicket(input: {
-  agentWallet: string;
-  action: string;
-  decision: "allow" | "deny";
-  ttlSeconds?: number;
-}): Promise<PermissionDecisionTicket> {
-  ensureTauriRuntime();
-  return invoke<PermissionDecisionTicket>("daemon_issue_permission_ticket", {
-    agentWallet: input.agentWallet,
-    action: input.action,
-    decision: input.decision,
-    ttlSeconds: input.ttlSeconds,
-  });
-}
-
-export async function daemonValidatePermissionTicket(ticketId: string, action: string): Promise<boolean> {
-  ensureTauriRuntime();
-  return invoke<boolean>("daemon_validate_permission_ticket", { ticketId, action });
-}
-
-export async function daemonInstallLaunchAgent(): Promise<string> {
-  ensureTauriRuntime();
-  return invoke<string>("daemon_install_launch_agent");
-}
-
-export async function daemonLaunchAgentStatus(): Promise<boolean> {
-  ensureTauriRuntime();
-  return invoke<boolean>("daemon_launch_agent_status");
-}
-
-export async function daemonRuntimeHostStatus(): Promise<DaemonRuntimeHostStatus> {
-  ensureTauriRuntime();
-  return invoke<DaemonRuntimeHostStatus>("daemon_runtime_host_status");
 }
 
 export function daemonStatusToWorkerState(status: DaemonAgentStatus | null | undefined): AgentWorkerState {

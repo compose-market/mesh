@@ -92,6 +92,12 @@ const defaultSessionState: SessionState = {
   chainId: null,
 };
 
+function microsBigIntToUsd(value: bigint): string {
+  const whole = value / 1_000_000n;
+  const cents = (value % 1_000_000n) / 10_000n;
+  return `$${whole.toString()}.${cents.toString().padStart(2, "0")}`;
+}
+
 function identityFromRedeemedLocalContext(context: RedeemedLocalContext): LocalIdentityContext {
   if (!context.hasSession) {
     return {
@@ -201,14 +207,7 @@ function getOrCreateDeviceId(): string {
   return created;
 }
 
-function microsBigIntToUsd(value: bigint): string {
-  const bounded = value > BigInt(Number.MAX_SAFE_INTEGER)
-    ? BigInt(Number.MAX_SAFE_INTEGER)
-    : value < 0n
-      ? 0n
-      : value;
-  return `$${(Number(bounded) / 1_000_000).toFixed(2)}`;
-}
+
 
 async function syncInstalledAgentsWithDaemon(state: LocalRuntimeState): Promise<LocalRuntimeState> {
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window) || state.installedAgents.length === 0) {

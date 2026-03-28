@@ -36,6 +36,18 @@ export const SESSION_HEADERS = {
   budgetRemaining: "x-session-budget-remaining",
 } as const;
 
+export interface PaymentFetchParams {
+  chainId: number;
+  sessionToken: string;
+  sessionUserAddress?: string;
+  sessionBudgetRemaining?: string | number | null;
+}
+
+export interface ParsedSSEBlock {
+  event: string;
+  data: string;
+}
+
 const EMPTY_REQUIREMENTS: SkillRequirements = {
   bins: [],
   env: [],
@@ -49,6 +61,88 @@ const skillDetailCache = new Map<string, { name: string | null; description: str
 
 function normalizeBase(url: string): string {
   return url.replace(/\/+$/, "");
+}
+
+export function createPaymentFetch(params: PaymentFetchParams): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+  if (!Number.isInteger(params.chainId) || params.chainId <= 0) {
+    throw new Error("chainId is required");
+  }
+
+  const hasSessionContext = typeof params.sessionUserAddress === "string"
+    && params.sessionUserAddress.length > 0
+    && params.sessionBudgetRemaining !== null
+    && params.sessionBudgetRemaining !== undefined
+    && String(params.sessionBudgetRemaining).length > 0;
+
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const headers = new Headers(init?.headers);
+    headers.set("Authorization", `Bearer ${params.sessionToken}`);
+    headers.set("X-Chain-ID", String(params.chainId));
+    if (hasSessionContext) {
+      headers.set("X-Session-Active", "true");
+      headers.set("X-Session-User-Address", params.sessionUserAddress!);
+      headers.set("X-Session-Budget-Remaining", String(params.sessionBudgetRemaining));
+    }
+
+    return fetch(input, {
+      ...init,
+      headers,
+    });
+  };
+}
+
+export async function* parseEventStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>
+): AsyncGenerator<ParsedSSEBlock, void, unknown> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    while (true) {
+      const separatorIndex = buffer.indexOf("\n\n");
+      if (separatorIndex === -1) break;
+
+      const rawBlock = buffer.slice(0, separatorIndex);
+      buffer = buffer.slice(separatorIndex + 2);
+      if (!rawBlock.trim()) continue;
+
+      let event = "message";
+      const dataLines: string[] = [];
+
+      for (const line of rawBlock.split("\n")) {
+        if (line.startsWith("event:")) {
+          event = line.slice(6).trim() || "message";
+          continue;
+        }
+        if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trimStart());
+          continue;
+        }
+        if (line.trim() && !line.startsWith(":")) {
+          dataLines.push(line);
+        }
+      }
+
+      if (dataLines.length === 0) continue;
+
+      yield {
+        event,
+        data: dataLines.join("\n"),
+      };
+    }
+  }
+
+  if (buffer.trim()) {
+    yield {
+      event: "message",
+      data: buffer.trim(),
+    };
+  }
 }
 
 function withSessionHeaders(input: {
@@ -221,13 +315,13 @@ export function normalizeAgentMetadata(
   }
 
   return {
-    name: optionalString(source.name) || "Unnamed Agent",
-    description: optionalString(source.description) || "",
+    name: requireAgentField(optionalString(source.name), "name"),
+    description: requireAgentField(optionalString(source.description), "description"),
     agentCardUri: normalizeAgentCardUri(
       optionalString(source.agentCardUri) || optionalString(source.cid),
       options.fallbackAgentCardCid || optionalString(source.cid) || undefined,
     ),
-    creator: optionalString(source.creator) || "",
+    creator: requireAgentField(optionalString(source.creator), "creator"),
     walletAddress,
     dnaHash: requireAgentField(optionalString(source.dnaHash), "dnaHash"),
     model: requireAgentField(optionalString(source.model), "model"),
@@ -282,9 +376,7 @@ export async function fetchSessionInfo(params: {
     return await requestJson(`${normalizeBase(params.apiUrl)}/api/session`, {
       method: "GET",
       headers: {
-        ...(params.composeKeyToken
-          ? { Authorization: `Bearer ${params.composeKeyToken}` }
-          : {}),
+        ...(params.composeKeyToken ? { Authorization: `Bearer ${params.composeKeyToken}` } : {}),
         ...withSessionHeaders({
           userAddress: params.userAddress,
           chainId: params.chainId,
@@ -354,13 +446,13 @@ export async function registerLocalDeployment(params: {
 }
 
 export async function fetchAgentMetadata(params: {
-  runtimeUrl: string;
+  apiUrl: string;
   agentWallet: string;
   agentCardCid?: string;
 }): Promise<AgentMetadata> {
   try {
     const response = await requestJson<unknown>(
-      `${normalizeBase(params.runtimeUrl)}/agent/${walletPath(params.agentWallet)}`,
+      `${normalizeBase(params.apiUrl)}/agent/${walletPath(params.agentWallet)}`,
       { method: "GET" },
     );
     return normalizeAgentMetadata(response, {
@@ -373,42 +465,6 @@ export async function fetchAgentMetadata(params: {
     }
     return fetchAgentMetadataFromIpfs(params.agentCardCid, params.agentWallet);
   }
-}
-
-export async function callAgent(params: {
-  runtimeUrl: string;
-  identity: LocalIdentityContext;
-  agentWallet: string;
-  message: string;
-  threadId?: string;
-  userAddress?: string;
-  sessionGrants?: string[];
-  cloudPermissions?: string[];
-  backpackAccounts?: BackpackConnectionInfo[];
-}): Promise<{ output?: string; success?: boolean; error?: string }> {
-  return requestJson(
-    `${normalizeBase(params.runtimeUrl)}/agent/${walletPath(params.agentWallet)}/chat`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${params.identity.composeKeyToken}`,
-        ...withSessionHeaders({
-          userAddress: params.identity.userAddress,
-          chainId: params.identity.chainId,
-          active: true,
-          budgetRemaining: params.identity.budget,
-        }),
-      },
-      body: JSON.stringify({
-        message: params.message,
-        threadId: params.threadId,
-        userAddress: params.userAddress,
-        sessionGrants: params.sessionGrants,
-        cloudPermissions: params.cloudPermissions,
-        backpackAccounts: params.backpackAccounts,
-      }),
-    },
-  );
 }
 
 export async function fetchBackpackConnections(params: {

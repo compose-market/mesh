@@ -1,4 +1,3 @@
-import { fetchAgentMetadata } from "../../lib/api";
 import type {
   AgentDnaLock,
   AgentMeshInteraction,
@@ -10,17 +9,11 @@ import type {
   MeshPeerSignal,
 } from "../../lib/types";
 
-const BASE_RUNTIME_GRANTS = ["runtime.main", "runtime.cron", "runtime.subagent"];
 const REPORT_LIMIT = 128;
 const SIGNAL_LIMIT = 32;
 const INTERACTION_LIMIT = 64;
 
 export type AgentDetailTab = "chat" | "permissions" | "skills" | "history" | "mesh";
-
-export interface AgentExecutionPolicy {
-  grantedPermissions: string[];
-  permissionPolicy: Record<string, "allow" | "deny">;
-}
 
 export interface AgentEconomicsActivity {
   type: "session-spend" | "peer-revenue";
@@ -50,21 +43,6 @@ function clampList<T>(items: T[], limit: number): T[] {
 
 function normalizeList(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
-}
-
-function grantedPermissions(policy: AgentPermissionPolicy): string[] {
-  const grants = [...BASE_RUNTIME_GRANTS];
-
-  if (policy.shell === "allow") grants.push("shell");
-  if (policy.filesystemRead === "allow") grants.push("fs.read");
-  if (policy.filesystemWrite === "allow") grants.push("fs.write");
-  if (policy.filesystemEdit === "allow") grants.push("fs.edit");
-  if (policy.filesystemDelete === "allow") grants.push("fs.delete");
-  if (policy.camera === "allow") grants.push("camera");
-  if (policy.microphone === "allow") grants.push("microphone");
-  if (policy.network === "allow") grants.push("network");
-
-  return grants;
 }
 
 function latestReportLine(agent: InstalledAgent): string {
@@ -144,34 +122,10 @@ export function agentLocksMatch(current: AgentDnaLock, next: AgentDnaLock): bool
   );
 }
 
-export async function validateAgentLock(agent: InstalledAgent, runtimeUrl: string): Promise<void> {
-  const canonical = await fetchAgentMetadata({
-    runtimeUrl,
-    agentWallet: agent.agentWallet,
-    agentCardCid: agent.lock.agentCardCid,
-  });
-  const canonicalLock = await buildAgentLock({
-    walletAddress: canonical.walletAddress,
-    agentCardUri: canonical.agentCardUri,
-    model: canonical.model,
-    plugins: canonical.plugins,
-    chainId: agent.lock.chainId,
-    dnaHash: canonical.dnaHash,
-  });
-
-  if (canonicalLock.modelId !== agent.lock.modelId) {
-    throw new Error(`Model mismatch for ${agent.agentWallet}: local=${agent.lock.modelId} canonical=${canonicalLock.modelId}`);
-  }
-  if (canonicalLock.mcpToolsHash !== agent.lock.mcpToolsHash) {
-    throw new Error(`MCP tools mismatch for ${agent.agentWallet}`);
-  }
-  if (canonicalLock.agentCardCid !== agent.lock.agentCardCid) {
-    throw new Error(`agentCard CID mismatch for ${agent.agentWallet}`);
-  }
-}
-
-export function createInstalledAgent(input: CreateInstalledAgentInput): InstalledAgent {
+export async function createInstalledAgent(input: CreateInstalledAgentInput): Promise<InstalledAgent> {
   const createdAt = input.addedAt || Date.now();
+  const haiSeed = `${input.lock.agentWallet}:${input.lock.agentCardCid}:${input.lock.modelId}:${input.lock.chainId}`;
+  const haiId = `hai-${(await sha256Hex(haiSeed)).slice(0, 40)}`;
   const agent: InstalledAgent = {
     agentWallet: input.lock.agentWallet,
     metadata: input.metadata,
@@ -190,7 +144,7 @@ export function createInstalledAgent(input: CreateInstalledAgentInput): Installe
     network: {
       enabled: false,
       status: "dormant",
-      haiId: null,
+      haiId,
       peerId: null,
       listenMultiaddrs: [],
       peersDiscovered: 0,
@@ -228,22 +182,6 @@ export function syncInstalledAgent(agent: InstalledAgent, metadata: AgentMetadat
     network: {
       ...next.network,
       publicCard: buildMeshAgentCard(next),
-    },
-  };
-}
-
-export function buildAgentExecutionPolicy(policy: AgentPermissionPolicy): AgentExecutionPolicy {
-  return {
-    grantedPermissions: grantedPermissions(policy),
-    permissionPolicy: {
-      shell: policy.shell,
-      "fs.read": policy.filesystemRead,
-      "fs.write": policy.filesystemWrite,
-      "fs.edit": policy.filesystemEdit,
-      "fs.delete": policy.filesystemDelete,
-      camera: policy.camera,
-      microphone: policy.microphone,
-      network: policy.network,
     },
   };
 }
