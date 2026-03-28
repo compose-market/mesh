@@ -10,6 +10,7 @@ import type {
   AgentNetworkState,
   AgentDnaLock,
   AgentPermissionPolicy,
+  AgentSkillState,
   MeshManifest,
   AgentTaskReport,
   InstalledSkill,
@@ -341,6 +342,44 @@ function normalizeInstalledSkill(skill: Partial<InstalledSkill> | null | undefin
   };
 }
 
+function normalizeAgentSkillStateRecord(
+  skillStates: unknown,
+): Record<string, AgentSkillState> {
+  if (!skillStates || typeof skillStates !== "object" || Array.isArray(skillStates)) {
+    return {};
+  }
+
+  const normalized: Record<string, AgentSkillState> = {};
+  for (const [key, value] of Object.entries(skillStates as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      continue;
+    }
+    const record = value as Record<string, unknown>;
+    const skillId = typeof record.skillId === "string" && record.skillId.trim().length > 0
+      ? record.skillId.trim()
+      : key.trim();
+    if (!skillId) {
+      continue;
+    }
+    const source = record.source === "agent" || record.source === "shared" || record.source === "bundled" || record.source === "generated"
+      ? record.source
+      : skillId.startsWith("agent:")
+        ? "generated"
+        : "shared";
+
+    normalized[skillId] = {
+      skillId,
+      enabled: record.enabled !== false,
+      eligible: record.eligible !== false,
+      source,
+      revision: typeof record.revision === "string" ? record.revision : "",
+      updatedAt: Number.isFinite(record.updatedAt) ? Number(record.updatedAt) : Date.now(),
+    };
+  }
+
+  return normalized;
+}
+
 function normalizeInstalledAgent(
   agent: InstalledAgent | Partial<InstalledAgent>,
   permissionDefaults: AgentPermissionPolicy,
@@ -364,6 +403,9 @@ function normalizeInstalledAgent(
     || permissionDefaults,
   );
   const normalizedNetwork = normalizeNetworkState(agent.network as Partial<AgentNetworkState> | undefined);
+  const normalizedMcpServers = Array.isArray(agent.mcpServers)
+    ? [...new Set(agent.mcpServers.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim().toLowerCase()))].sort()
+    : [];
 
   const lock = (agent.lock || {}) as Partial<AgentDnaLock>;
 
@@ -381,10 +423,9 @@ function normalizeInstalledAgent(
     },
     desiredPermissions: normalizedDesiredPermissions,
     permissions: normalizedPermissions,
+    mcpServers: normalizedMcpServers,
     network: normalizedNetwork,
-    skillStates: typeof (agent as InstalledAgent).skillStates === "object" && (agent as InstalledAgent).skillStates !== null
-      ? (agent as InstalledAgent).skillStates
-      : {},
+    skillStates: normalizeAgentSkillStateRecord((agent as InstalledAgent).skillStates),
     reports: Array.isArray((agent as InstalledAgent).reports)
       ? (agent as InstalledAgent).reports.map((item) => normalizeAgentReport(item)).filter((item): item is AgentTaskReport => item !== null).slice(0, 128)
       : [],
@@ -520,8 +561,8 @@ function normalizeState(state: Partial<LocalRuntimeState> | null | undefined): L
       }
     }
     const validSkillIds = new Set(mergedSkills.map((skill) => skill.id));
-    for (const id of Object.keys(nextSkillStates)) {
-      if (!validSkillIds.has(id)) {
+    for (const [id, skillState] of Object.entries(nextSkillStates)) {
+      if (!validSkillIds.has(id) && skillState.source !== "agent" && skillState.source !== "generated") {
         delete nextSkillStates[id];
       }
     }
@@ -547,6 +588,8 @@ function normalizeState(state: Partial<LocalRuntimeState> | null | undefined): L
     installedSkills: mergedSkills,
   };
 }
+
+export const normalizeRuntimeState = normalizeState;
 
 async function readStateFromTauri(): Promise<LocalRuntimeState> {
   const raw = await invoke<string>("load_local_state");
@@ -640,7 +683,7 @@ export async function writeManagedFile(relativePath: string, content: string): P
   }
 }
 
-async function readManagedFile(relativePath: string): Promise<string | null> {
+export async function readManagedFile(relativePath: string): Promise<string | null> {
   if (!isTauriRuntime()) {
     return null;
   }
@@ -648,6 +691,17 @@ async function readManagedFile(relativePath: string): Promise<string | null> {
     return await invoke<string>("read_local_file", { relativePath });
   } catch {
     return null;
+  }
+}
+
+export async function listManagedFiles(relativePath: string): Promise<string[]> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+  try {
+    return await invoke<string[]>("list_local_files", { relativePath });
+  } catch {
+    return [];
   }
 }
 
@@ -770,10 +824,11 @@ export async function ensureBuiltinSkillsInstalled(): Promise<void> {
 
 export async function syncAgentLocalFiles(agent: InstalledAgent): Promise<void> {
   await ensureAgentWorkspace(agent);
+  const reportsDir = `${getAgentWorkspaceRelativePath(agent.agentWallet)}/reports`;
+  await ensureManagedDir(reportsDir);
 
-  if (agent.reports.length > 0) {
-    const reportsPath = `${getAgentWorkspaceRelativePath(agent.agentWallet)}/reports.json`;
-    await writeManagedFile(reportsPath, JSON.stringify(agent.reports, null, 2));
+  for (const report of agent.reports) {
+    await writeManagedFile(`${reportsDir}/${report.id}.json`, JSON.stringify(report, null, 2));
   }
 }
 
