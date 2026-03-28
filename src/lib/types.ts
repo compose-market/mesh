@@ -82,6 +82,7 @@ export interface InstalledAgent {
   heartbeat: AgentHeartbeatState;
   desiredPermissions?: AgentPermissionPolicy;
   permissions: AgentPermissionPolicy;
+  mcpServers?: string[];
   network: AgentNetworkState;
   workerState?: AgentWorkerState;
   skillStates?: Record<string, AgentSkillState>;
