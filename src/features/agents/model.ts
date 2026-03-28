@@ -124,14 +124,12 @@ export function agentLocksMatch(current: AgentDnaLock, next: AgentDnaLock): bool
 
 export async function createInstalledAgent(input: CreateInstalledAgentInput): Promise<InstalledAgent> {
   const createdAt = input.addedAt || Date.now();
-  const haiSeed = `${input.lock.agentWallet}:${input.lock.agentCardCid}:${input.lock.modelId}:${input.lock.chainId}`;
-  const haiId = `hai-${(await sha256Hex(haiSeed)).slice(0, 40)}`;
   const agent: InstalledAgent = {
     agentWallet: input.lock.agentWallet,
     metadata: input.metadata,
     lock: input.lock,
     addedAt: createdAt,
-    running: true,
+    running: false,
     runtimeId: input.runtimeId || crypto.randomUUID(),
     heartbeat: {
       enabled: true,
@@ -141,10 +139,11 @@ export async function createInstalledAgent(input: CreateInstalledAgentInput): Pr
     },
     desiredPermissions: { ...input.permissions },
     permissions: { ...input.permissions },
+    mcpServers: [],
     network: {
       enabled: false,
       status: "dormant",
-      haiId,
+      haiId: null,
       peerId: null,
       listenMultiaddrs: [],
       peersDiscovered: 0,
