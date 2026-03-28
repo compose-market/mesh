@@ -118,6 +118,10 @@ export function buildManifestPayload(input: BuildManifestInput): MeshManifest {
   const a2aEndpoints = dedupeSorted(
     [agent.metadata.endpoints?.chat, agent.metadata.endpoints?.stream].filter((endpoint): endpoint is string => typeof endpoint === "string"),
   );
+  const mcpServers = dedupeSorted([
+    ...(previousManifest?.mcpServers ?? []),
+    ...(agent.mcpServers ?? []),
+  ]);
   const reputationScore = previousManifest?.reputationScore ?? 0;
   const totalConclaves = previousManifest?.totalConclaves ?? 0;
   const successfulConclaves = previousManifest?.successfulConclaves ?? 0;
@@ -139,7 +143,7 @@ export function buildManifestPayload(input: BuildManifestInput): MeshManifest {
     headline: agent.network.publicCard?.headline ?? `${agent.metadata.name} on ${agent.metadata.framework}`,
     statusLine: agent.network.publicCard?.statusLine ?? agent.metadata.description,
     skills,
-    mcpServers: previousManifest?.mcpServers ?? [],
+    mcpServers,
     a2aEndpoints,
     capabilities,
     agentCardUri: agent.metadata.agentCardUri,
