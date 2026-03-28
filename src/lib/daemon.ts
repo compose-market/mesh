@@ -91,11 +91,17 @@ export function mergeDaemonStatusIntoInstalledAgent(agent: InstalledAgent, statu
     return agent;
   }
 
+  const desiredPermissions = status.desiredPermissions
+    ? { ...status.desiredPermissions }
+    : agent.desiredPermissions
+      ? { ...agent.desiredPermissions }
+      : { ...status.permissions };
+
   return {
     ...agent,
     running: Boolean(status.running),
     runtimeId: status.runtimeId || agent.runtimeId,
-    desiredPermissions: { ...(status.desiredPermissions || status.permissions) },
+    desiredPermissions,
     permissions: { ...status.permissions },
     network: {
       ...agent.network,
