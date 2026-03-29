@@ -8,9 +8,19 @@ interface DeepLinkHandlerProps {
   apiUrl: string;
   activeWallet: string | null;
   chainId: number | null;
+  sessionActive: boolean;
   deviceId: string;
   onContextRedeemed: (context: RedeemedLocalContext) => void;
-  onSessionUpdate: (active: boolean, expiresAt: number | null, budget: string | null, sessionId?: string, duration?: number) => void;
+  onSessionUpdate: (update: {
+    active: boolean;
+    expiresAt?: number | null;
+    budgetLimit?: string | null;
+    budgetUsed?: string | null;
+    budgetRemaining?: string | null;
+    sessionId?: string | null;
+    duration?: number | null;
+    chainId?: number | null;
+  }) => void;
   onError: (message: string) => void;
 }
 
@@ -38,6 +48,7 @@ export function DeepLinkHandler({
   apiUrl,
   activeWallet,
   chainId,
+  sessionActive,
   deviceId,
   onContextRedeemed,
   onSessionUpdate,
@@ -54,14 +65,7 @@ export function DeepLinkHandler({
   onErrorRef.current = onError;
 
   const connectSessionStream = useCallback(
-    (wallet: string, chain: number, composeKeyToken?: string | null) => {
-      if (!composeKeyToken) {
-        if (sourceRef.current) {
-          sourceRef.current.close();
-          sourceRef.current = null;
-        }
-        return;
-      }
+    (wallet: string, chain: number) => {
       if (sourceRef.current) {
         sourceRef.current.close();
       }
@@ -69,7 +73,6 @@ export function DeepLinkHandler({
       const url = new URL(`${apiUrl.replace(/\/+$/, "")}/api/session/events`);
       url.searchParams.set("userAddress", wallet);
       url.searchParams.set("chainId", String(chain));
-      url.searchParams.set("token", composeKeyToken);
 
       const source = new EventSource(url.toString());
       sourceRef.current = source;
@@ -78,24 +81,39 @@ export function DeepLinkHandler({
         try {
           const data = JSON.parse((event as MessageEvent<string>).data) as {
             expiresAt?: number;
+            budgetLimit?: string | number;
+            budgetUsed?: string | number;
             budgetRemaining?: string | number;
-            sessionId?: string;
-            duration?: number;
+            chainId?: number;
           };
-          onSessionUpdateRef.current(
-            true,
-            data.expiresAt ?? null,
-            data.budgetRemaining !== undefined ? String(data.budgetRemaining) : null,
-            data.sessionId,
-            data.duration,
-          );
-        } catch {
-          onSessionUpdateRef.current(false, null, "0");
+          onSessionUpdateRef.current({
+            active: true,
+            expiresAt: data.expiresAt ?? null,
+            budgetLimit: data.budgetLimit !== undefined ? String(data.budgetLimit) : undefined,
+            budgetUsed: data.budgetUsed !== undefined ? String(data.budgetUsed) : undefined,
+            budgetRemaining: data.budgetRemaining !== undefined ? String(data.budgetRemaining) : undefined,
+            chainId: typeof data.chainId === "number" ? data.chainId : chain,
+          });
+        } catch (error) {
+          console.warn("[deep-link] Ignoring malformed session-active event", error);
         }
       });
 
-      source.addEventListener("session-expired", () => {
-        onSessionUpdateRef.current(false, null, "0");
+      source.addEventListener("session-expired", (event) => {
+        try {
+          const data = JSON.parse((event as MessageEvent<string>).data) as { chainId?: number };
+          onSessionUpdateRef.current({
+            active: false,
+            budgetRemaining: "0",
+            chainId: typeof data.chainId === "number" ? data.chainId : chain,
+          });
+        } catch {
+          onSessionUpdateRef.current({
+            active: false,
+            budgetRemaining: "0",
+            chainId: chain,
+          });
+        }
       });
     },
     [apiUrl],
@@ -120,18 +138,6 @@ export function DeepLinkHandler({
       }
 
       onContextRedeemedRef.current(context);
-      if (context.hasSession) {
-        onSessionUpdateRef.current(
-          true,
-          context.session.expiresAt ?? null,
-          context.session.budget,
-          context.session.sessionId,
-          context.session.duration,
-        );
-      } else {
-        onSessionUpdateRef.current(false, null, "0", "", 0);
-      }
-      connectSessionStream(context.userAddress, context.chainId, context.composeKey.token || null);
       window.dispatchEvent(new CustomEvent("navigate-to-agent", { detail: { wallet: context.agentWallet } }));
     } catch (error) {
       if (sequence !== redeemSequenceRef.current) {
@@ -141,7 +147,7 @@ export function DeepLinkHandler({
       const msg = error instanceof Error ? error.message : "Failed to redeem local link token";
       onErrorRef.current(msg);
     }
-  }, [connectSessionStream, deviceId, apiUrl]);
+  }, [deviceId, apiUrl]);
 
   useEffect(() => {
     let dispose: (() => void) | null = null;
@@ -179,8 +185,8 @@ export function DeepLinkHandler({
   }, [redeemToken]);
 
   useEffect(() => {
-    if (activeWallet && chainId) {
-      connectSessionStream(activeWallet, chainId, null);
+    if (sessionActive && activeWallet && chainId) {
+      connectSessionStream(activeWallet, chainId);
       return;
     }
 
@@ -188,7 +194,7 @@ export function DeepLinkHandler({
       sourceRef.current.close();
       sourceRef.current = null;
     }
-  }, [activeWallet, chainId, connectSessionStream]);
+  }, [activeWallet, chainId, connectSessionStream, sessionActive]);
 
   return null;
 }
