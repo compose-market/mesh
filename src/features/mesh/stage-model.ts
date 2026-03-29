@@ -197,8 +197,8 @@ function findAnchorByMatch(
   return null;
 }
 
-function findPeerNode(scene: MeshScene, peerId: string): MeshScenePeerNode | null {
-  return scene.peers.find((node) => node.peer.peerId === peerId) || null;
+function findPeerNode(scene: MeshScene, signalId: string): MeshScenePeerNode | null {
+  return scene.peers.find((node) => node.peer.id === signalId) || null;
 }
 
 function linkIntensity(signalCount: number, announceCount: number, stale: boolean): number {
@@ -211,7 +211,13 @@ function regionPairId(left: string, right: string): string {
   return left.localeCompare(right) <= 0 ? `${left}__${right}` : `${right}__${left}`;
 }
 
-function buildLocalNode(agent: InstalledAgent, scene: MeshScene, anchorsByPeerId: Record<string, MeshBootstrapAnchor>): {
+function buildLocalNode(
+  agent: InstalledAgent,
+  scene: MeshScene,
+  anchorsByPeerId: Record<string, MeshBootstrapAnchor>,
+  localIndex: number,
+  localCount: number,
+): {
   node: MeshStageNode;
   manifest: MeshSelectedManifest;
 } | null {
@@ -228,8 +234,10 @@ function buildLocalNode(agent: InstalledAgent, scene: MeshScene, anchorsByPeerId
       ? `${localRegionProfile.city}, ${localRegionProfile.country}`
       : "Unassigned region";
 
-  const x = clamp((localAnchor?.x ?? 50) + 3.8, 6, 94);
-  const y = clamp((localAnchor?.y ?? 50) - 3.2, 10, 90);
+  const angle = localCount > 1 ? ((Math.PI * 2 * localIndex) / localCount) - (Math.PI / 2) : -Math.PI / 4;
+  const radius = localCount > 1 ? 3.4 : 2.8;
+  const x = clamp((localAnchor?.x ?? 50) + (Math.cos(angle) * radius), 6, 94);
+  const y = clamp((localAnchor?.y ?? 50) + (Math.sin(angle) * radius * 0.72), 10, 90);
   const nodeId = `local:${agent.agentWallet}`;
   const node: MeshStageNode = {
     ...offsetCoordinates(localAnchor, x, y),
@@ -276,7 +284,7 @@ export function buildMeshStageModel({
 }: BuildMeshStageModelInput): MeshStageModel {
   const anchorsByPeerId = buildAnchorsByPeerId(scene);
   const peerNodes: MeshStageNode[] = peers.flatMap((peer) => {
-    const scenePeer = findPeerNode(scene, peer.peerId);
+    const scenePeer = findPeerNode(scene, peer.id);
     if (!scenePeer) {
       return [];
     }
@@ -302,8 +310,9 @@ export function buildMeshStageModel({
     }];
   });
 
-  const localNodes = agents
-    .map((agent) => buildLocalNode(agent, scene, anchorsByPeerId))
+  const enabledAgents = agents.filter((agent) => agent.network.enabled);
+  const localNodes = enabledAgents
+    .map((agent, index) => buildLocalNode(agent, scene, anchorsByPeerId, index, enabledAgents.length))
     .filter((entry): entry is { node: MeshStageNode; manifest: MeshSelectedManifest } => entry !== null);
   const localManifestById = new Map(localNodes.map((entry) => [entry.node.id, entry.manifest]));
   const nodes = [...localNodes.map((entry) => entry.node), ...peerNodes];

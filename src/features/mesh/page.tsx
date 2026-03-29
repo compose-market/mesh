@@ -233,8 +233,8 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
 
   const nodesById = useMemo(() => new Map(stage.nodes.map((node) => [node.id, node])), [stage.nodes]);
   const regionsById = useMemo(() => new Map(stage.regions.map((region) => [region.id, region])), [stage.regions]);
-  const primaryAgent = agents[0] || null;
-  const localNode = useMemo(() => stage.nodes.find((node) => node.kind === "local") || null, [stage.nodes]);
+  const localNodes = useMemo(() => stage.nodes.filter((node) => node.kind === "local"), [stage.nodes]);
+  const localNode = localNodes[0] || null;
   const selectedNode = selectedNodeId ? nodesById.get(selectedNodeId) || null : null;
   const focusedRegion = (
     (selectedRegionId ? regionsById.get(selectedRegionId) : null)
@@ -243,7 +243,7 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
   );
   const focusedRegionId = focusedRegion?.id || null;
   const activeRegions = stage.regions.filter((region) => region.peerCount > 0 || region.localNodeIds.length > 0).length;
-  const viewerDormant = !localNode || localNode.lon === null || localNode.lat === null;
+  const viewerDormant = localNodes.length === 0 || localNodes.every((node) => node.lon === null || node.lat === null);
 
   useEffect(() => {
     if (selectedNodeId && !nodesById.has(selectedNodeId)) {
@@ -774,11 +774,11 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
               </ShellPill>
               <ShellPill className="mesh-stat-pill">
                 <Waypoints size={14} />
-                <span>{primaryAgent?.network.status || "observer"}</span>
+                <span>{localNodes.length > 0 ? `${localNodes.length} local agents` : "observer"}</span>
               </ShellPill>
               <ShellPill className="mesh-stat-pill">
                 <Wallet size={14} />
-                <span>{shortWallet(localNode?.wallet || null)}</span>
+                <span>{localNodes.length > 1 ? `${localNodes.length} wallets` : shortWallet(localNode?.wallet || null)}</span>
               </ShellPill>
             </div>
           </div>
@@ -795,7 +795,7 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
               </div>
               <div className="mesh-viewer-node__label">
                 <strong>This Device</strong>
-                <span>{localNode ? "Locating..." : "Waiting for Mesh activation"}</span>
+                <span>{localNodes.length > 0 ? "Locating agents..." : "Waiting for Mesh activation"}</span>
               </div>
             </div>
           ) : null}
@@ -880,7 +880,7 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
             </div>
           ) : null}
 
-          {!localNode ? (
+          {localNodes.length === 0 ? (
             <div className="mesh-stage__status">
               <strong>No agent broadcasting.</strong>
               <span>Enable "Mesh" in your Agent's Settings to join the network.</span>
