@@ -452,6 +452,7 @@ export function AgentDetailPage({
       const nextValue = nextPermissionDecision(desiredPermissions[key]);
       const nextPermissions: AgentPermissionPolicy = { ...desiredPermissions, [key]: nextValue };
       const daemonStatus = await daemonUpdatePermissions(agent.agentWallet, nextPermissions);
+      const osStatus = await queryOsPermissions();
       await onStateChange(reconcileStateWithOsPermissions({
         ...state,
         installedAgents: state.installedAgents.map((item) => (
@@ -467,7 +468,7 @@ export function AgentDetailPage({
             )
             : item
         )),
-      }, state.osPermissions));
+      }, osStatus));
       onNotify("success", `${key} permission updated`);
     } catch (error) {
       onNotify("error", error instanceof Error ? error.message : `Failed to update ${key}`);
