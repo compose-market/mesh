@@ -26,19 +26,12 @@ function normalizeOsPermissionStatus(value: string): OsPermissionStatus {
     case "authorized":
     case "granted":
       return "granted";
-    case "restricted":
-    case "denied":
-      return "denied";
-    case "limited":
-      return "granted";
-    case "not-determined":
-      return "unknown";
     default:
-      return "unknown";
+      return "denied";
   }
 }
 
-export function createDefaultOsPermissionSnapshot(status: OsPermissionStatus = "unknown"): OsPermissionSnapshot {
+export function createDefaultOsPermissionSnapshot(status: OsPermissionStatus = "denied"): OsPermissionSnapshot {
   return {
     camera: status,
     microphone: status,
@@ -54,29 +47,20 @@ function normalizeOsPermissionSnapshot(snapshot: Partial<RawOsPermissionSnapshot
   }
 
   return {
-    camera: normalizeOsPermissionStatus(snapshot.camera || "unknown"),
-    microphone: normalizeOsPermissionStatus(snapshot.microphone || "unknown"),
-    screen: normalizeOsPermissionStatus(snapshot.screen || "unknown"),
-    fullDiskAccess: normalizeOsPermissionStatus(snapshot.fullDiskAccess || "unknown"),
-    accessibility: normalizeOsPermissionStatus(snapshot.accessibility || "unknown"),
+    camera: normalizeOsPermissionStatus(snapshot.camera || "denied"),
+    microphone: normalizeOsPermissionStatus(snapshot.microphone || "denied"),
+    screen: normalizeOsPermissionStatus(snapshot.screen || "denied"),
+    fullDiskAccess: normalizeOsPermissionStatus(snapshot.fullDiskAccess || "denied"),
+    accessibility: normalizeOsPermissionStatus(snapshot.accessibility || "denied"),
   };
 }
 
 export function formatOsPermissionStatus(status: OsPermissionStatus): string {
-  switch (status) {
-    case "granted":
-      return "Granted";
-    case "denied":
-      return "Denied";
-    case "unsupported":
-      return "Unsupported";
-    default:
-      return "Unknown";
-  }
+  return status === "granted" ? "Granted" : "Denied";
 }
 
 function isOsGranted(status: OsPermissionStatus): boolean {
-  return status === "granted" || status === "unsupported";
+  return status === "granted";
 }
 
 const DENY_FILESYSTEM_POLICY: Pick<
@@ -142,7 +126,7 @@ export function canAgentUseMesh(
 
 export async function queryOsPermissions(): Promise<OsPermissionSnapshot> {
   if (!isTauriRuntime()) {
-    return createDefaultOsPermissionSnapshot("unsupported");
+    return createDefaultOsPermissionSnapshot("denied");
   }
 
   const snapshot = await invoke<RawOsPermissionSnapshot>("daemon_query_os_permissions");
@@ -151,7 +135,7 @@ export async function queryOsPermissions(): Promise<OsPermissionSnapshot> {
 
 export async function requestOsPermission(permissionKey: OsPermissionKey): Promise<OsPermissionSnapshot> {
   if (!isTauriRuntime()) {
-    return createDefaultOsPermissionSnapshot("unsupported");
+    return createDefaultOsPermissionSnapshot("denied");
   }
 
   const snapshot = await invoke<RawOsPermissionSnapshot>("daemon_request_os_permission", { permissionKey });

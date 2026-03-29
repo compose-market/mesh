@@ -44,11 +44,11 @@ const defaultPermissions: AgentPermissionPolicy = {
 };
 
 const defaultOsPermissions: OsPermissionSnapshot = {
-  camera: "unknown",
-  microphone: "unknown",
-  screen: "unknown",
-  fullDiskAccess: "unknown",
-  accessibility: "unknown",
+  camera: "denied",
+  microphone: "denied",
+  screen: "denied",
+  fullDiskAccess: "denied",
+  accessibility: "denied",
 };
 
 const defaultAgentNetworkState: AgentNetworkState = {
@@ -824,12 +824,7 @@ export async function ensureBuiltinSkillsInstalled(): Promise<void> {
 
 export async function syncAgentLocalFiles(agent: InstalledAgent): Promise<void> {
   await ensureAgentWorkspace(agent);
-  const reportsDir = `${getAgentWorkspaceRelativePath(agent.agentWallet)}/reports`;
-  await ensureManagedDir(reportsDir);
-
-  for (const report of agent.reports) {
-    await writeManagedFile(`${reportsDir}/${report.id}.json`, JSON.stringify(report, null, 2));
-  }
+  await ensureManagedDir(`${getAgentWorkspaceRelativePath(agent.agentWallet)}/reports`);
 }
 
 export function getDefaultPermissionPolicy(): AgentPermissionPolicy {

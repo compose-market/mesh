@@ -30,7 +30,6 @@ export interface LocalAgentStructuredReply {
 export interface LocalAgentConversationResult extends LocalAgentStructuredReply {
   authoredSkillId: string | null;
   authoredSkillPath: string | null;
-  mcpServers: string[];
   raw: string;
 }
 

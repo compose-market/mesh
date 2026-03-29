@@ -219,7 +219,7 @@ export interface AgentWorkerState {
   updatedAt: number;
 }
 
-export type OsPermissionStatus = "unknown" | "granted" | "denied" | "unsupported";
+export type OsPermissionStatus = "granted" | "denied";
 
 export interface OsPermissionSnapshot {
   camera: OsPermissionStatus;

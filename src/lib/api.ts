@@ -1090,43 +1090,39 @@ export async function getActiveSessionStatus(params: {
   apiUrl: string;
   identity: Pick<LocalIdentityContext, "userAddress" | "chainId" | "composeKeyToken">;
 }): Promise<ActiveSessionStatusResponse | null> {
-  try {
-    const response = await requestJson<ActiveSessionStatusResponse>(
-      `${normalizeBase(params.apiUrl)}/api/session`,
-      {
-        method: "GET",
-        headers: {
-          ...(params.identity.composeKeyToken
-            ? { Authorization: `Bearer ${params.identity.composeKeyToken}` }
-            : {}),
-          ...withSessionHeaders({
-            userAddress: params.identity.userAddress,
-            chainId: params.identity.chainId,
-          }),
-        },
+  const response = await requestJson<ActiveSessionStatusResponse>(
+    `${normalizeBase(params.apiUrl)}/api/session`,
+    {
+      method: "GET",
+      headers: {
+        ...(params.identity.composeKeyToken
+          ? { Authorization: `Bearer ${params.identity.composeKeyToken}` }
+          : {}),
+        ...withSessionHeaders({
+          userAddress: params.identity.userAddress,
+          chainId: params.identity.chainId,
+        }),
       },
-    );
+    },
+  );
 
-    if (!response.hasSession) {
-      return { hasSession: false };
-    }
-
-    return {
-      hasSession: true,
-      keyId: response.keyId,
-      token: response.token,
-      budgetLimit: response.budgetLimit,
-      budgetUsed: response.budgetUsed,
-      budgetLocked: response.budgetLocked,
-      budgetRemaining: response.budgetRemaining,
-      expiresAt: response.expiresAt,
-      chainId: response.chainId,
-      name: response.name,
-      status: response.status,
-    };
-  } catch {
-    return null;
+  if (!response.hasSession) {
+    return { hasSession: false };
   }
+
+  return {
+    hasSession: true,
+    keyId: response.keyId,
+    token: response.token,
+    budgetLimit: response.budgetLimit,
+    budgetUsed: response.budgetUsed,
+    budgetLocked: response.budgetLocked,
+    budgetRemaining: response.budgetRemaining,
+    expiresAt: response.expiresAt,
+    chainId: response.chainId,
+    name: response.name,
+    status: response.status,
+  };
 }
 
 export const getSessionStatus = getActiveSessionStatus;
