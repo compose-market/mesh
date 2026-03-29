@@ -92,6 +92,18 @@ const defaultSessionState: SessionState = {
   chainId: null,
 };
 
+type LocalSessionUpdate = {
+  active: boolean;
+  expiresAt?: number | null;
+  budgetLimit?: string | null;
+  budgetUsed?: string | null;
+  budgetRemaining?: string | null;
+  sessionId?: string | null;
+  duration?: number | null;
+  chainId?: number | null;
+  composeKeyToken?: string | null;
+};
+
 function microsBigIntToUsd(value: bigint): string {
   const whole = value / 1_000_000n;
   const cents = (value % 1_000_000n) / 10_000n;
@@ -140,35 +152,47 @@ function applyRedeemedLocalContext(
 
 function applyLocalSessionUpdate(
   current: LocalRuntimeState,
-  update: {
-    active: boolean;
-    expiresAt: number | null;
-    budget: string | null;
-    sessionId?: string;
-    duration?: number;
-  },
+  update: LocalSessionUpdate,
 ): LocalRuntimeState {
   if (!current.identity) {
     return current;
   }
 
+  const nextChainId = update.chainId ?? current.identity.chainId;
+  const nextSessionId = update.active
+    ? ((update.sessionId && update.sessionId.trim()) || current.identity.sessionId || current.identity.composeKeyId)
+    : "";
   const nextIdentity = {
     ...current.identity,
-    expiresAt: update.expiresAt ?? 0,
-    budget: update.budget ?? "0",
-    sessionId: update.sessionId || "",
-    composeKeyId: update.sessionId || "",
-    duration: update.duration ?? 0,
+    expiresAt: update.active ? (update.expiresAt ?? current.identity.expiresAt) : 0,
+    budget: update.active ? (update.budgetRemaining ?? current.identity.budget) : "0",
+    sessionId: nextSessionId,
+    composeKeyId: nextSessionId,
+    duration: update.active ? (update.duration ?? current.identity.duration) : 0,
     composeKeyToken: !update.active
       ? ""
-      : update.sessionId && update.sessionId !== current.identity.composeKeyId
-        ? ""
-        : current.identity.composeKeyToken,
+      : (update.composeKeyToken ?? current.identity.composeKeyToken),
+    chainId: nextChainId,
   };
 
   return {
     ...current,
     identity: nextIdentity,
+  };
+}
+
+function mergeSessionUpdate(previous: SessionState, update: LocalSessionUpdate): SessionState {
+  return {
+    ...previous,
+    active: update.active,
+    expiresAt: update.active ? (update.expiresAt ?? previous.expiresAt) : null,
+    budgetLimit: update.active ? (update.budgetLimit ?? previous.budgetLimit) : null,
+    budgetUsed: update.active ? (update.budgetUsed ?? previous.budgetUsed) : null,
+    budgetRemaining: update.active ? (update.budgetRemaining ?? previous.budgetRemaining) : "0",
+    sessionId: update.active ? (update.sessionId ?? previous.sessionId) : null,
+    duration: update.active ? (update.duration ?? previous.duration) : null,
+    chainId: update.chainId ?? previous.chainId,
+    reason: update.active ? undefined : "session-inactive",
   };
 }
 
@@ -232,6 +256,12 @@ async function syncInstalledAgentsWithDaemon(state: LocalRuntimeState): Promise<
 export default function App() {
   const [state, setState] = useState<LocalRuntimeState | null>(null);
   const stateRef = useRef<LocalRuntimeState | null>(null);
+  const sessionSyncRef = useRef<{
+    userAddress: string;
+    chainId: number;
+    apiUrl: string;
+    promise: Promise<void>;
+  } | null>(null);
   const [activePage, setActivePage] = useState<BasePage>("agents");
   const [meshMounted, setMeshMounted] = useState(false);
   const [session, setSession] = useState<SessionState>({ ...defaultSessionState });
@@ -314,7 +344,10 @@ export default function App() {
 
       const loaded = await loadRuntimeState();
       const daemonHydratedState = await syncInstalledAgentsWithDaemon(loaded).catch(() => loaded);
-      const hydratedState = reconcileStateWithOsPermissions(daemonHydratedState, current.osPermissions);
+      const hydratedState = reconcileStateWithOsPermissions({
+        ...daemonHydratedState,
+        identity: current.identity,
+      }, current.osPermissions);
 
       if (cancelled) {
         return;
@@ -322,7 +355,6 @@ export default function App() {
 
       stateRef.current = hydratedState;
       setState(hydratedState);
-      setSession(sessionFromIdentity(hydratedState.identity));
     };
 
     const intervalId = window.setInterval(() => {
@@ -488,142 +520,156 @@ export default function App() {
     ));
   }, [deviceId, state?.identity, state?.installedAgents, state?.settings.meshEnabled]);
 
-  const handleSessionUpdate = useCallback((active: boolean, expiresAt: number | null, budget: string | null, sessionId?: string, duration?: number) => {
-    setSession((prev) => ({
-      ...prev,
-      active,
-      expiresAt,
-      budgetRemaining: budget,
-      sessionId: sessionId || null,
-      duration: duration ?? null,
-      reason: active ? undefined : "session-inactive",
-    }));
+  const applySessionSnapshot = useCallback((update: LocalSessionUpdate) => {
+    setSession((previous) => mergeSessionUpdate(previous, update));
+  }, []);
 
-    void persistState((current) => applyLocalSessionUpdate(current, {
-      active,
-      expiresAt,
-      budget,
-      sessionId,
-      duration,
-    }));
-  }, [persistState]);
+  const handleSessionUpdate = useCallback((update: LocalSessionUpdate) => {
+    applySessionSnapshot(update);
+    void persistState((current) => applyLocalSessionUpdate(current, update));
+  }, [applySessionSnapshot, persistState]);
 
   const refreshSessionFromBackend = useCallback(async () => {
     const current = stateRef.current;
     if (!current?.identity?.userAddress) {
       return;
     }
+    const currentIdentity = current.identity;
 
-    const requestUserAddress = current.identity.userAddress;
-    const requestChainId = current.identity.chainId;
+    const requestUserAddress = currentIdentity.userAddress;
+    const requestChainId = currentIdentity.chainId;
     const currentApiUrl = current.settings.apiUrl;
-
-    const response = await getActiveSessionStatus({
-      apiUrl: currentApiUrl,
-      identity: current.identity,
-    });
-
-    const latest = stateRef.current;
+    const activeSync = sessionSyncRef.current;
     if (
-      !latest?.identity
-      || latest.identity.userAddress !== requestUserAddress
-      || latest.identity.chainId !== requestChainId
+      activeSync
+      && activeSync.userAddress === requestUserAddress
+      && activeSync.chainId === requestChainId
+      && activeSync.apiUrl === currentApiUrl
     ) {
-      return;
+      return activeSync.promise;
     }
-    const latestIdentity = latest.identity;
 
-    if (!response || !response.hasSession || !response.keyId || !response.expiresAt) {
-      setSession((prev) => ({
-        ...prev,
-        active: false,
-        expiresAt: null,
-        budgetLimit: null,
-        budgetUsed: null,
-        budgetRemaining: "0",
-        sessionId: null,
-        duration: null,
-        chainId: latestIdentity.chainId,
-        reason: "session-inactive",
-      }));
-
-      if (latestIdentity.composeKeyId || latestIdentity.composeKeyToken || latestIdentity.sessionId || latestIdentity.expiresAt > 0) {
-        const nextIdentity = {
-          ...latestIdentity,
-          composeKeyId: "",
-          composeKeyToken: "",
-          sessionId: "",
-          budget: "0",
-          expiresAt: 0,
-          duration: 0,
-        };
-        await persistState({ ...latest, identity: nextIdentity });
+    const request = (async () => {
+      let response;
+      try {
+        response = await getActiveSessionStatus({
+          apiUrl: currentApiUrl,
+          identity: currentIdentity,
+        });
+      } catch (error) {
+        console.warn("[session] Failed to refresh active session from backend", error);
+        return;
       }
-      return;
-    }
 
-    const budgetLimit = response.budgetLimit || "0";
-    const budgetUsed = response.budgetUsed || "0";
-    const budgetRemaining = response.budgetRemaining || "0";
-    const chainId = resolveInheritedLocalChainId(latestIdentity.chainId, response.chainId);
-    const duration = Math.max(0, response.expiresAt - Date.now());
-    const active = response.expiresAt > Date.now() && BigInt(budgetRemaining) > 0n;
+      const latest = stateRef.current;
+      if (
+        !latest?.identity
+        || latest.identity.userAddress !== requestUserAddress
+        || latest.identity.chainId !== requestChainId
+      ) {
+        return;
+      }
+      const latestIdentity = latest.identity;
 
-    setSession({
-      active,
-      expiresAt: response.expiresAt,
-      budgetLimit,
-      budgetUsed,
-      budgetRemaining,
-      sessionId: response.keyId,
-      duration,
-      chainId,
-      reason: active ? undefined : "session-inactive",
-    });
+      if (!response || !response.hasSession || !response.keyId || !response.expiresAt) {
+        applySessionSnapshot({
+          active: false,
+          budgetRemaining: "0",
+          chainId: latestIdentity.chainId,
+        });
 
-    const nextIdentity = {
-      ...latestIdentity,
-      composeKeyId: response.keyId,
-      composeKeyToken: response.token || latestIdentity.composeKeyToken,
-      sessionId: response.keyId,
-      budget: budgetRemaining,
-      duration,
-      expiresAt: response.expiresAt,
-      chainId,
-    };
-    const identityChanged = (
-      nextIdentity.composeKeyId !== latestIdentity.composeKeyId ||
-      nextIdentity.composeKeyToken !== latestIdentity.composeKeyToken ||
-      nextIdentity.sessionId !== latestIdentity.sessionId ||
-      nextIdentity.budget !== latestIdentity.budget ||
-      nextIdentity.duration !== latestIdentity.duration ||
-      nextIdentity.expiresAt !== latestIdentity.expiresAt ||
-      nextIdentity.chainId !== latestIdentity.chainId
-    );
-    const previousBudget = BigInt(latestIdentity.budget || "0");
-    const nextBudget = BigInt(budgetRemaining || "0");
-    const spentMicros = previousBudget > nextBudget ? previousBudget - nextBudget : 0n;
+        if (latestIdentity.composeKeyId || latestIdentity.composeKeyToken || latestIdentity.sessionId || latestIdentity.expiresAt > 0) {
+          const nextIdentity = {
+            ...latestIdentity,
+            composeKeyId: "",
+            composeKeyToken: "",
+            sessionId: "",
+            budget: "0",
+            expiresAt: 0,
+            duration: 0,
+          };
+          await persistState({ ...latest, identity: nextIdentity });
+        }
+        return;
+      }
 
-    let nextState: LocalRuntimeState = { ...latest, identity: nextIdentity };
-    if (spentMicros > 0n) {
-      nextState = {
-        ...nextState,
-        installedAgents: nextState.installedAgents.map((agent) => (
-          agent.agentWallet === latestIdentity.agentWallet
-            ? appendAgentReport(agent, {
-              kind: "economics",
-              title: "Session spend recorded",
-              summary: `${microsBigIntToUsd(spentMicros)} consumed from the active compose-key budget.`,
-              outcome: "info",
-              costMicros: Number(spentMicros > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : spentMicros),
-            })
-            : agent
-        )),
+      const budgetLimit = response.budgetLimit || "0";
+      const budgetUsed = response.budgetUsed || "0";
+      const budgetRemaining = response.budgetRemaining || "0";
+      const chainId = resolveInheritedLocalChainId(latestIdentity.chainId, response.chainId);
+      const duration = Math.max(0, response.expiresAt - Date.now());
+      const active = response.status?.isActive ?? (response.expiresAt > Date.now() && BigInt(budgetRemaining) > 0n);
+
+      applySessionSnapshot({
+        active,
+        expiresAt: response.expiresAt,
+        budgetLimit,
+        budgetUsed,
+        budgetRemaining,
+        sessionId: response.keyId,
+        duration,
+        chainId,
+      });
+
+      const nextIdentity = {
+        ...latestIdentity,
+        composeKeyId: response.keyId,
+        composeKeyToken: response.token || latestIdentity.composeKeyToken,
+        sessionId: response.keyId,
+        budget: budgetRemaining,
+        duration,
+        expiresAt: response.expiresAt,
+        chainId,
       };
-    }
+      const identityChanged = (
+        nextIdentity.composeKeyId !== latestIdentity.composeKeyId ||
+        nextIdentity.composeKeyToken !== latestIdentity.composeKeyToken ||
+        nextIdentity.sessionId !== latestIdentity.sessionId ||
+        nextIdentity.budget !== latestIdentity.budget ||
+        nextIdentity.duration !== latestIdentity.duration ||
+        nextIdentity.expiresAt !== latestIdentity.expiresAt ||
+        nextIdentity.chainId !== latestIdentity.chainId
+      );
+      const previousBudget = BigInt(latestIdentity.budget || "0");
+      const nextBudget = BigInt(budgetRemaining || "0");
+      const spentMicros = previousBudget > nextBudget ? previousBudget - nextBudget : 0n;
 
-    if (identityChanged || nextState.installedAgents !== latest.installedAgents) {
-      await persistState(nextState);
+      let nextState: LocalRuntimeState = { ...latest, identity: nextIdentity };
+      if (spentMicros > 0n) {
+        nextState = {
+          ...nextState,
+          installedAgents: nextState.installedAgents.map((agent) => (
+            agent.agentWallet === latestIdentity.agentWallet
+              ? appendAgentReport(agent, {
+                kind: "economics",
+                title: "Session spend recorded",
+                summary: `${microsBigIntToUsd(spentMicros)} consumed from the active compose-key budget.`,
+                outcome: "info",
+                costMicros: Number(spentMicros > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : spentMicros),
+              })
+              : agent
+          )),
+        };
+      }
+
+      if (identityChanged || nextState.installedAgents !== latest.installedAgents) {
+        await persistState(nextState);
+      }
+    })();
+
+    sessionSyncRef.current = {
+      userAddress: requestUserAddress,
+      chainId: requestChainId,
+      apiUrl: currentApiUrl,
+      promise: request,
+    };
+
+    try {
+      await request;
+    } finally {
+      if (sessionSyncRef.current?.promise === request) {
+        sessionSyncRef.current = null;
+      }
     }
   }, [persistState]);
 
@@ -634,24 +680,16 @@ export default function App() {
 
     void refreshSessionFromBackend();
 
-    const sync = () => {
-      void refreshSessionFromBackend();
-    };
-
-    const intervalId = window.setInterval(sync, 15_000);
     const handleVisibility = () => {
       if (!document.hidden) {
-        sync();
+        void refreshSessionFromBackend();
       }
     };
 
-    window.addEventListener("visibilitychange", handleVisibility);
-    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", handleVisibility);
 
     return () => {
-      window.clearInterval(intervalId);
-      window.removeEventListener("visibilitychange", handleVisibility);
-      window.removeEventListener("focus", sync);
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [refreshSessionFromBackend, state?.identity?.chainId, state?.identity?.userAddress]);
 
@@ -666,7 +704,7 @@ export default function App() {
     setActivePage("agents");
     setSelectedAgentWallet(null);
     setSession(sessionFromIdentity(identity));
-    if (identity) {
+    if (context.hasSession) {
       window.setTimeout(() => {
         void refreshSessionFromBackend();
       }, 0);
@@ -746,6 +784,7 @@ export default function App() {
             apiUrl={apiUrl}
             activeWallet={state.identity?.userAddress || null}
             chainId={state.identity?.chainId || null}
+            sessionActive={session.active}
             deviceId={deviceId}
             onContextRedeemed={handleContextRedeemed}
             onSessionUpdate={handleSessionUpdate}
