@@ -1,6 +1,6 @@
 import { Camera, FileSearch, FilePen, FileX, FolderOpen, Mic, Network, Terminal } from "lucide-react";
 import type { AgentPermissionPolicy } from "../../lib/types";
-import { ShellButton, ShellPanel } from "@compose-market/theme/shell";
+import { ShellPanel } from "@compose-market/theme/shell";
 import type { ReactNode } from "react";
 
 /* ── Helpers ── */
@@ -83,21 +83,16 @@ export function MachineStatusCard({ label, value }: MachineStatusCardProps) {
 
 interface PermissionsPanelProps {
   permissions: AgentPermissionPolicy;
-  osPermissions: { camera: string; microphone: string; fullDiskAccess?: string; accessibility?: string };
   agentWallet: string;
   permissionBusy: keyof AgentPermissionPolicy | null;
   onToggle: (key: keyof AgentPermissionPolicy) => void;
-  onRefresh: () => void;
 }
 
-export function PermissionsPanel({ permissions, osPermissions, agentWallet, permissionBusy, onToggle, onRefresh }: PermissionsPanelProps) {
+export function PermissionsPanel({ permissions, agentWallet, permissionBusy, onToggle }: PermissionsPanelProps) {
   return (
     <ShellPanel className="detail-panel">
       <div className="detail-panel-header">
         <h3>Agent Permissions</h3>
-        <ShellButton tone="secondary" size="sm" onClick={onRefresh}>
-          Refresh
-        </ShellButton>
       </div>
       <div className="perm-toggle-grid">
         {(Object.keys(PERM_META) as Array<keyof AgentPermissionPolicy>).map((key) => (
@@ -106,8 +101,6 @@ export function PermissionsPanel({ permissions, osPermissions, agentWallet, perm
       </div>
       <div className="perm-machine-row">
         <MachineStatusCard label="Wallet" value={`${agentWallet.slice(0, 8)}...${agentWallet.slice(-4)}`} />
-        <MachineStatusCard label="Camera" value={osPermissions.camera} />
-        <MachineStatusCard label="Microphone" value={osPermissions.microphone} />
       </div>
     </ShellPanel>
   );
