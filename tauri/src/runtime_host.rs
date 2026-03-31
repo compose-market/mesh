@@ -169,7 +169,7 @@ pub fn ensure_local_runtime_host(
         .open(runtime_stderr_log_path(app)?)
         .map_err(|err| format!("failed to open local runtime stderr log: {err}"))?;
 
-    let child = Command::new("node")
+    let child = Command::new(resolve_node_executable())
         .arg(&runtime_entry)
         .current_dir(&runtime_dir)
         .env("PORT", port.to_string())
@@ -353,6 +353,30 @@ fn runtime_port() -> u16 {
         .and_then(|value| value.parse::<u16>().ok())
         .filter(|port| *port > 0)
         .unwrap_or(LOCAL_RUNTIME_DEFAULT_PORT)
+}
+
+fn resolve_node_executable() -> PathBuf {
+    for key in ["COMPOSE_LOCAL_RUNTIME_NODE", "NODE_BINARY"] {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
+    }
+
+    for candidate in [
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+        "/usr/bin/node",
+    ] {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            return path;
+        }
+    }
+
+    PathBuf::from("node")
 }
 
 fn runtime_health_check(port: u16) -> Result<(), String> {
