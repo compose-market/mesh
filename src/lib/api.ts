@@ -32,21 +32,7 @@ const PINATA_GATEWAY_URLS = ["https://compose.mypinata.cloud/ipfs"];
 export const SESSION_HEADERS = {
   userAddress: "x-session-user-address",
   chainId: "x-chain-id",
-  active: "x-session-active",
-  budgetRemaining: "x-session-budget-remaining",
 } as const;
-
-export interface PaymentFetchParams {
-  chainId: number;
-  sessionToken: string;
-  sessionUserAddress?: string;
-  sessionBudgetRemaining?: string | number | null;
-}
-
-export interface ParsedSSEBlock {
-  event: string;
-  data: string;
-}
 
 const EMPTY_REQUIREMENTS: SkillRequirements = {
   bins: [],
@@ -63,105 +49,15 @@ function normalizeBase(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-export function createPaymentFetch(params: PaymentFetchParams): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
-  if (!Number.isInteger(params.chainId) || params.chainId <= 0) {
-    throw new Error("chainId is required");
-  }
-
-  const hasSessionContext = typeof params.sessionUserAddress === "string"
-    && params.sessionUserAddress.length > 0
-    && params.sessionBudgetRemaining !== null
-    && params.sessionBudgetRemaining !== undefined
-    && String(params.sessionBudgetRemaining).length > 0;
-
-  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const headers = new Headers(init?.headers);
-    headers.set("Authorization", `Bearer ${params.sessionToken}`);
-    headers.set("X-Chain-ID", String(params.chainId));
-    if (hasSessionContext) {
-      headers.set("X-Session-Active", "true");
-      headers.set("X-Session-User-Address", params.sessionUserAddress!);
-      headers.set("X-Session-Budget-Remaining", String(params.sessionBudgetRemaining));
-    }
-
-    return fetch(input, {
-      ...init,
-      headers,
-    });
-  };
-}
-
-export async function* parseEventStream(
-  reader: ReadableStreamDefaultReader<Uint8Array>
-): AsyncGenerator<ParsedSSEBlock, void, unknown> {
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-
-    while (true) {
-      const separatorIndex = buffer.indexOf("\n\n");
-      if (separatorIndex === -1) break;
-
-      const rawBlock = buffer.slice(0, separatorIndex);
-      buffer = buffer.slice(separatorIndex + 2);
-      if (!rawBlock.trim()) continue;
-
-      let event = "message";
-      const dataLines: string[] = [];
-
-      for (const line of rawBlock.split("\n")) {
-        if (line.startsWith("event:")) {
-          event = line.slice(6).trim() || "message";
-          continue;
-        }
-        if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5).trimStart());
-          continue;
-        }
-        if (line.trim() && !line.startsWith(":")) {
-          dataLines.push(line);
-        }
-      }
-
-      if (dataLines.length === 0) continue;
-
-      yield {
-        event,
-        data: dataLines.join("\n"),
-      };
-    }
-  }
-
-  if (buffer.trim()) {
-    yield {
-      event: "message",
-      data: buffer.trim(),
-    };
-  }
-}
-
 function withSessionHeaders(input: {
   userAddress: string;
   chainId?: number;
-  active?: boolean;
-  budgetRemaining?: string;
 }): Record<string, string> {
   const headers: Record<string, string> = {
     [SESSION_HEADERS.userAddress]: input.userAddress,
   };
   if (typeof input.chainId === "number") {
     headers[SESSION_HEADERS.chainId] = String(input.chainId);
-  }
-  if (input.active) {
-    headers[SESSION_HEADERS.active] = "true";
-  }
-  if (input.budgetRemaining) {
-    headers[SESSION_HEADERS.budgetRemaining] = input.budgetRemaining;
   }
   return headers;
 }
@@ -321,7 +217,7 @@ export function normalizeAgentMetadata(
       optionalString(source.agentCardUri) || optionalString(source.cid),
       options.fallbackAgentCardCid || optionalString(source.cid) || undefined,
     ),
-    creator: requireAgentField(optionalString(source.creator), "creator"),
+    creator: optionalString(source.creator) || "",
     walletAddress,
     dnaHash: requireAgentField(optionalString(source.dnaHash), "dnaHash"),
     model: requireAgentField(optionalString(source.model), "model"),
@@ -357,35 +253,6 @@ async function fetchAgentMetadataFromIpfs(agentCardCid: string, expectedWallet: 
   }
 
   throw new Error(lastError?.message || "Failed to fetch linked agent card");
-}
-
-export async function fetchSessionInfo(params: {
-  apiUrl: string;
-  userAddress: string;
-  chainId: number;
-  composeKeyToken?: string;
-}): Promise<{
-  hasSession: boolean;
-  keyId: string;
-  token: string;
-  budgetRemaining: string;
-  expiresAt: number;
-  chainId: number;
-} | null> {
-  try {
-    return await requestJson(`${normalizeBase(params.apiUrl)}/api/session`, {
-      method: "GET",
-      headers: {
-        ...(params.composeKeyToken ? { Authorization: `Bearer ${params.composeKeyToken}` } : {}),
-        ...withSessionHeaders({
-          userAddress: params.userAddress,
-          chainId: params.chainId,
-        }),
-      },
-    });
-  } catch {
-    return null;
-  }
 }
 
 export async function redeemLocalLinkToken(params: {
