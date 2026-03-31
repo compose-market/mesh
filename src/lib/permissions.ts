@@ -59,36 +59,16 @@ export function formatOsPermissionStatus(status: OsPermissionStatus): string {
   return status === "granted" ? "Granted" : "Denied";
 }
 
-function isOsGranted(status: OsPermissionStatus): boolean {
-  return status === "granted";
-}
-
-const DENY_FILESYSTEM_POLICY: Pick<
-  AgentPermissionPolicy,
-  "filesystemRead" | "filesystemWrite" | "filesystemEdit" | "filesystemDelete"
-> = {
-  filesystemRead: "deny",
-  filesystemWrite: "deny",
-  filesystemEdit: "deny",
-  filesystemDelete: "deny",
-};
-
+/**
+ * Per-agent permissions are pure app-level toggles — the mesh app itself
+ * holds macOS TCC grants (Full Disk Access, Camera, etc.).  Individual
+ * agents are NOT gated by OS-level status.
+ */
 function toEffectivePermissions(
   desired: AgentPermissionPolicy,
-  osPermissions: OsPermissionSnapshot,
+  _osPermissions: OsPermissionSnapshot,
 ): AgentPermissionPolicy {
-  const hasFullDiskAccess = isOsGranted(osPermissions.fullDiskAccess);
-
-  return {
-    shell: desired.shell,
-    filesystemRead: hasFullDiskAccess ? desired.filesystemRead : DENY_FILESYSTEM_POLICY.filesystemRead,
-    filesystemWrite: hasFullDiskAccess ? desired.filesystemWrite : DENY_FILESYSTEM_POLICY.filesystemWrite,
-    filesystemEdit: hasFullDiskAccess ? desired.filesystemEdit : DENY_FILESYSTEM_POLICY.filesystemEdit,
-    filesystemDelete: hasFullDiskAccess ? desired.filesystemDelete : DENY_FILESYSTEM_POLICY.filesystemDelete,
-    camera: isOsGranted(osPermissions.camera) ? desired.camera : "deny",
-    microphone: isOsGranted(osPermissions.microphone) ? desired.microphone : "deny",
-    network: desired.network,
-  };
+  return { ...desired };
 }
 
 export function reconcileStateWithOsPermissions(
