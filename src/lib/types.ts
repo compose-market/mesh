@@ -3,6 +3,7 @@ export interface SessionState {
   expiresAt: number | null;
   budgetLimit: string | null;
   budgetUsed: string | null;
+  budgetLocked: string | null;
   budgetRemaining: string | null;
   sessionId: string | null;
   duration: number | null;

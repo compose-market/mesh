@@ -86,6 +86,7 @@ const defaultSessionState: SessionState = {
   expiresAt: null,
   budgetLimit: null,
   budgetUsed: null,
+  budgetLocked: null,
   budgetRemaining: null,
   sessionId: null,
   duration: null,
@@ -214,6 +215,7 @@ function sessionFromIdentity(identity: LocalIdentityContext | null): SessionStat
     expiresAt: identity.expiresAt,
     budgetLimit: null,
     budgetUsed: null,
+    budgetLocked: null,
     budgetRemaining: identity.budget,
     sessionId: identity.sessionId,
     duration: identity.duration,
@@ -882,12 +884,10 @@ export default function App() {
           </nav>
 
           {!wallet ? (
-            <ShellBanner
-              className="connect-banner"
-              title="Local is not connected."
-              subtitle="Link the current device from the web app to deploy local agents and refresh the active compose-key."
-              actions={<ShellButton tone="secondary" onClick={openConnectModal}>Connect Local</ShellButton>}
-            />
+            <ShellNotice tone="info">
+              <Link2 size={14} />
+              Device not linked. <ShellButton tone="ghost" size="sm" onClick={openConnectModal}>Connect</ShellButton>
+            </ShellNotice>
           ) : null}
 
           <main className="main">

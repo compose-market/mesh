@@ -793,9 +793,12 @@ async function ensureAgentWorkspace(agent: InstalledAgent): Promise<void> {
     },
   ];
 
+  const systemOwnedBootstrapFiles = new Set(["TOOLS.md", "HEARTBEAT.md"]);
+
   for (const file of files) {
     const existing = await readManagedFile(file.path);
-    if (existing === null) {
+    const fileName = file.path.split("/").pop() || "";
+    if (existing === null || (systemOwnedBootstrapFiles.has(fileName) && existing !== file.content)) {
       await writeManagedFile(file.path, file.content);
     }
   }
@@ -816,7 +819,7 @@ export async function ensureBuiltinSkillsInstalled(): Promise<void> {
     }
 
     const existing = await readManagedFile(file.relativePath);
-    if (existing === null) {
+    if (existing !== file.content) {
       await writeManagedFile(file.relativePath, file.content);
     }
   }
