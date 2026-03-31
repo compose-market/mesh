@@ -17,8 +17,8 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { ComposeAgentCard, type ComposeAgentBadge, type ComposeAgentMetric, type ComposeAgentMetaRow, type ComposeAgentTag } from "@compose-market/theme/agents";
-import { ShellButton, ShellEmptyState, ShellInput, ShellNotice, ShellPageHeader, ShellPanel, ShellTab, ShellTabStrip } from "@compose-market/theme/shell";
+
+import { ShellButton, ShellInput, ShellNotice, ShellPanel } from "@compose-market/theme/shell";
 import {
   daemonRemoveAgent,
   daemonInstallAgent,
@@ -28,10 +28,7 @@ import {
 } from "../../lib/daemon";
 import { fetchAgentMetadata } from "../../lib/api";
 import { runLocalAgentConversation } from "../../lib/local-agent";
-import {
-  queryOsPermissions,
-  reconcileStateWithOsPermissions,
-} from "../../lib/permissions";
+
 import {
   getDefaultPermissionPolicy,
   loadRuntimeState,
@@ -49,16 +46,7 @@ import {
   syncInstalledAgent,
 } from "./model";
 
-type DetailTab = "chat" | "permissions" | "skills" | "history" | "mesh";
 type SkillsTab = "installed" | "browse";
-
-const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: typeof Shield }> = [
-  { id: "chat", label: "Chat", icon: MessageSquare },
-  { id: "permissions", label: "Permissions", icon: Shield },
-  { id: "skills", label: "Skills", icon: Sparkles },
-  { id: "history", label: "Reports / History", icon: FileText },
-  { id: "mesh", label: "Peer / Network", icon: Globe },
-];
 
 interface AgentManagerPageProps {
   state: LocalRuntimeState;
@@ -119,6 +107,17 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+type FleetSort = "name" | "cost" | "activity" | "status";
+
+const SORT_LABELS: Record<FleetSort, string> = {
+  name: "Name",
+  cost: "Cost ↓",
+  activity: "Activity ↓",
+  status: "Status",
+};
+
+const SORT_CYCLE: FleetSort[] = ["name", "cost", "activity", "status"];
+
 export function AgentManagerPage({
   state,
   onStateChange,
@@ -127,7 +126,49 @@ export function AgentManagerPage({
 }: AgentManagerPageProps) {
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<FleetSort>("status");
   const runningCount = useMemo(() => state.installedAgents.filter((agent) => agent.running).length, [state.installedAgents]);
+
+  const fleetEconomics = useMemo(() => {
+    let totalCost = 0;
+    let totalRevenue = 0;
+    for (const agent of state.installedAgents) {
+      const econ = summarizeAgentReportEconomics(agent.reports);
+      totalCost += econ.costMicros;
+      totalRevenue += econ.revenueMicros;
+    }
+    return { totalCost, totalRevenue };
+  }, [state.installedAgents]);
+
+  const sortedAgents = useMemo(() => {
+    const agents = [...state.installedAgents];
+    switch (sortBy) {
+      case "name":
+        return agents.sort((a, b) => a.metadata.name.localeCompare(b.metadata.name));
+      case "cost":
+        return agents.sort((a, b) => {
+          const aCost = summarizeAgentReportEconomics(b.reports).costMicros;
+          const bCost = summarizeAgentReportEconomics(a.reports).costMicros;
+          return aCost - bCost;
+        });
+      case "activity":
+        return agents.sort((a, b) => b.reports.length - a.reports.length);
+      case "status":
+        return agents.sort((a, b) => {
+          if (a.running === b.running) {
+            return a.metadata.name.localeCompare(b.metadata.name);
+          }
+          return a.running ? -1 : 1;
+        });
+      default:
+        return agents;
+    }
+  }, [state.installedAgents, sortBy]);
+
+  const cycleSort = () => {
+    const currentIndex = SORT_CYCLE.indexOf(sortBy);
+    setSortBy(SORT_CYCLE[(currentIndex + 1) % SORT_CYCLE.length]);
+  };
 
   const removeAgent = async (agentWallet: string) => {
     const target = state.installedAgents.find((agent) => agent.agentWallet === agentWallet);
@@ -234,135 +275,110 @@ export function AgentManagerPage({
   }, [state.linkedDeployment?.agentCardCid, state.linkedDeployment?.agentWallet]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="agent-manager">
-      <ShellPageHeader
-        eyebrow="My Agents"
-        title="Local Agents"
-        subtitle={`${state.installedAgents.length} deployed · ${runningCount} running`}
-        actions={
-          <ShellButton tone="secondary" onClick={onBrowse}>
-            <ExternalLink size={14} />
-            Browse
-          </ShellButton>
-        }
-      />
-      {error ? <ShellNotice tone="error" className="notification">{error}</ShellNotice> : null}
+    <div className="jarvis-fleet">
+      {/* Fleet Header */}
+      <div className="jarvis-fleet__header">
+        <div className="jarvis-fleet__count">
+          <strong>{state.installedAgents.length}</strong> agents · <strong>{runningCount}</strong> running
+        </div>
+        <div className="jarvis-fleet__spacer" />
+        <button className="jarvis-fleet__sort" onClick={cycleSort} type="button" title="Sort agents">
+          <Activity size={10} />
+          {SORT_LABELS[sortBy]}
+        </button>
+        <ShellButton tone="secondary" size="sm" onClick={onBrowse}>
+          <ExternalLink size={12} />
+          Browse
+        </ShellButton>
+      </div>
 
-      {state.installedAgents.length === 0 ? (
-        <ShellEmptyState
-          title="No local agents deployed"
-          description="Link Local from the web app, then deploy the linked agent into this runtime."
-        />
+      {error ? <ShellNotice tone="error">{error}</ShellNotice> : null}
+
+      {/* Fleet KPI Strip */}
+      <div className="jarvis-fleet__kpi">
+        <div className="jarvis-stat" data-tone="cyan">
+          <span>{state.installedAgents.length}</span>
+          <label>Total</label>
+        </div>
+        <div className="jarvis-stat" data-tone="green">
+          <span>{runningCount}</span>
+          <label>Running</label>
+        </div>
+        <div className="jarvis-stat" data-tone="fuchsia">
+          <span>{formatMicros(fleetEconomics.totalCost)}</span>
+          <label>Cost</label>
+        </div>
+        <div className="jarvis-stat">
+          <span>{formatMicros(fleetEconomics.totalRevenue)}</span>
+          <label>Revenue</label>
+        </div>
+      </div>
+
+      {/* Agent Rows */}
+      {sortedAgents.length === 0 ? (
+        <div className="jarvis-fleet__empty">
+          No agents deployed. Browse the marketplace to install one.
+        </div>
       ) : (
-        <div className="cm-card-grid">
-          {state.installedAgents.map((agent) => {
-            const badges: ComposeAgentBadge[] = [
-              {
-                label: agent.running ? "Running" : "Installed",
-                tone: agent.running ? "green" : "cyan",
-                icon: agent.running ? <Play size={12} /> : <ShieldCheck size={12} />,
-              },
-              {
-                label: agent.permissions.network === "allow" ? "Network Allowed" : "Network Denied",
-                tone: agent.permissions.network === "allow" ? "fuchsia" : "neutral",
-                icon: <Globe size={12} />,
-              },
-            ];
-            const metrics: ComposeAgentMetric[] = [
-              {
-                label: "Model",
-                value: agent.lock.modelId,
-                icon: <Cpu size={16} />,
-                tone: "cyan",
-              },
-              {
-                label: "Framework",
-                value: agent.metadata.framework,
-                icon: <Sparkles size={16} />,
-                tone: "fuchsia",
-              },
-              {
-                label: "Reports",
-                value: agent.reports.length,
-                icon: <FileText size={16} />,
-                tone: "neutral",
-              },
-              {
-                label: "Peers",
-                value: agent.network.peersDiscovered,
-                icon: <Activity size={16} />,
-                tone: "green",
-              },
-            ];
-            const metaRows: ComposeAgentMetaRow[] = [
-              {
-                label: "Wallet",
-                value: shortWallet(agent.agentWallet),
-              },
-              {
-                label: "CID",
-                value: `${agent.lock.agentCardCid.slice(0, 12)}...`,
-              },
-              {
-                label: "Network",
-                value: agent.permissions.network === "allow" ? agent.network.status : "denied",
-              },
-            ];
-            const tags: ComposeAgentTag[] = listPluginIds(agent.metadata.plugins).map((name) => ({
-              label: name,
-            }));
-
+        <div className="jarvis-fleet__list">
+          {sortedAgents.map((agent) => {
+            const econ = summarizeAgentReportEconomics(agent.reports);
             return (
-              <ComposeAgentCard
+              <div
                 key={agent.agentWallet}
-                status={agent.running ? "running" : "default"}
-                avatarAlt={agent.metadata.name}
-                avatarFallback={agent.metadata.name.slice(0, 2).toUpperCase()}
-                title={agent.metadata.name}
-                description={agent.metadata.description}
-                badges={badges}
-                metrics={metrics}
-                focusLabel="Immutable Lock"
-                focusValue={agent.lock.agentCardCid}
-                focusIcon={<ShieldCheck size={18} />}
-                tagsTitle={`Plugins (${tags.length})`}
-                tags={tags}
-                metaRows={metaRows}
-                footer={(
-                  <ShellButton tone="ghost" size="sm" onClick={() => onOpenAgent(agent.agentWallet)}>
-                    Open agent settings
+                className="jarvis-agent-row"
+                onClick={() => onOpenAgent(agent.agentWallet)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === "Enter") onOpenAgent(agent.agentWallet); }}
+              >
+                <span className={`jarvis-agent-row__status${agent.running ? " jarvis-agent-row__status--running" : ""}`} />
+                <span className="jarvis-agent-row__avatar">
+                  {agent.metadata.name.slice(0, 2).toUpperCase()}
+                </span>
+                <span className="jarvis-agent-row__name">{agent.metadata.name}</span>
+                <div className="jarvis-agent-row__metrics">
+                  <span className="jarvis-agent-row__metric" data-tone="cyan">
+                    <Cpu size={10} />
+                    <span className="jarvis-agent-row__metric-value">{agent.lock.modelId}</span>
+                  </span>
+                  <span className="jarvis-agent-row__metric" data-tone="fuchsia">
+                    <Sparkles size={10} />
+                    <span className="jarvis-agent-row__metric-value">{agent.metadata.framework}</span>
+                  </span>
+                  <span className="jarvis-agent-row__metric">
+                    <BadgeDollarSign size={10} />
+                    {formatMicros(econ.costMicros)}
+                  </span>
+                  <span className="jarvis-agent-row__metric" data-tone="green">
+                    <BadgeDollarSign size={10} />
+                    {formatMicros(econ.netMicros)}
+                  </span>
+                  <span
+                    className={`jarvis-agent-row__hb${agent.heartbeat.lastResult === "ok" ? " jarvis-agent-row__hb--ok" : ""}`}
+                    title={`HB: ${agent.heartbeat.lastResult || "—"}`}
+                  />
+                  <span className="jarvis-agent-row__metric">
+                    <Globe size={10} />
+                    {agent.network.peersDiscovered}
+                  </span>
+                </div>
+                <div className="jarvis-agent-row__actions" onClick={(e) => e.stopPropagation()}>
+                  <ShellButton tone="secondary" size="sm" iconOnly onClick={() => onOpenAgent(agent.agentWallet)} title="Open agent">
+                    <Eye size={14} />
                   </ShellButton>
-                )}
-                actions={(
-                  <div className="cm-agent-card__action-stack">
-                    <ShellButton
-                      tone="secondary"
-                      size="sm"
-                      iconOnly
-                      disabled
-                      title={agent.running ? "Running locally" : "Syncing local runtime"}
-                    >
-                      {agent.running ? <ShieldCheck size={16} /> : <Loader2 size={16} className="spinner" />}
-                    </ShellButton>
-                    <ShellButton tone="secondary" size="sm" iconOnly onClick={() => onOpenAgent(agent.agentWallet)} title="Open agent settings">
-                      <Eye size={16} />
-                    </ShellButton>
-
-                    <ShellButton
-                      tone="danger"
-                      size="sm"
-                      iconOnly
-                      disabled={loading !== null}
-                      onClick={() => {
-                        void removeAgent(agent.agentWallet);
-                      }}
-                      title="Remove local deployment"
-                    >
-                      <Trash2 size={16} />
-                    </ShellButton>
-                  </div>
-                )}
-              />
+                  <ShellButton
+                    tone="danger"
+                    size="sm"
+                    iconOnly
+                    disabled={loading !== null}
+                    onClick={() => { void removeAgent(agent.agentWallet); }}
+                    title="Remove"
+                  >
+                    <Trash2 size={14} />
+                  </ShellButton>
+                </div>
+              </div>
             );
           })}
         </div>
@@ -380,7 +396,6 @@ export function AgentDetailPage({
   onStateChange,
   onNotify,
 }: AgentDetailPageProps) {
-  const [activeTab, setActiveTab] = useState<DetailTab>("chat");
   const [skillsTab, setSkillsTab] = useState<SkillsTab>("installed");
   const [logLines, setLogLines] = useState<string[]>([]);
   const [logCursor, setLogCursor] = useState<number | undefined>(undefined);
@@ -452,8 +467,7 @@ export function AgentDetailPage({
       const nextValue = nextPermissionDecision(desiredPermissions[key]);
       const nextPermissions: AgentPermissionPolicy = { ...desiredPermissions, [key]: nextValue };
       const daemonStatus = await daemonUpdatePermissions(agent.agentWallet, nextPermissions);
-      const osStatus = await queryOsPermissions();
-      await onStateChange(reconcileStateWithOsPermissions({
+      await onStateChange({
         ...state,
         installedAgents: state.installedAgents.map((item) => (
           item.agentWallet === agent.agentWallet
@@ -468,7 +482,7 @@ export function AgentDetailPage({
             )
             : item
         )),
-      }, osStatus));
+      });
       onNotify("success", `${key} permission updated`);
     } catch (error) {
       onNotify("error", error instanceof Error ? error.message : `Failed to update ${key}`);
@@ -477,14 +491,8 @@ export function AgentDetailPage({
     }
   };
 
-  const refreshOsPermissions = async () => {
-    const osStatus = await queryOsPermissions();
 
-    await onStateChange(reconcileStateWithOsPermissions(state, osStatus));
-    onNotify("success", "Local OS permissions refreshed");
-  };
 
-  const [mobileCardOpen, setMobileCardOpen] = useState(false);
 
   const sendChatMessage = async () => {
     const content = chatInput.trim();
@@ -492,8 +500,8 @@ export function AgentDetailPage({
       return;
     }
 
-    if (!identity?.composeKeyToken) {
-      const message = "Create Session to start agent.";
+    if (!identity?.userAddress || !identity?.chainId) {
+      const message = "Connect Local first so this device has a compose key.";
       setChatError(message);
       onNotify("error", message);
       return;
@@ -537,7 +545,7 @@ export function AgentDetailPage({
       const refreshedState = await loadRuntimeState();
       await onStateChange(refreshedState);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Local chat failed";
+      const message = getErrorMessage(error, "Local chat failed");
       setChatError(message);
       setChatMessages((current) => current.map((chatMessage) => (
         chatMessage.id === assistantId
@@ -560,318 +568,309 @@ export function AgentDetailPage({
 
   // Build agent card data (mirrors web/src/components/agent-card.tsx pattern)
   const runtimeStatus = agent.workerState?.status || (agent.running ? "running" : "stopped");
-  const agentBadges: ComposeAgentBadge[] = [
-    {
-      label: runtimeStatus === "running" ? "Running" : runtimeStatus === "starting" ? "Syncing" : "Ready",
-      tone: runtimeStatus === "running" ? "green" : "neutral",
-    },
-    { label: agent.permissions.network === "allow" ? "Network On" : "Network Off", tone: agent.permissions.network === "allow" ? "fuchsia" : "neutral" },
-  ];
-  const agentMetrics: ComposeAgentMetric[] = [
-    { label: "Model", value: agent.lock.modelId, icon: <Cpu size={16} />, tone: "cyan" },
-    { label: "Framework", value: agent.metadata.framework, icon: <Sparkles size={16} />, tone: "fuchsia" },
-    { label: "Reports", value: agent.reports.length, icon: <FileText size={16} />, tone: "neutral" },
-    { label: "Peers", value: agent.network.peersDiscovered, icon: <Activity size={16} />, tone: "green" },
-  ];
-  const agentTags: ComposeAgentTag[] = listPluginIds(agent.metadata.plugins).map((name) => ({ label: name }));
-  const agentMetaRows: ComposeAgentMetaRow[] = [
-    { label: "Wallet", value: shortWallet(agent.agentWallet) },
-    { label: "CID", value: `${agent.lock.agentCardCid.slice(0, 12)}...` },
-    { label: "Network", value: agent.permissions.network === "allow" ? agent.network.status : "denied" },
-  ];
+
+  const [permissionsModalOpen, setPermissionsModalOpen] = useState(false);
+  const [skillsModalOpen, setSkillsModalOpen] = useState(false);
+
+  const feedEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    feedEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [logLines.length, agent.reports.length]);
+
+  const permissionKeys = Object.keys(agent.permissions) as Array<keyof AgentPermissionPolicy>;
 
   return (
-    <section className="agent-detail-page">
-      {/* Compact Header */}
-      <div className="agent-detail-header">
-        <ShellButton tone="secondary" className="detail-back-btn" onClick={onBack}>
+    <section className="jarvis-hud">
+      {/* Compact Header Bar */}
+      <div className="jarvis-header">
+        <ShellButton tone="secondary" size="sm" onClick={onBack}>
           <ArrowLeft size={14} />
           Back
         </ShellButton>
-        <ShellButton
-          tone="ghost"
-          size="sm"
-          className="agent-detail-card-toggle"
-          onClick={() => setMobileCardOpen(!mobileCardOpen)}
-        >
-          <Eye size={14} />
-          Agent Info
-        </ShellButton>
+        <div className="jarvis-header__agent">
+          <div className="jarvis-header__avatar">
+            {agent.metadata.name.slice(0, 2).toUpperCase()}
+          </div>
+          <h2 className="jarvis-header__name">{agent.metadata.name}</h2>
+        </div>
+        <div className="jarvis-header__badges">
+          <span className="jarvis-badge" data-tone={runtimeStatus === "running" ? "green" : undefined}>
+            {runtimeStatus === "running" ? <Play size={10} /> : null}
+            {runtimeStatus === "running" ? "Running" : runtimeStatus === "starting" ? "Syncing" : "Ready"}
+          </span>
+          <span className="jarvis-badge" data-tone={agent.permissions.network === "allow" ? "fuchsia" : undefined}>
+            <Globe size={10} />
+            {agent.permissions.network === "allow" ? "Network" : "Offline"}
+          </span>
+        </div>
       </div>
 
-      {/* Main Layout: Tabs (2/3) + Card (1/3) — mirrors web/src/pages/agent.tsx */}
-      <div className="agent-detail-layout">
-        {/* Left: Tab content area */}
-        <div className="agent-detail-tabs-area">
-          <ShellTabStrip className="detail-tab-row">
-            {DETAIL_TABS.map((tab) => (
-              <ShellTab
-                key={tab.id}
-                className={`detail-tab-btn ${activeTab === tab.id ? "active" : ""}`}
-                active={activeTab === tab.id}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <tab.icon size={14} />
-                {tab.label}
-              </ShellTab>
-            ))}
-          </ShellTabStrip>
-
-          {activeTab === "chat" ? (
-            <ShellPanel className="detail-panel">
-              <div className="detail-panel-header">
-                <h3>Local Chat</h3>
-                <ShellButton
-                  tone="secondary"
-                  size="sm"
-                  onClick={() => {
-                    setChatMessages([]);
-                    setChatError(null);
-                  }}
-                  disabled={chatBusy || chatMessages.length === 0}
-                >
-                  Clear
-                </ShellButton>
-              </div>
-
-
-
-              {chatError ? (
-                <ShellNotice tone="error">{chatError}</ShellNotice>
-              ) : null}
-
-              <div className="local-chat-thread">
-                {chatMessages.length === 0 ? (
-                  <div className="empty-inline">
-                    Hello, friend.
-                  </div>
-                ) : (
-                  chatMessages.map((message) => (
-                    <article
-                      key={message.id}
-                      className={`local-chat-message local-chat-message--${message.role}${message.failed ? " local-chat-message--failed" : ""}`}
-                    >
-                      <div className="local-chat-message-head">
-                        <strong>{message.role === "user" ? "You" : agent.metadata.name}</strong>
-                        <span>{formatChatTimestamp(message.createdAt)}</span>
-                      </div>
-                      <p>{message.content || (chatBusy && message.role === "assistant" ? "Thinking..." : " ")}</p>
-                    </article>
-                  ))
-                )}
-                <div ref={chatEndRef} />
-              </div>
-
-              <div className="local-chat-composer">
-                <ShellInput
-                  value={chatInput}
-                  onChange={(event) => setChatInput(event.target.value)}
-                  onKeyDown={handleChatInputKeyDown}
-                  placeholder="Message your local agent..."
-                  disabled={chatBusy}
-                />
-                <ShellButton
-                  tone="primary"
-                  onClick={() => void sendChatMessage()}
-                  disabled={chatBusy || !chatInput.trim()}
-                >
-                  {chatBusy ? <Loader2 size={14} className="spinner" /> : null}
-                  Send
-                </ShellButton>
-              </div>
-            </ShellPanel>
-          ) : null}
-
-          {activeTab === "permissions" ? (
-            <PermissionsPanel
-              permissions={agent.desiredPermissions || agent.permissions}
-              osPermissions={state.osPermissions}
-              agentWallet={agent.agentWallet}
-              permissionBusy={permissionBusy}
-              onToggle={togglePermission}
-              onRefresh={() => void refreshOsPermissions()}
-            />
-          ) : null}
-
-          {activeTab === "skills" ? (
-            <ShellPanel className="detail-panel">
-              <div className="detail-panel-header">
-                <h3>Skills</h3>
-                <div className="detail-inline-tabs">
-                  <ShellButton tone={skillsTab === "installed" ? "primary" : "secondary"} className={skillsTab === "installed" ? "active-inline-tab" : ""} onClick={() => setSkillsTab("installed")}>Installed</ShellButton>
-                  <ShellButton tone={skillsTab === "browse" ? "primary" : "secondary"} className={skillsTab === "browse" ? "active-inline-tab" : ""} onClick={() => setSkillsTab("browse")}>Browse</ShellButton>
-                </div>
-              </div>
-              {skillsTab === "installed" ? (
-                <SkillsManager state={state} onStateChange={onStateChange} />
-              ) : (
-                <SkillsMarketplace state={state} onStateChange={onStateChange} />
-              )}
-            </ShellPanel>
-          ) : null}
-
-          {activeTab === "history" ? (
-            <div className="detail-grid">
-              <ShellPanel className="detail-panel">
-                <div className="detail-panel-header">
-                  <h3>Local Reports</h3>
-                </div>
-                <div className="report-list">
-                  {agent.reports.length === 0 ? (
-                    <div className="empty-inline">No local reports yet.</div>
-                  ) : (
-                    agent.reports.map((report) => (
-                      <article key={report.id} className={`report-card report-${report.outcome}`}>
-                        <div className="report-card-head">
-                          <strong>{report.title}</strong>
-                          <span>{new Date(report.createdAt).toLocaleString()}</span>
-                        </div>
-                        <p>{report.summary}</p>
-                        {report.details ? <pre>{report.details}</pre> : null}
-                      </article>
-                    ))
-                  )}
-                </div>
-              </ShellPanel>
-
-              <ShellPanel className="detail-panel">
-                <div className="detail-panel-header">
-                  <h3>Runtime Log</h3>
-                </div>
-                <div className="log-console">
-                  {logLines.length === 0 ? (
-                    <div className="empty-inline">No runtime log lines yet.</div>
-                  ) : (
-                    logLines.map((line, index) => (
-                      <div key={`${index}-${line.slice(0, 12)}`} className="log-line">{line}</div>
-                    ))
-                  )}
-                </div>
-              </ShellPanel>
+      {/* Main Grid */}
+      <div className="jarvis-grid">
+        {/* ── Identity Panel (top-left) ── */}
+        <div className="jarvis-panel jarvis-identity">
+          <div className="jarvis-panel__header">
+            <ShieldCheck size={12} />
+            <span>Identity</span>
+          </div>
+          <div className="jarvis-identity__body">
+            <p className="jarvis-identity__desc">{agent.metadata.description}</p>
+            <div className="jarvis-field">
+              <span className="jarvis-field__label">Model</span>
+              <span className="jarvis-field__value" data-tone="cyan">
+                <Cpu size={11} /> {agent.lock.modelId}
+              </span>
             </div>
-          ) : null}
-
-          {activeTab === "mesh" ? (
-            <div className="detail-grid">
-              <ShellPanel className="detail-panel">
-                <div className="detail-panel-header">
-                  <h3>Mesh Signals</h3>
-                </div>
-                <div className="mesh-kpi-row">
-                  <div className="detail-stat-card">
-                    <Activity size={14} />
-                    <span>Pings</span>
-                    <strong>{agent.network.recentPings.length}</strong>
-                  </div>
-                  <div className="detail-stat-card">
-                    <Clock3 size={14} />
-                    <span>Last heartbeat</span>
-                    <strong>{agent.network.lastHeartbeatAt ? new Date(agent.network.lastHeartbeatAt).toLocaleTimeString() : "Never"}</strong>
-                  </div>
-                  <div className="detail-stat-card">
-                    <BadgeDollarSign size={14} />
-                    <span>Net</span>
-                    <strong>{formatMicros(economics.netMicros)}</strong>
-                  </div>
-                </div>
-                <div className="report-list">
-                  {agent.network.recentPings.length === 0 ? (
-                    <div className="empty-inline">No peer signals received yet.</div>
-                  ) : (
-                    agent.network.recentPings.map((peer) => (
-                      <article key={`${peer.peerId}-${peer.lastSeenAt}`} className="peer-signal-card">
-                        <div className="peer-signal-head">
-                          <strong>{peer.card?.name || peer.peerId}</strong>
-                          <span>{new Date(peer.lastSeenAt).toLocaleTimeString()}</span>
-                        </div>
-                        <p>{peer.card?.statusLine || peer.card?.headline || peer.agentWallet || "Unknown peer"}</p>
-                        <div className="agent-plugins">
-                          {peer.caps.map((cap) => <span key={`${peer.peerId}-${cap}`} className="plugin-tag">{cap}</span>)}
-                        </div>
-                      </article>
-                    ))
-                  )}
-                </div>
-              </ShellPanel>
-
-              <ShellPanel className="detail-panel">
-                <div className="detail-panel-header">
-                  <h3>Interactions &amp; Economics</h3>
-                </div>
-                <div className="detail-stat-stack">
-                  <div className="detail-stat-card">
-                    <span>Revenue</span>
-                    <strong>{formatMicros(economics.revenueMicros)}</strong>
-                  </div>
-                  <div className="detail-stat-card">
-                    <span>Costs</span>
-                    <strong>{formatMicros(economics.costMicros)}</strong>
-                  </div>
-                  <div className="detail-stat-card">
-                    <span>Visible peers</span>
-                    <strong>{visiblePeers.length}</strong>
-                  </div>
-                </div>
-                <div className="report-list">
-                  {agent.network.interactions.length === 0 ? (
-                    <div className="empty-inline">No mesh interactions recorded yet.</div>
-                  ) : (
-                    agent.network.interactions.map((interaction) => (
-                      <article key={interaction.id} className="report-card report-info">
-                        <div className="report-card-head">
-                          <strong>{interaction.kind}</strong>
-                          <span>{new Date(interaction.createdAt).toLocaleString()}</span>
-                        </div>
-                        <p>{interaction.summary}</p>
-                      </article>
-                    ))
-                  )}
-                </div>
-              </ShellPanel>
+            <div className="jarvis-field">
+              <span className="jarvis-field__label">Framework</span>
+              <span className="jarvis-field__value" data-tone="fuchsia">
+                <Sparkles size={11} /> {agent.metadata.framework}
+              </span>
+            </div>
+            <div className="jarvis-field">
+              <span className="jarvis-field__label">Wallet</span>
+              <span className="jarvis-field__value">{shortWallet(agent.agentWallet)}</span>
+            </div>
+            <div className="jarvis-field">
+              <span className="jarvis-field__label">CID</span>
+              <span className="jarvis-field__value">{agent.lock.agentCardCid.slice(0, 16)}…</span>
+            </div>
+            <div className="jarvis-field">
+              <span className="jarvis-field__label">Network</span>
+              <span className="jarvis-field__value">
+                {agent.permissions.network === "allow" ? agent.network.status : "denied"}
+              </span>
+            </div>
+          </div>
+          {listPluginIds(agent.metadata.plugins).length > 0 ? (
+            <div className="jarvis-identity__plugins">
+              {listPluginIds(agent.metadata.plugins).map((name) => (
+                <span key={name} className="jarvis-plugin-tag">{name}</span>
+              ))}
             </div>
           ) : null}
         </div>
 
-        {/* Right: Foldable Agent Card (1/3 on desktop, hidden on mobile) */}
-        <div className={`agent-detail-card-col ${mobileCardOpen ? "mobile-open" : ""}`}>
-          <ComposeAgentCard
-            interactive
-            status={agent.running ? "running" : "default"}
-            avatarAlt={agent.metadata.name}
-            avatarFallback={agent.metadata.name.slice(0, 2).toUpperCase()}
-            title={agent.metadata.name}
-            description={agent.metadata.description}
-            badges={agentBadges}
-            metrics={agentMetrics}
-            focusLabel="Immutable Lock"
-            focusValue={agent.lock.agentCardCid}
-            focusIcon={<ShieldCheck size={18} />}
-            tagsTitle={`Plugins (${agentTags.length})`}
-            tags={agentTags}
-            metaRows={agentMetaRows}
-            footer={(
-              <div className="cm-agent-card__footer-stack">
-                <div className="cm-agent-card__endpoint">
-                  <div className="cm-agent-card__endpoint-label">Agent Wallet</div>
-                  <div className="cm-agent-card__endpoint-row">
-                    <code className="cm-agent-card__endpoint-code">{agent.agentWallet}</code>
-                  </div>
-                </div>
-                <div className="cm-agent-card__creator">
-                  <div className="cm-agent-card__creator-label">Net Revenue</div>
-                  <div className="cm-agent-card__creator-value">{formatMicros(economics.netMicros)}</div>
-                </div>
-              </div>
-            )}
-          />
-          {/* Close button for mobile overlay */}
-          {mobileCardOpen ? (
-            <ShellButton tone="secondary" className="agent-detail-card-close" onClick={() => setMobileCardOpen(false)}>
-              Close
+        {/* ── Chat Panel (top-center) ── */}
+        <div className="jarvis-panel jarvis-chat">
+          <div className="jarvis-panel__header">
+            <MessageSquare size={12} />
+            <span>Chat</span>
+            <ShellButton
+              tone="secondary"
+              size="sm"
+              onClick={() => { setChatMessages([]); setChatError(null); }}
+              disabled={chatBusy || chatMessages.length === 0}
+            >
+              Clear
             </ShellButton>
-          ) : null}
+          </div>
+          <div className="jarvis-chat__body">
+            {chatError ? <ShellNotice tone="error">{chatError}</ShellNotice> : null}
+            <div className="jarvis-chat__thread">
+              {chatMessages.length === 0 ? (
+                <div className="jarvis-chat__empty">Hello, friend.</div>
+              ) : (
+                chatMessages.map((message) => (
+                  <article
+                    key={message.id}
+                    className={`jarvis-chat__msg jarvis-chat__msg--${message.role}${message.failed ? " jarvis-chat__msg--failed" : ""}`}
+                  >
+                    <div className="jarvis-chat__msg-head">
+                      <strong>{message.role === "user" ? "You" : agent.metadata.name}</strong>
+                      <span>{formatChatTimestamp(message.createdAt)}</span>
+                    </div>
+                    <p>{message.content || (chatBusy && message.role === "assistant" ? "Thinking..." : " ")}</p>
+                  </article>
+                ))
+              )}
+              <div ref={chatEndRef} />
+            </div>
+            <div className="jarvis-chat__composer">
+              <ShellInput
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                onKeyDown={handleChatInputKeyDown}
+                placeholder="Message your local agent..."
+                disabled={chatBusy}
+              />
+              <ShellButton
+                tone="primary"
+                onClick={() => void sendChatMessage()}
+                disabled={chatBusy || !chatInput.trim()}
+              >
+                {chatBusy ? <Loader2 size={14} className="spinner" /> : null}
+                Send
+              </ShellButton>
+            </div>
+          </div>
         </div>
+
+        {/* ── Live Feed Panel (top-right) ── */}
+        <div className="jarvis-panel jarvis-feed">
+          <div className="jarvis-panel__header">
+            <Activity size={12} />
+            <span>Live Feed</span>
+          </div>
+          <div className="jarvis-feed__body">
+            {agent.reports.length > 0 ? (
+              <>
+                <div className="jarvis-feed__section-label">Reports</div>
+                {agent.reports.slice().reverse().map((report) => (
+                  <article key={report.id} className="jarvis-feed__entry" data-outcome={report.outcome}>
+                    <div className="jarvis-feed__entry-head">
+                      <span className="jarvis-feed__entry-kind">{report.kind}</span>
+                      <span className="jarvis-feed__entry-time">{new Date(report.createdAt).toLocaleTimeString()}</span>
+                    </div>
+                    <div className="jarvis-feed__entry-text">{report.title}: {report.summary}</div>
+                  </article>
+                ))}
+              </>
+            ) : null}
+            {logLines.length > 0 ? (
+              <>
+                <div className="jarvis-feed__section-label">Runtime Log</div>
+                {logLines.map((line, index) => (
+                  <div key={`log-${index}-${line.slice(0, 12)}`} className="jarvis-feed__log-line">{line}</div>
+                ))}
+              </>
+            ) : null}
+            {agent.reports.length === 0 && logLines.length === 0 ? (
+              <div className="jarvis-chat__empty">No activity yet.</div>
+            ) : null}
+            <div ref={feedEndRef} />
+          </div>
+        </div>
+
+        {/* ── KPI: Mesh Peers (bottom-left) ── */}
+        <div className="jarvis-panel jarvis-kpi jarvis-kpi--mesh">
+          <div className="jarvis-panel__header">
+            <Globe size={12} />
+            <span>Mesh</span>
+          </div>
+          <div className="jarvis-kpi__body">
+            <div className="jarvis-kpi__stats">
+              <div className="jarvis-stat" data-tone="cyan">
+                <span>{agent.network.peersDiscovered}</span>
+                <label>Peers</label>
+              </div>
+              <div className="jarvis-stat" data-tone="green">
+                <span>{agent.network.recentPings.length}</span>
+                <label>Signals</label>
+              </div>
+              <div className="jarvis-stat">
+                <span>{visiblePeers.length}</span>
+                <label>Visible</label>
+              </div>
+            </div>
+            <div className="jarvis-peer-feed">
+              {agent.network.recentPings.slice(0, 5).map((peer) => (
+                <div key={`${peer.peerId}-${peer.lastSeenAt}`} className="jarvis-peer">
+                  <strong>{peer.card?.name || peer.peerId.slice(0, 12)}</strong>
+                  <span>{new Date(peer.lastSeenAt).toLocaleTimeString()}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* ── KPI: Economics + Heartbeat (bottom-center) ── */}
+        <div className="jarvis-panel jarvis-kpi jarvis-kpi--economics">
+          <div className="jarvis-panel__header">
+            <BadgeDollarSign size={12} />
+            <span>Economics</span>
+          </div>
+          <div className="jarvis-kpi__body">
+            <div className="jarvis-kpi__stats">
+              <div className="jarvis-stat" data-tone="green">
+                <span>{formatMicros(economics.revenueMicros)}</span>
+                <label>Revenue</label>
+              </div>
+              <div className="jarvis-stat" data-tone="fuchsia">
+                <span>{formatMicros(economics.costMicros)}</span>
+                <label>Cost</label>
+              </div>
+              <div className="jarvis-stat" data-tone="cyan">
+                <span>{formatMicros(economics.netMicros)}</span>
+                <label>Net</label>
+              </div>
+            </div>
+            <div className="jarvis-kpi__row">
+              <div className="jarvis-heartbeat">
+                <Clock3 size={10} />
+                <span>HB</span>
+                <strong className={`jarvis-heartbeat__indicator${agent.heartbeat.lastResult === "ok" ? " jarvis-heartbeat__indicator--ok" : ""}`}>
+                  {agent.heartbeat.lastResult || "—"}
+                </strong>
+                <span className="jarvis-heartbeat__time">
+                  {agent.network.lastHeartbeatAt ? new Date(agent.network.lastHeartbeatAt).toLocaleTimeString() : "—"}
+                </span>
+              </div>
+              <button className="jarvis-skills-count" onClick={() => setSkillsModalOpen(true)} type="button">
+                <Sparkles size={10} />
+                <span>Skills</span>
+                <strong>{state.installedSkills.length}</strong>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── KPI: Permissions (bottom-right) ── */}
+        <button
+          className="jarvis-panel jarvis-kpi jarvis-kpi--permissions"
+          onClick={() => setPermissionsModalOpen(true)}
+          type="button"
+        >
+          <div className="jarvis-panel__header">
+            <Shield size={12} />
+            <span>Permissions</span>
+          </div>
+          <div className="jarvis-perm-grid">
+            {permissionKeys.map((key) => (
+              <div key={key} className={`jarvis-perm${agent.permissions[key] === "allow" ? " jarvis-perm--on" : ""}`}>
+                <span className="jarvis-perm__dot" />
+                <span className="jarvis-perm__label">{key}</span>
+              </div>
+            ))}
+          </div>
+        </button>
       </div>
+
+      {/* ── Permissions Modal ── */}
+      {permissionsModalOpen ? (
+        <ShellPanel className="jarvis-modal-skills" style={{ position: "fixed", inset: 0, zIndex: 60, background: "hsl(var(--background) / 0.96)", backdropFilter: "blur(12px)", padding: 24, overflow: "auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <h3 style={{ fontFamily: "var(--font-display, Orbitron), sans-serif", letterSpacing: "0.06em" }}>Permissions</h3>
+            <ShellButton tone="secondary" size="sm" onClick={() => setPermissionsModalOpen(false)}>Close</ShellButton>
+          </div>
+          <PermissionsPanel
+            permissions={agent.desiredPermissions || agent.permissions}
+            agentWallet={agent.agentWallet}
+            permissionBusy={permissionBusy}
+            onToggle={togglePermission}
+          />
+        </ShellPanel>
+      ) : null}
+
+      {/* ── Skills Modal ── */}
+      {skillsModalOpen ? (
+        <ShellPanel className="jarvis-modal-skills" style={{ position: "fixed", inset: 0, zIndex: 60, background: "hsl(var(--background) / 0.96)", backdropFilter: "blur(12px)", padding: 24, overflow: "auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <h3 style={{ fontFamily: "var(--font-display, Orbitron), sans-serif", letterSpacing: "0.06em" }}>Skills</h3>
+            <ShellButton tone="secondary" size="sm" onClick={() => setSkillsModalOpen(false)}>Close</ShellButton>
+          </div>
+          <div className="jarvis-modal-skills__tabs">
+            <ShellButton tone={skillsTab === "installed" ? "primary" : "secondary"} onClick={() => setSkillsTab("installed")}>Installed</ShellButton>
+            <ShellButton tone={skillsTab === "browse" ? "primary" : "secondary"} onClick={() => setSkillsTab("browse")}>Browse</ShellButton>
+          </div>
+          {skillsTab === "installed" ? (
+            <SkillsManager state={state} onStateChange={onStateChange} />
+          ) : (
+            <SkillsMarketplace state={state} onStateChange={onStateChange} />
+          )}
+        </ShellPanel>
+      ) : null}
     </section>
   );
 }
