@@ -419,6 +419,7 @@ struct MeshPublicationQueueRequest {
 #[serde(rename_all = "camelCase")]
 struct MeshPublicationQueueResult {
     request_id: String,
+    agent_wallet: Option<String>,
     kind: Option<MeshPublicationQueueKind>,
     success: bool,
     error: Option<String>,
@@ -450,6 +451,7 @@ struct PersistedLocalState {
 #[serde(rename_all = "camelCase", default)]
 struct PersistedLocalSettings {
     api_url: String,
+    mesh_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -463,6 +465,17 @@ struct PersistedLocalIdentity {
     chain_id: u32,
     expires_at: u64,
     device_id: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ActiveSessionRefreshResponse {
+    has_session: bool,
+    key_id: String,
+    token: String,
+    budget_remaining: String,
+    expires_at: u64,
+    chain_id: u32,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -541,6 +554,7 @@ struct PersistedAgentLock {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct PersistedAgentNetworkState {
+    enabled: bool,
     public_card: Option<MeshAgentCard>,
     manifest: Option<MeshManifest>,
 }
@@ -1179,12 +1193,20 @@ struct MeshPubCtx {
     agent: PersistedInstalledAgent,
 }
 
-fn load_mesh_pub_ctx(app: &tauri::AppHandle, agent_wallet: &str) -> Result<MeshPubCtx, String> {
+async fn load_mesh_pub_ctx(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+) -> Result<MeshPubCtx, String> {
     let state = load_persisted_local_state(app)?;
-    let identity = state
-        .identity
-        .as_ref()
-        .ok_or_else(|| "local identity is required for mesh publication".to_string())?;
+    let client = HttpClient::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("failed to build compose-key session client: {err}"))?;
+    let identity = refresh_local_identity_session(app, &state, &client)
+        .await?
+        .ok_or_else(|| {
+            "an active compose-key session is required for mesh publication".to_string()
+        })?;
     let user_wallet = normalize_wallet(&identity.user_address)
         .ok_or_else(|| "local identity userAddress is invalid".to_string())?;
     let device_id = normalize_device_id(&identity.device_id)
@@ -1228,12 +1250,12 @@ fn load_mesh_pub_ctx(app: &tauri::AppHandle, agent_wallet: &str) -> Result<MeshP
     })
 }
 
-fn build_current_mesh_publication(
+async fn build_current_mesh_publication(
     app: &tauri::AppHandle,
     agent_wallet: &str,
     live_status: &MeshRuntimeStatus,
 ) -> Result<(MeshManifest, MeshStateAnchorCommandRequest), String> {
-    let ctx = load_mesh_pub_ctx(app, agent_wallet)?;
+    let ctx = load_mesh_pub_ctx(app, agent_wallet).await?;
     let normalized_agent_wallet = normalize_wallet(agent_wallet)
         .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
     let agent = ctx.agent.clone();
@@ -1728,27 +1750,16 @@ pub(crate) fn resolve_base_dir(app: &tauri::AppHandle) -> Result<PathBuf, String
         .path()
         .app_data_dir()
         .map_err(|err| format!("failed to resolve app data directory: {err}"))?;
-
-    // Check for a user-configured base dir override
     let override_file = app_data.join("base_dir_override.txt");
-    let base = if override_file.exists() {
-        if let Ok(custom) = fs::read_to_string(&override_file) {
-            let trimmed = custom.trim();
-            if !trimmed.is_empty() {
-                PathBuf::from(trimmed)
-            } else {
-                app_data.join("runtime")
-            }
-        } else {
-            app_data.join("runtime")
+    if override_file.exists() {
+        let raw = fs::read_to_string(&override_file)
+            .map_err(|err| format!("failed to read base dir override: {err}"))?;
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
         }
-    } else {
-        app_data.join("runtime")
-    };
-
-    fs::create_dir_all(&base)
-        .map_err(|err| format!("failed to create app data directory: {err}"))?;
-    Ok(base)
+    }
+    Ok(app_data)
 }
 
 fn daemon_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1868,6 +1879,16 @@ fn mesh_publication_requests_dir(app: &tauri::AppHandle) -> Result<PathBuf, Stri
     Ok(dir)
 }
 
+fn mesh_publication_agent_requests_dir(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+) -> Result<PathBuf, String> {
+    let dir = mesh_publication_requests_dir(app)?.join(agent_wallet.to_lowercase());
+    fs::create_dir_all(&dir)
+        .map_err(|err| format!("failed to create mesh publication agent requests dir: {err}"))?;
+    Ok(dir)
+}
+
 fn mesh_publication_results_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = resolve_base_dir(app)?
         .join("mesh")
@@ -1875,6 +1896,16 @@ fn mesh_publication_results_dir(app: &tauri::AppHandle) -> Result<PathBuf, Strin
         .join("results");
     fs::create_dir_all(&dir)
         .map_err(|err| format!("failed to create mesh publication results dir: {err}"))?;
+    Ok(dir)
+}
+
+fn mesh_publication_agent_results_dir(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+) -> Result<PathBuf, String> {
+    let dir = mesh_publication_results_dir(app)?.join(agent_wallet.to_lowercase());
+    fs::create_dir_all(&dir)
+        .map_err(|err| format!("failed to create mesh publication agent results dir: {err}"))?;
     Ok(dir)
 }
 
@@ -2082,6 +2113,35 @@ fn extract_peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
         }
     }
     None
+}
+
+fn derive_relay_listen_multiaddrs(relay_multiaddrs: &[String]) -> Vec<Multiaddr> {
+    let mut derived = Vec::new();
+    let mut seen = HashSet::new();
+
+    for raw in relay_multiaddrs {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let Ok(addr) = trimmed.parse::<Multiaddr>() else {
+            continue;
+        };
+        if extract_peer_id_from_multiaddr(&addr).is_none() {
+            continue;
+        }
+
+        let mut circuit_addr = addr.clone();
+        circuit_addr.push(Protocol::P2pCircuit);
+
+        let circuit_key = circuit_addr.to_string();
+        if seen.insert(circuit_key) {
+            derived.push(circuit_addr);
+        }
+    }
+
+    derived
 }
 
 const ENVELOPE_VERSION: u64 = 1;
@@ -2605,6 +2665,15 @@ fn build_mesh_swarm(
         }
     }
 
+    for relay_listen_addr in derive_relay_listen_multiaddrs(&request.relay_multiaddrs) {
+        if let Err(err) = swarm.listen_on(relay_listen_addr.clone()) {
+            eprintln!(
+                "[mesh] relay circuit listen failed for {}: {}",
+                relay_listen_addr, err
+            );
+        }
+    }
+
     if let Err(err) = swarm.behaviour_mut().kad.bootstrap() {
         eprintln!("[mesh] initial kad bootstrap failed: {}", err);
     }
@@ -2833,6 +2902,29 @@ async fn run_mesh_loop(
                             if status.status == "connecting" {
                                 status.status = "online".to_string();
                             }
+                            status.updated_at = now_ms();
+                        });
+                    }
+                    SwarmEvent::ExternalAddrConfirmed { address } => {
+                        let addr = address.to_string();
+                        let _ = with_mesh_status(&app, |status| {
+                            if !status.listen_multiaddrs.contains(&addr) {
+                                status.listen_multiaddrs.push(addr);
+                            }
+                            status.status = "online".to_string();
+                            status.updated_at = now_ms();
+                        });
+                    }
+                    SwarmEvent::ExternalAddrExpired { address } => {
+                        let addr = address.to_string();
+                        let _ = with_mesh_status(&app, |status| {
+                            status.listen_multiaddrs.retain(|item| item != &addr);
+                            status.status = mesh_runtime_state_label(
+                                &status.listen_multiaddrs,
+                                status.peers_discovered as usize,
+                                connected_peers.len(),
+                            )
+                            .to_string();
                             status.updated_at = now_ms();
                         });
                     }
@@ -3350,23 +3442,6 @@ fn append_daemon_log(
         .map_err(|err| format!("failed to append daemon log: {err}"))
 }
 
-fn local_identity_session_active(identity: &PersistedLocalIdentity) -> bool {
-    if identity.compose_key_token.trim().is_empty()
-        || identity.user_address.trim().is_empty()
-        || identity.chain_id == 0
-        || identity.expires_at <= now_ms()
-    {
-        return false;
-    }
-
-    identity
-        .budget
-        .trim()
-        .parse::<u128>()
-        .map(|value| value > 0)
-        .unwrap_or(false)
-}
-
 fn collect_skill_markdown_files(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
     if !root.exists() {
         return Ok(());
@@ -3411,61 +3486,20 @@ fn read_document_if_present(file_path: &Path, label: String) -> Option<(String, 
 
 fn local_agent_documents(
     app: &tauri::AppHandle,
-    state: &PersistedLocalState,
     agent: &PersistedInstalledAgent,
+    heartbeat_mode: bool,
 ) -> Result<Vec<(String, String)>, String> {
     let base_dir = resolve_base_dir(app)?;
     let workspace = daemon_agent_workspace_path(app, &agent.agent_wallet)?;
-    let base_files = [
-        "AGENTS.md",
-        "SOUL.md",
-        "TOOLS.md",
-        "IDENTITY.md",
-        "USER.md",
-        "HEARTBEAT.md",
-    ];
+    let base_files = if heartbeat_mode {
+        vec!["HEARTBEAT.md"]
+    } else {
+        vec!["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md"]
+    };
 
     let mut output = Vec::new();
     for file_name in base_files {
         let file_path = workspace.join(file_name);
-        if let Some(document) =
-            read_document_if_present(&file_path, base_relative_label(&base_dir, &file_path))
-        {
-            output.push(document);
-        }
-    }
-
-    let enabled_skill_paths = state
-        .installed_skills
-        .iter()
-        .filter(|skill| {
-            skill.enabled
-                && !skill.relative_path.trim().is_empty()
-                && agent
-                    .skill_states
-                    .get(&skill.id)
-                    .map(|state| state.enabled && state.eligible)
-                    .unwrap_or(true)
-        })
-        .map(|skill| {
-            base_dir
-                .join(skill.relative_path.trim().replace('\\', "/"))
-                .join("SKILL.md")
-        })
-        .collect::<Vec<_>>();
-
-    for file_path in enabled_skill_paths {
-        if let Some(document) =
-            read_document_if_present(&file_path, base_relative_label(&base_dir, &file_path))
-        {
-            output.push(document);
-        }
-    }
-
-    let mut agent_skill_files = Vec::new();
-    collect_skill_markdown_files(&workspace.join("skills"), &mut agent_skill_files)?;
-    agent_skill_files.sort();
-    for file_path in agent_skill_files {
         if let Some(document) =
             read_document_if_present(&file_path, base_relative_label(&base_dir, &file_path))
         {
@@ -3480,10 +3514,7 @@ fn permission_allowed(value: &str) -> bool {
     value.trim().eq_ignore_ascii_case("allow")
 }
 
-fn os_permission_granted(value: &str) -> bool {
-    let normalized = value.trim().to_lowercase();
-    matches!(normalized.as_str(), "authorized" | "granted")
-}
+
 
 fn desired_local_agent_permissions(agent: &PersistedInstalledAgent) -> DaemonPermissionPolicy {
     let normalized_permissions = normalize_daemon_permission_policy(agent.permissions.clone());
@@ -3493,47 +3524,7 @@ fn desired_local_agent_permissions(agent: &PersistedInstalledAgent) -> DaemonPer
     select_desired_permission_policy(&normalized_permissions, &normalized_desired_permissions)
 }
 
-fn effective_permissions_from_desired(
-    desired: &DaemonPermissionPolicy,
-    os_permissions: &OsPermissionSnapshot,
-) -> DaemonPermissionPolicy {
-    let has_full_disk_access = os_permission_granted(&os_permissions.full_disk_access);
 
-    DaemonPermissionPolicy {
-        shell: normalize_daemon_decision(&desired.shell),
-        filesystem_read: if has_full_disk_access {
-            normalize_daemon_decision(&desired.filesystem_read)
-        } else {
-            "deny".to_string()
-        },
-        filesystem_write: if has_full_disk_access {
-            normalize_daemon_decision(&desired.filesystem_write)
-        } else {
-            "deny".to_string()
-        },
-        filesystem_edit: if has_full_disk_access {
-            normalize_daemon_decision(&desired.filesystem_edit)
-        } else {
-            "deny".to_string()
-        },
-        filesystem_delete: if has_full_disk_access {
-            normalize_daemon_decision(&desired.filesystem_delete)
-        } else {
-            "deny".to_string()
-        },
-        camera: if os_permission_granted(&os_permissions.camera) {
-            normalize_daemon_decision(&desired.camera)
-        } else {
-            "deny".to_string()
-        },
-        microphone: if os_permission_granted(&os_permissions.microphone) {
-            normalize_daemon_decision(&desired.microphone)
-        } else {
-            "deny".to_string()
-        },
-        network: normalize_daemon_decision(&desired.network),
-    }
-}
 
 fn resolve_local_agent_permissions(
     app: &tauri::AppHandle,
@@ -3559,9 +3550,8 @@ fn resolve_local_agent_permissions(
             .unwrap_or_else(|| desired_local_agent_permissions(agent))
     };
 
-    let os_permissions = query_os_permissions_snapshot(Some(app));
-
-    effective_permissions_from_desired(&desired_permissions, &os_permissions)
+    // Per-agent permissions are pure app-level toggles — just normalize.
+    normalize_daemon_permission_policy(desired_permissions)
 }
 
 fn normalize_api_base_for_local_agent(state: &PersistedLocalState) -> String {
@@ -3571,6 +3561,204 @@ fn normalize_api_base_for_local_agent(state: &PersistedLocalState) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn normalize_session_budget_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || !trimmed.chars().all(|char| char.is_ascii_digit()) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn apply_active_session_refresh(
+    identity: &PersistedLocalIdentity,
+    response: &ActiveSessionRefreshResponse,
+    now: u64,
+) -> Option<PersistedLocalIdentity> {
+    if !response.has_session {
+        return None;
+    }
+
+    let session_id = response.key_id.trim();
+    let compose_key_token = response.token.trim();
+    let budget = normalize_session_budget_value(&response.budget_remaining)?;
+    if session_id.is_empty() || compose_key_token.is_empty() || response.expires_at <= now {
+        return None;
+    }
+
+    Some(PersistedLocalIdentity {
+        user_address: identity.user_address.clone(),
+        compose_key_token: compose_key_token.to_string(),
+        session_id: session_id.to_string(),
+        budget,
+        duration: response.expires_at.saturating_sub(now),
+        chain_id: if response.chain_id > 0 {
+            response.chain_id
+        } else {
+            identity.chain_id
+        },
+        expires_at: response.expires_at,
+        device_id: identity.device_id.clone(),
+    })
+}
+
+fn same_local_identity_session(
+    current: &PersistedLocalIdentity,
+    refreshed: Option<&PersistedLocalIdentity>,
+) -> bool {
+    match refreshed {
+        Some(next) => {
+            current.compose_key_token == next.compose_key_token
+                && current.session_id == next.session_id
+                && current.budget == next.budget
+                && current.duration == next.duration
+                && current.chain_id == next.chain_id
+                && current.expires_at == next.expires_at
+        }
+        None => {
+            current.compose_key_token.trim().is_empty()
+                && current.session_id.trim().is_empty()
+                && current.budget.trim() == "0"
+                && current.duration == 0
+                && current.expires_at == 0
+        }
+    }
+}
+
+fn persist_local_identity_session(
+    app: &tauri::AppHandle,
+    identity: &PersistedLocalIdentity,
+    refreshed: Option<&PersistedLocalIdentity>,
+) -> Result<(), String> {
+    if same_local_identity_session(identity, refreshed) {
+        return Ok(());
+    }
+
+    let mut state_value = load_local_state_value(app)?;
+    if !state_value.is_object() {
+        state_value = serde_json::json!({});
+    }
+
+    let state_object = state_value
+        .as_object_mut()
+        .ok_or_else(|| "local state root must be a JSON object".to_string())?;
+    let identity_value = state_object
+        .entry("identity".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !identity_value.is_object() {
+        *identity_value = serde_json::json!({});
+    }
+
+    let identity_object = identity_value
+        .as_object_mut()
+        .ok_or_else(|| "local state identity must be a JSON object".to_string())?;
+    identity_object.insert(
+        "userAddress".to_string(),
+        serde_json::Value::String(identity.user_address.clone()),
+    );
+    identity_object.insert(
+        "deviceId".to_string(),
+        serde_json::Value::String(identity.device_id.clone()),
+    );
+
+    match refreshed {
+        Some(next) => {
+            identity_object.insert(
+                "composeKeyToken".to_string(),
+                serde_json::Value::String(next.compose_key_token.clone()),
+            );
+            identity_object.insert(
+                "composeKeyId".to_string(),
+                serde_json::Value::String(next.session_id.clone()),
+            );
+            identity_object.insert(
+                "sessionId".to_string(),
+                serde_json::Value::String(next.session_id.clone()),
+            );
+            identity_object.insert(
+                "budget".to_string(),
+                serde_json::Value::String(next.budget.clone()),
+            );
+            identity_object.insert(
+                "duration".to_string(),
+                serde_json::Value::from(next.duration),
+            );
+            identity_object.insert(
+                "chainId".to_string(),
+                serde_json::Value::from(next.chain_id),
+            );
+            identity_object.insert(
+                "expiresAt".to_string(),
+                serde_json::Value::from(next.expires_at),
+            );
+        }
+        None => {
+            identity_object.insert(
+                "composeKeyToken".to_string(),
+                serde_json::Value::String(String::new()),
+            );
+            identity_object.insert(
+                "composeKeyId".to_string(),
+                serde_json::Value::String(String::new()),
+            );
+            identity_object.insert(
+                "sessionId".to_string(),
+                serde_json::Value::String(String::new()),
+            );
+            identity_object.insert(
+                "budget".to_string(),
+                serde_json::Value::String("0".to_string()),
+            );
+            identity_object.insert("duration".to_string(), serde_json::Value::from(0_u64));
+            identity_object.insert(
+                "chainId".to_string(),
+                serde_json::Value::from(identity.chain_id),
+            );
+            identity_object.insert("expiresAt".to_string(), serde_json::Value::from(0_u64));
+        }
+    }
+
+    save_local_state_value(app, &state_value)
+}
+
+async fn refresh_local_identity_session(
+    app: &tauri::AppHandle,
+    state: &PersistedLocalState,
+    client: &HttpClient,
+) -> Result<Option<PersistedLocalIdentity>, String> {
+    let Some(identity) = state.identity.as_ref() else {
+        return Ok(None);
+    };
+
+    let user_address = normalize_wallet(&identity.user_address)
+        .ok_or_else(|| "local identity userAddress is invalid".to_string())?;
+    if identity.chain_id == 0 {
+        return Err("local identity chainId is invalid".to_string());
+    }
+
+    let mut request = client
+        .get(format!(
+            "{}/api/session",
+            normalize_api_base_for_local_agent(state)
+        ))
+        .header("X-Session-User-Address", user_address.as_str())
+        .header("X-Chain-ID", identity.chain_id.to_string());
+    let compose_key_token = identity.compose_key_token.trim();
+    if !compose_key_token.is_empty() {
+        request = request.bearer_auth(compose_key_token);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("failed to refresh compose-key session: {err}"))?;
+    let payload = decode_remote_json(response, "compose-key session refresh").await?;
+    let parsed = serde_json::from_value::<ActiveSessionRefreshResponse>(payload)
+        .map_err(|err| format!("failed to decode compose-key session refresh: {err}"))?;
+    let refreshed = apply_active_session_refresh(identity, &parsed, now_ms());
+    persist_local_identity_session(app, identity, refreshed.as_ref())?;
+    Ok(refreshed)
 }
 
 fn normalize_connector_base_for_local_agent() -> String {
@@ -3586,29 +3774,9 @@ fn build_local_agent_prompt(
     agent: &PersistedInstalledAgent,
     documents: &[(String, String)],
     heartbeat_mode: bool,
-    memory_context: Option<&str>,
     permissions: &DaemonPermissionPolicy,
 ) -> String {
-    let skill_catalog = {
-        let mut labels = documents
-            .iter()
-            .filter_map(|(label, _)| label.strip_suffix("/SKILL.md"))
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>();
-        labels.sort();
-        labels.dedup();
-        if labels.is_empty() {
-            "No local skills are currently installed.".to_string()
-        } else {
-            labels
-                .into_iter()
-                .map(|label| format!("- {label}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-    };
-
-    let files_section = documents
+    let bootstrap_section = documents
         .iter()
         .map(|(label, content)| format!("[{label}]\n{content}"))
         .collect::<Vec<_>>()
@@ -3660,60 +3828,28 @@ fn build_local_agent_prompt(
 
     let mode_instruction = if heartbeat_mode {
         format!(
-            "This run is an autonomous heartbeat. Take the smallest safe useful step or reply {LOCAL_AGENT_HEARTBEAT_OK_TOKEN}."
+            "This is a heartbeat. Read HEARTBEAT.md below, take the smallest safe useful step if needed, and otherwise reply {LOCAL_AGENT_HEARTBEAT_OK_TOKEN}. Do not create reports, skills, or learnings for a no-op heartbeat."
         )
     } else {
-        "This run is a direct local conversation with the user. Answer clearly, keep work local, and use tools only when they materially help.".to_string()
+        "This is a direct local conversation with the user. Answer clearly, keep work local, and use tools only when they materially help.".to_string()
     };
-
-    let memory_section = memory_context
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            format!(
-                "Runtime memory context:\n{}",
-                truncate_string(value.to_string(), 4_000)
-            )
-        })
-        .unwrap_or_else(|| "Runtime memory context:\nNo prior context found.".to_string());
 
     [
         format!(
             "You are {}. Your original purpose is {}",agent.metadata.name.trim(), agent.metadata.description.trim()
         ),
-        "You're a personal assistant running on this user's device. Use your built-in skills below or create new ones to keep improving yourself.".to_string(),
+        "You're a personal assistant running on this user's device. Read what you need, decide what to do, and keep your local state in your own workspace.".to_string(),
         "The app brokers permissions. If a permission is denied, adapt and explain what is missing instead of pretending it worked.".to_string(),
-        "You may use remote power rails when needed: the local runtime host for memory, api.compose.market for Backpack/Composio, services.compose.market/connector for MCP registry and spawning, and the mesh publication queue for learnings.".to_string(),
         mode_instruction,
-        "Return only a single JSON object.".to_string(),
-        "Use this shape: {\"reply\":string,\"report\":null|{\"title\":string,\"summary\":string,\"details\"?:string,\"outcome\":\"success\"|\"warning\"|\"error\"|\"info\"},\"skill\":null|{\"name\":string,\"markdown\":string},\"actions\":Array<object>}.".to_string(),
-        "If you need tools, return actions and keep reply empty until you are done. Do not fabricate tool results. Do not return a report or skill until the final response.".to_string(),
-        "If filesystemWrite/filesystemEdit are allowed, you must write your own reports and skills with files.write or files.append. The report and skill fields are summaries only; they do not persist files.".to_string(),
-        "Write report files under reports/<timestamp>-<slug>.json. Write generated skills under skills/generated/<skill-slug>/SKILL.md.".to_string(),
-        "Supported actions: files.list, files.read, files.write, files.append, shell.exec, remote.request, mesh.publish_learning.".to_string(),
-        "Action object shapes:".to_string(),
-        "- {\"type\":\"files.list\",\"path\":\".\"}".to_string(),
-        "- {\"type\":\"files.read\",\"path\":\"USER.md\"}".to_string(),
-        "- {\"type\":\"files.write\",\"path\":\"notes/summary.md\",\"content\":\"...\"}".to_string(),
-        "- {\"type\":\"files.append\",\"path\":\"logs/activity.md\",\"content\":\"...\"}".to_string(),
-        "- {\"type\":\"shell.exec\",\"command\":\"curl\",\"args\":[\"https://services.compose.market/connector/mcp/servers\"],\"cwd\":\".\"}".to_string(),
-        "- {\"type\":\"remote.request\",\"service\":\"runtime\",\"method\":\"POST\",\"path\":\"/mesh/tools/execute\",\"body\":{\"toolName\":\"search_all_memory\",\"args\":{\"query\":\"recent goals tasks preferences\"}}}".to_string(),
-        "- {\"type\":\"remote.request\",\"service\":\"connector\",\"method\":\"GET\",\"path\":\"/registry/servers?origin=mcp&available=true\"}".to_string(),
-        "- {\"type\":\"remote.request\",\"service\":\"api\",\"method\":\"POST\",\"path\":\"/api/backpack/execute\",\"body\":{\"userAddress\":\"...\",\"toolkit\":\"gmail\",\"action\":\"GMAIL_SEND_EMAIL\",\"params\":{...}}}".to_string(),
-        "- {\"type\":\"mesh.publish_learning\",\"title\":\"...\",\"summary\":\"...\",\"content\":\"...\",\"accessPriceUsdc\":\"0.10\"}".to_string(),
-        "Allowed remote surfaces: runtime path /mesh/tools/execute, connector registry/MCP paths, and api paths under /api/backpack/.".to_string(),
+        "Read TOOLS.md for the exact JSON response shape, action schema, and Compose service contracts. Do not invent alternate formats.".to_string(),
+        "Use your workspace for local state. Read shared built-in skills through global-skills/ only when needed.".to_string(),
         format!("If no heartbeat work is needed, set reply to {LOCAL_AGENT_HEARTBEAT_OK_TOKEN} and leave report, skill, and actions empty."),
         String::new(),
         "Current brokered permissions:".to_string(),
         permission_lines,
         String::new(),
-        memory_section,
-        String::new(),
-        "Available local skills:".to_string(),
-        skill_catalog,
-        String::new(),
-        "Local operating files:".to_string(),
-        files_section,
+        "Bootstrap files:".to_string(),
+        bootstrap_section,
     ]
     .join("\n")
 }
@@ -3850,9 +3986,7 @@ fn apply_local_agent_auth(
     builder
         .bearer_auth(identity.compose_key_token.trim())
         .header("X-Chain-ID", identity.chain_id.to_string())
-        .header("X-Session-Active", "true")
         .header("X-Session-User-Address", identity.user_address.trim())
-        .header("X-Session-Budget-Remaining", identity.budget.trim())
 }
 
 fn extract_remote_error_message(payload: &str, fallback: String) -> String {
@@ -3939,16 +4073,7 @@ fn normalize_remote_action_path(value: Option<&str>) -> Result<String, String> {
 fn remote_action_path_allowed(service: &str, path: &str) -> bool {
     let route = path.split('?').next().unwrap_or(path);
     match service {
-        "api" => route.starts_with("/api/backpack/"),
-        "connector" => {
-            route == "/mcp/servers"
-                || route == "/mcp/status"
-                || route == "/mcp/spawn"
-                || route == "/mcp/sessions"
-                || route.starts_with("/mcp/servers/")
-                || route.starts_with("/mcp/sessions/")
-                || route.starts_with("/registry/servers")
-        }
+        "api" | "connector" => route.starts_with('/'),
         "runtime" => route == "/mesh/tools/execute",
         _ => false,
     }
@@ -3987,24 +4112,6 @@ fn build_local_runtime_tool_request_body(
     Ok(serde_json::Value::Object(body))
 }
 
-fn local_runtime_result_as_text(value: &serde_json::Value) -> Option<String> {
-    if let Some(text) = value.as_str() {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        return Some(trimmed.to_string());
-    }
-
-    if value.is_null() {
-        return None;
-    }
-
-    serde_json::to_string_pretty(value)
-        .ok()
-        .map(|text| truncate_string(text, 4_000))
-}
-
 async fn execute_local_runtime_tool_request(
     app: &tauri::AppHandle,
     client: &HttpClient,
@@ -4035,26 +4142,6 @@ async fn execute_local_runtime_tool_request(
     decode_remote_json(response, "local runtime tool request").await
 }
 
-fn local_agent_memory_context_query(
-    agent: &PersistedInstalledAgent,
-    transcript: &[LocalAgentConversationMessage],
-) -> String {
-    transcript
-        .iter()
-        .rev()
-        .find(|message| message.role.trim() == "user" && !message.content.trim().is_empty())
-        .map(|message| truncate_string(message.content.clone(), 240))
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            let name = agent.metadata.name.trim();
-            if name.is_empty() {
-                "recent goals, current tasks, user preferences, and ongoing work".to_string()
-            } else {
-                format!("{name} recent goals, current tasks, user preferences, and ongoing work")
-            }
-        })
-}
-
 fn normalize_workspace_subpath(raw: Option<&str>) -> Result<PathBuf, String> {
     let value = raw.unwrap_or(".").trim();
     if value.is_empty() || value == "." {
@@ -4081,6 +4168,30 @@ fn resolve_agent_workspace_target(
 ) -> Result<(PathBuf, PathBuf), String> {
     let workspace = daemon_agent_workspace_path(app, agent_wallet)?;
     let relative = normalize_workspace_subpath(raw_path)?;
+    Ok((workspace.clone(), workspace.join(relative)))
+}
+
+fn resolve_agent_read_target(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+    raw_path: Option<&str>,
+) -> Result<(PathBuf, PathBuf), String> {
+    let relative = normalize_workspace_subpath(raw_path)?;
+    let mut components = relative.components();
+    if let Some(Component::Normal(segment)) = components.next() {
+        if segment.to_string_lossy() == "global-skills" {
+            let root = resolve_base_dir(app)?.join("skills");
+            let mut suffix = PathBuf::new();
+            for component in components {
+                if let Component::Normal(item) = component {
+                    suffix.push(item);
+                }
+            }
+            return Ok((root.clone(), root.join(suffix)));
+        }
+    }
+
+    let workspace = daemon_agent_workspace_path(app, agent_wallet)?;
     Ok((workspace.clone(), workspace.join(relative)))
 }
 
@@ -4167,41 +4278,6 @@ fn normalize_shell_args(value: Option<&[String]>) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
-async fn fetch_local_agent_memory_context(
-    app: &tauri::AppHandle,
-    client: &HttpClient,
-    agent: &PersistedInstalledAgent,
-    identity: &PersistedLocalIdentity,
-    transcript: &[LocalAgentConversationMessage],
-    permissions: &DaemonPermissionPolicy,
-) -> Option<String> {
-    if !permission_allowed(&permissions.network) {
-        return None;
-    }
-
-    let payload = execute_local_runtime_tool_request(
-        app,
-        client,
-        agent,
-        identity,
-        serde_json::json!({
-            "toolName": "search_all_memory",
-            "args": {
-                "query": local_agent_memory_context_query(agent, transcript),
-                "layers": ["working", "scene", "graph", "patterns", "archives"],
-            },
-        }),
-    )
-    .await
-    .ok()?;
-
-    payload
-        .get("result")
-        .and_then(local_runtime_result_as_text)
-        .or_else(|| local_runtime_result_as_text(&payload))
-        .map(|value| truncate_string(value, 4_000))
-}
-
 async fn request_local_agent_model_turn(
     client: &HttpClient,
     state: &PersistedLocalState,
@@ -4267,7 +4343,7 @@ async fn execute_local_agent_action(
                 return Err("filesystemRead permission denied".to_string());
             }
             let (workspace, target) =
-                resolve_agent_workspace_target(app, &agent.agent_wallet, action.path.as_deref())?;
+                resolve_agent_read_target(app, &agent.agent_wallet, action.path.as_deref())?;
             let mut entries = Vec::new();
             if target.is_file() {
                 entries.push(
@@ -4289,7 +4365,7 @@ async fn execute_local_agent_action(
                 return Err("filesystemRead permission denied".to_string());
             }
             let (_workspace, target) =
-                resolve_agent_workspace_target(app, &agent.agent_wallet, action.path.as_deref())?;
+                resolve_agent_read_target(app, &agent.agent_wallet, action.path.as_deref())?;
             let content = fs::read_to_string(&target)
                 .map_err(|err| format!("failed to read workspace file: {err}"))?;
             Ok(serde_json::json!({
@@ -4447,8 +4523,8 @@ async fn execute_local_agent_action(
                 content: Some(content.to_string()),
                 access_price_usdc: action.access_price_usdc.clone(),
             };
-            let request_path =
-                mesh_publication_requests_dir(app)?.join(format!("{}.json", request.request_id));
+            let request_path = mesh_publication_agent_requests_dir(app, &agent.agent_wallet)?
+                .join(format!("{}.json", request.request_id));
             fs::write(
                 &request_path,
                 serde_json::to_string_pretty(&request).map_err(|err| {
@@ -4473,22 +4549,13 @@ async fn run_local_agent_execution(
     mut transcript: Vec<LocalAgentConversationMessage>,
     heartbeat_mode: bool,
 ) -> Result<LocalAgentConversationResult, String> {
-    let documents = local_agent_documents(app, state, agent)?;
+    let documents = local_agent_documents(app, agent, heartbeat_mode)?;
     let client = HttpClient::builder()
         .timeout(Duration::from_secs(60))
         .build()
         .map_err(|err| format!("failed to build local agent http client: {err}"))?;
     let permissions = resolve_local_agent_permissions(app, agent);
-    let memory_context =
-        fetch_local_agent_memory_context(app, &client, agent, identity, &transcript, &permissions)
-            .await;
-    let prompt = build_local_agent_prompt(
-        agent,
-        &documents,
-        heartbeat_mode,
-        memory_context.as_deref(),
-        &permissions,
-    );
+    let prompt = build_local_agent_prompt(agent, &documents, heartbeat_mode, &permissions);
 
     for _round in 0..6 {
         let raw =
@@ -4577,7 +4644,7 @@ async fn request_local_agent_heartbeat(
         vec![LocalAgentConversationMessage {
             role: "user".to_string(),
             content: format!(
-                "Heartbeat tick. Read the local operating files and installed skills. If no action is needed, reply with {LOCAL_AGENT_HEARTBEAT_OK_TOKEN}. If you take a meaningful action, include one short report. If you discover a reusable local procedure, include one local skill."
+                "Heartbeat tick. Follow HEARTBEAT.md strictly. If nothing needs attention, reply {LOCAL_AGENT_HEARTBEAT_OK_TOKEN}. Only take a concrete next step when it is genuinely needed."
             ),
         }],
         true,
@@ -4727,6 +4794,12 @@ fn skill_state_is_agent_authored(value: &serde_json::Value, key: &str) -> bool {
     source == "generated" || source == "agent" || key.starts_with("agent:")
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct LocalWorkspaceSyncOutcome {
+    state_dirty: bool,
+    manifest_dirty: bool,
+}
+
 fn sync_local_agent_workspace_reports(
     app: &tauri::AppHandle,
     agent_wallet: &str,
@@ -4761,19 +4834,38 @@ fn sync_local_agent_workspace_reports(
         .filter(|value| {
             !matches!(
                 value.get("kind").and_then(|item| item.as_str()),
-                Some("runtime" | "heartbeat" | "skill")
+                Some("runtime" | "heartbeat" | "skill" | "economics")
             )
         })
         .collect::<Vec<_>>();
 
-    let mut next_reports = preserved_reports;
-    next_reports.extend(workspace_reports);
+    let mut combined_reports = preserved_reports;
+    combined_reports.extend(workspace_reports);
+
+    let mut seen = HashSet::new();
+    let mut deduped_reports = Vec::new();
+    for report in combined_reports.into_iter().rev() {
+        let key = report
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| serde_json::to_string(&report).unwrap_or_default());
+        if seen.insert(key) {
+            deduped_reports.push(report);
+        }
+    }
+    deduped_reports.reverse();
+    if deduped_reports.len() > 128 {
+        let start = deduped_reports.len().saturating_sub(128);
+        deduped_reports = deduped_reports[start..].to_vec();
+    }
 
     let current_reports = agent_object
         .get("reports")
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
-    let next_reports_value = serde_json::Value::Array(next_reports);
+    let next_reports_value = serde_json::Value::Array(deduped_reports);
     let changed = current_reports != next_reports_value;
     agent_object.insert("reports".to_string(), next_reports_value);
     Ok(changed)
@@ -4847,10 +4939,13 @@ fn sync_local_agent_workspace_state(
     app: &tauri::AppHandle,
     agent_wallet: &str,
     agent_object: &mut serde_json::Map<String, serde_json::Value>,
-) -> Result<bool, String> {
+) -> Result<LocalWorkspaceSyncOutcome, String> {
     let reports_dirty = sync_local_agent_workspace_reports(app, agent_wallet, agent_object)?;
     let skills_dirty = sync_local_agent_workspace_skills(app, agent_wallet, agent_object)?;
-    Ok(reports_dirty || skills_dirty)
+    Ok(LocalWorkspaceSyncOutcome {
+        state_dirty: reports_dirty || skills_dirty,
+        manifest_dirty: skills_dirty,
+    })
 }
 
 fn sync_all_local_agent_workspaces(
@@ -4876,7 +4971,7 @@ fn sync_all_local_agent_workspaces(
         else {
             continue;
         };
-        dirty |= sync_local_agent_workspace_state(app, &agent_wallet, object)?;
+        dirty |= sync_local_agent_workspace_state(app, &agent_wallet, object)?.state_dirty;
     }
 
     Ok(dirty)
@@ -4887,6 +4982,21 @@ fn queue_manifest_publication_request(
     agent_wallet: &str,
     reason: &str,
 ) -> Result<(), String> {
+    let requests_dir = mesh_publication_agent_requests_dir(app, agent_wallet)?;
+    let has_pending_manifest = fs::read_dir(&requests_dir)
+        .map_err(|err| format!("failed to read mesh publication request dir: {err}"))?
+        .filter_map(|entry| entry.ok().map(|value| value.path()))
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .filter_map(|path| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string())
+        })
+        .any(|value| value.starts_with("manifest-"));
+    if has_pending_manifest {
+        return Ok(());
+    }
+
     let request = MeshPublicationQueueRequest {
         request_id: format!("manifest-{}-{}", now_ms(), local_agent_slug(agent_wallet)),
         kind: MeshPublicationQueueKind::ManifestPublish,
@@ -4898,7 +5008,7 @@ fn queue_manifest_publication_request(
         content: None,
         access_price_usdc: None,
     };
-    let path = mesh_publication_requests_dir(app)?.join(format!("{}.json", request.request_id));
+    let path = requests_dir.join(format!("{}.json", request.request_id));
     fs::write(
         &path,
         serde_json::to_string_pretty(&request)
@@ -4976,9 +5086,9 @@ fn update_daemon_agent_state(
 
 async fn process_local_agent_heartbeats(app: &tauri::AppHandle) -> Result<(), String> {
     let local_state = load_persisted_local_state(app)?;
-    let Some(identity) = local_state.identity.as_ref() else {
+    if local_state.identity.is_none() {
         return Ok(());
-    };
+    }
 
     let daemon_snapshot = {
         let daemon_state = app.state::<LocalDaemonState>();
@@ -4989,6 +5099,29 @@ async fn process_local_agent_heartbeats(app: &tauri::AppHandle) -> Result<(), St
             .clone();
         snapshot
     };
+    let session_client = HttpClient::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("failed to build compose-key session client: {err}"))?;
+    let live_identity =
+        match refresh_local_identity_session(app, &local_state, &session_client).await {
+            Ok(identity) => identity,
+            Err(error) => {
+                let message = format!("compose-key session refresh failed: {error}");
+                for daemon_agent in daemon_snapshot.agents.values() {
+                    let agent_wallet = daemon_agent.agent_wallet.to_lowercase();
+                    let _ = update_daemon_agent_state(
+                        app,
+                        &agent_wallet,
+                        false,
+                        "stopped",
+                        Some(message.clone()),
+                    );
+                    let _ = append_daemon_log(app, &agent_wallet, &message);
+                }
+                return Ok(());
+            }
+        };
 
     for daemon_agent in daemon_snapshot.agents.values() {
         let agent_wallet = daemon_agent.agent_wallet.to_lowercase();
@@ -5019,7 +5152,7 @@ async fn process_local_agent_heartbeats(app: &tauri::AppHandle) -> Result<(), St
             continue;
         }
 
-        if !local_identity_session_active(identity) {
+        let Some(identity) = live_identity.as_ref() else {
             let message = "compose-key session inactive".to_string();
             let _ = update_daemon_agent_state(
                 app,
@@ -5030,7 +5163,7 @@ async fn process_local_agent_heartbeats(app: &tauri::AppHandle) -> Result<(), St
             );
             let _ = append_daemon_log(app, &agent_wallet, &format!("heartbeat skipped: {message}"));
             continue;
-        }
+        };
 
         match request_local_agent_heartbeat(app, &local_state, agent, identity).await {
             Ok(outcome) => {
@@ -5068,10 +5201,11 @@ async fn process_local_agent_heartbeats(app: &tauri::AppHandle) -> Result<(), St
                         Some(completed_at),
                     );
                     manifest_dirty |=
-                        sync_local_agent_workspace_state(app, &agent_wallet, agent_object)?;
+                        sync_local_agent_workspace_state(app, &agent_wallet, agent_object)?
+                            .manifest_dirty;
                 }
                 save_local_state_value(app, &state_value)?;
-                if manifest_dirty {
+                if manifest_dirty && local_state.settings.mesh_enabled && agent.network.enabled {
                     let _ = queue_manifest_publication_request(
                         app,
                         &agent_wallet,
@@ -5279,10 +5413,6 @@ fn daemon_update_permissions(
     let wallet =
         normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
     let normalized_policy = normalize_daemon_permission_policy(policy);
-    let effective_permissions = effective_permissions_from_desired(
-        &normalized_policy,
-        &query_os_permissions_snapshot(Some(&app)),
-    );
 
     with_daemon_state(&app, &state, |daemon| {
         let entry = daemon
@@ -5290,7 +5420,7 @@ fn daemon_update_permissions(
             .get_mut(&wallet)
             .ok_or_else(|| format!("agent not installed: {wallet}"))?;
         entry.desired_permissions = normalized_policy.clone();
-        entry.permissions = effective_permissions.clone();
+        entry.permissions = normalized_policy.clone();
         entry.updated_at = now_ms();
         Ok(entry.clone())
     })
@@ -5298,7 +5428,7 @@ fn daemon_update_permissions(
 
 #[tauri::command]
 fn daemon_get_agent_status(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     state: tauri::State<'_, LocalDaemonState>,
     agent_wallet: String,
 ) -> Result<Option<DaemonAgentState>, String> {
@@ -5317,10 +5447,7 @@ fn daemon_get_agent_status(
             &normalized_desired_permissions,
         );
         agent.desired_permissions = desired_permissions.clone();
-        agent.permissions = effective_permissions_from_desired(
-            &desired_permissions,
-            &query_os_permissions_snapshot(Some(&app)),
-        );
+        agent.permissions = normalize_daemon_permission_policy(desired_permissions);
         agent
     }))
 }
@@ -5368,12 +5495,19 @@ async fn daemon_run_local_agent_conversation(
     }
 
     let state = load_persisted_local_state(&app)?;
-    let identity = state
+    state
         .identity
         .as_ref()
         .ok_or_else(|| "Connect Local first so this device has a compose key.".to_string())?;
-    if !local_identity_session_active(identity) {
-        return Err("The compose-key session is inactive or out of budget.".to_string());
+    let session_client = HttpClient::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("failed to build compose-key session client: {err}"))?;
+    let identity = refresh_local_identity_session(&app, &state, &session_client)
+        .await?
+        .ok_or_else(|| "The compose-key session is inactive or expired.".to_string())?;
+    if identity.expires_at <= now_ms() {
+        return Err("The compose-key session is inactive or expired.".to_string());
     }
 
     let agent = state
@@ -5403,15 +5537,16 @@ async fn daemon_run_local_agent_conversation(
     });
 
     let result =
-        run_local_agent_execution(&app, &state, &agent, identity, transcript, false).await?;
+        run_local_agent_execution(&app, &state, &agent, &identity, transcript, false).await?;
 
     let mut manifest_dirty = false;
     let mut state_value = load_local_state_value(&app)?;
     if let Some(agent_object) = find_installed_agent_value_mut(&mut state_value, &wallet) {
-        manifest_dirty |= sync_local_agent_workspace_state(&app, &wallet, agent_object)?;
+        manifest_dirty |=
+            sync_local_agent_workspace_state(&app, &wallet, agent_object)?.manifest_dirty;
     }
     save_local_state_value(&app, &state_value)?;
-    if manifest_dirty {
+    if manifest_dirty && state.settings.mesh_enabled && agent.network.enabled {
         let _ = queue_manifest_publication_request(&app, &wallet, "local-agent-runtime-changed");
     }
 
@@ -6079,7 +6214,7 @@ async fn anchor_mesh_state_from_command(
                 "{}.json",
                 compose_hai_path(&hai_row.hai_id, last_update_number)
             ),
-            latest_alias: "manifest:latest".to_string(),
+            latest_alias: format!("compose-{}:latest", hai_row.hai_id),
             state_root_hash,
             pdp_piece_cid: last_piece_cid,
             pdp_anchored_at: last_anchored_at,
@@ -6124,9 +6259,12 @@ async fn anchor_mesh_state_from_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        compose_hai_path, derive_hai_id, normalize_daemon_state_for_local_mode,
-        normalize_local_state_json, normalize_state_root_hash_for_compare, same_state_root_hash,
-        DaemonAgentState, DaemonPermissionPolicy, DaemonStateFile,
+        apply_active_session_refresh, compose_hai_path, derive_hai_id,
+        derive_relay_listen_multiaddrs,
+        normalize_daemon_state_for_local_mode, normalize_local_state_json,
+        normalize_state_root_hash_for_compare, remote_action_path_allowed, same_state_root_hash,
+        ActiveSessionRefreshResponse, DaemonAgentState, DaemonPermissionPolicy, DaemonStateFile,
+        PersistedLocalIdentity,
     };
     use std::collections::HashMap;
 
@@ -6176,8 +6314,19 @@ mod tests {
     }
 
     #[test]
-    fn compose_hai_path_uses_plain_hai_value() {
+    fn compose_hai_path_uses_runtime_schema() {
         assert_eq!(compose_hai_path("abc123", 7), "compose-abc123-#7");
+    }
+
+    #[test]
+    fn remote_action_path_allowed_keeps_runtime_tooling_scoped_but_leaves_api_and_connector_open() {
+        assert!(remote_action_path_allowed("api", "/api/session"));
+        assert!(remote_action_path_allowed(
+            "connector",
+            "/registry/servers/search?q=mcp"
+        ));
+        assert!(remote_action_path_allowed("runtime", "/mesh/tools/execute"));
+        assert!(!remote_action_path_allowed("runtime", "/mesh/filecoin/pin"));
     }
 
     #[test]
@@ -6257,6 +6406,88 @@ mod tests {
         assert_eq!(agent.last_error, Some("boom".to_string()));
         assert_eq!(agent.updated_at, 1);
     }
+
+    #[test]
+    fn apply_active_session_refresh_updates_stale_local_identity_with_live_api_truth() {
+        let identity = PersistedLocalIdentity {
+            user_address: "0x2222222222222222222222222222222222222222".to_string(),
+            compose_key_token: "compose-stale".to_string(),
+            session_id: "stale-key".to_string(),
+            budget: "0".to_string(),
+            duration: 0,
+            chain_id: 43113,
+            expires_at: 1,
+            device_id: "device-12345678".to_string(),
+        };
+        let response = ActiveSessionRefreshResponse {
+            has_session: true,
+            key_id: "live-key".to_string(),
+            token: "compose-live".to_string(),
+            budget_remaining: "450000".to_string(),
+            expires_at: 1_700_000_120_000,
+            chain_id: 8453,
+            ..ActiveSessionRefreshResponse::default()
+        };
+
+        let refreshed =
+            apply_active_session_refresh(&identity, &response, 1_700_000_000_000).expect("session");
+
+        assert_eq!(refreshed.compose_key_token, "compose-live");
+        assert_eq!(refreshed.session_id, "live-key");
+        assert_eq!(refreshed.budget, "450000");
+        assert_eq!(refreshed.duration, 120_000);
+        assert_eq!(refreshed.chain_id, 8453);
+        assert_eq!(refreshed.expires_at, 1_700_000_120_000);
+        assert_eq!(refreshed.user_address, identity.user_address);
+        assert_eq!(refreshed.device_id, identity.device_id);
+    }
+
+    #[test]
+    fn apply_active_session_refresh_clears_identity_when_api_reports_no_session() {
+        let identity = PersistedLocalIdentity {
+            user_address: "0x2222222222222222222222222222222222222222".to_string(),
+            compose_key_token: "compose-live".to_string(),
+            session_id: "live-key".to_string(),
+            budget: "450000".to_string(),
+            duration: 120_000,
+            chain_id: 43113,
+            expires_at: 1_700_000_120_000,
+            device_id: "device-12345678".to_string(),
+        };
+
+        let refreshed = apply_active_session_refresh(
+            &identity,
+            &ActiveSessionRefreshResponse {
+                has_session: false,
+                ..ActiveSessionRefreshResponse::default()
+            },
+            1_700_000_000_000,
+        );
+
+        assert!(refreshed.is_none());
+    }
+
+    #[test]
+    fn derive_relay_listen_multiaddrs_appends_circuit_addresses_for_anchorable_relays() {
+        let relay_multiaddrs = vec![
+            "/dns4/relay.do.lon1.compose.market/tcp/4002/ws/p2p/12D3KooWQzwPXPUEMPU1Upbo6trSiEo82rhtRpTJGr7SzP2gD7jb".to_string(),
+            "/ip4/206.189.203.231/tcp/4001/p2p/12D3KooWPRcHjairRTQuXQdtUux5326pbuWyxsBrrDEzgLdbRKyh".to_string(),
+            "invalid".to_string(),
+        ];
+
+        let derived = derive_relay_listen_multiaddrs(&relay_multiaddrs)
+            .into_iter()
+            .map(|addr| addr.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            derived,
+            vec![
+                "/dns4/relay.do.lon1.compose.market/tcp/4002/ws/p2p/12D3KooWQzwPXPUEMPU1Upbo6trSiEo82rhtRpTJGr7SzP2gD7jb/p2p-circuit".to_string(),
+                "/ip4/206.189.203.231/tcp/4001/p2p/12D3KooWPRcHjairRTQuXQdtUux5326pbuWyxsBrrDEzgLdbRKyh/p2p-circuit".to_string(),
+            ]
+        );
+    }
 }
 
 async fn publish_mesh_manifest_from_command(
@@ -6301,7 +6532,20 @@ fn write_mesh_publication_result(
     app: &tauri::AppHandle,
     result: &MeshPublicationQueueResult,
 ) -> Result<(), String> {
-    let file = mesh_publication_results_dir(app)?.join(format!("{}.json", result.request_id));
+    let dir = result
+        .agent_wallet
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| mesh_publication_agent_results_dir(app, value))
+        .transpose()?
+        .unwrap_or(mesh_publication_results_dir(app)?);
+    let stem = result
+        .path
+        .as_deref()
+        .map(|value| value.trim().replace('/', "_"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| result.request_id.clone());
+    let file = dir.join(format!("{stem}.json"));
     let serialized = serde_json::to_string_pretty(result)
         .map_err(|err| format!("failed to serialize mesh publication result: {err}"))?;
     fs::write(file, serialized)
@@ -6323,7 +6567,7 @@ async fn process_mesh_learning_request(
         );
     }
 
-    let ctx = load_mesh_pub_ctx(app, &requested_wallet)?;
+    let ctx = load_mesh_pub_ctx(app, &requested_wallet).await?;
     let runtime_status = ensure_local_runtime_host(app, runtime_host)?;
     let auth_token = current_runtime_host_auth_token(runtime_host)?;
     let hai_row = register_hai_via_local_runtime(
@@ -6384,6 +6628,7 @@ async fn process_mesh_learning_request(
 
     Ok(MeshPublicationQueueResult {
         request_id: request.request_id.clone(),
+        agent_wallet: Some(request.agent_wallet.clone()),
         kind: Some(MeshPublicationQueueKind::LearningPin),
         success: true,
         error: None,
@@ -6429,7 +6674,7 @@ async fn process_mesh_publication_request(
                 }
 
                 let (mut manifest, anchor_request) =
-                    build_current_mesh_publication(app, &requested_wallet, &live_status)?;
+                    build_current_mesh_publication(app, &requested_wallet, &live_status).await?;
                 let anchor = anchor_mesh_state_from_command(
                     app,
                     mesh_state.inner(),
@@ -6450,6 +6695,7 @@ async fn process_mesh_publication_request(
 
                 Ok(MeshPublicationQueueResult {
                     request_id: request.request_id.clone(),
+                    agent_wallet: Some(request.agent_wallet.clone()),
                     kind: Some(MeshPublicationQueueKind::ManifestPublish),
                     success: true,
                     error: None,
@@ -6485,6 +6731,7 @@ async fn process_mesh_publication_request(
         Ok(result) => result,
         Err(error) => MeshPublicationQueueResult {
             request_id: request.request_id,
+            agent_wallet: Some(request.agent_wallet),
             kind: Some(request.kind),
             success: false,
             error: Some(error),
@@ -6507,11 +6754,8 @@ async fn process_mesh_publication_request(
 
 async fn process_pending_mesh_publication_requests(app: &tauri::AppHandle) -> Result<(), String> {
     let requests_dir = mesh_publication_requests_dir(app)?;
-    let mut files = fs::read_dir(&requests_dir)
-        .map_err(|err| format!("failed to read mesh publication request dir: {err}"))?
-        .filter_map(|entry| entry.ok().map(|value| value.path()))
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
-        .collect::<Vec<_>>();
+    let mut files = Vec::new();
+    collect_json_files_recursive(&requests_dir, &mut files)?;
     files.sort();
 
     for path in files {
@@ -6545,6 +6789,7 @@ async fn process_pending_mesh_publication_requests(app: &tauri::AppHandle) -> Re
                     app,
                     &MeshPublicationQueueResult {
                         request_id: fallback_id,
+                        agent_wallet: None,
                         kind: None,
                         success: false,
                         error: Some(format!("Invalid mesh publication request: {error}")),
