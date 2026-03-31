@@ -27,6 +27,15 @@ const DEFAULT_FALLBACK_MULTIADDRS = [
   "/ip4/134.199.145.253/tcp/4001/p2p/12D3KooWNTpWNjwgc4EBGor1d4BgrGmmuUxVaeEGdNmFMCnws6dG",
   "/ip4/134.199.145.253/tcp/4002/ws/p2p/12D3KooWNTpWNjwgc4EBGor1d4BgrGmmuUxVaeEGdNmFMCnws6dG",
 ];
+const FLEET_ANCHORS_BY_PEER_ID = new Map(
+  __MESH_FLEET_NODES__.map((node) => [
+    node.peerId,
+    {
+      provider: parseProvider(node.provider),
+      region: node.region.toLowerCase(),
+    },
+  ]),
+);
 
 export interface MeshBootstrapResolution {
   bootstrapDnsRoots: string[];
@@ -208,6 +217,17 @@ function anchorFromHost(host: string | null): Pick<MeshBootstrapAnchor, "host" |
   };
 }
 
+function anchorFromPeerId(peerId: string | null): Pick<MeshBootstrapAnchor, "host" | "region" | "provider"> {
+  if (!peerId) {
+    return { host: null, region: null, provider: null };
+  }
+
+  const anchor = FLEET_ANCHORS_BY_PEER_ID.get(peerId);
+  return anchor
+    ? { host: null, region: anchor.region, provider: anchor.provider }
+    : { host: null, region: null, provider: null };
+}
+
 function compareNullable(left: string | null, right: string | null): number {
   return (left || "").localeCompare(right || "");
 }
@@ -332,9 +352,13 @@ export function deriveBootstrapAnchors(
     if (!peerId) {
       continue;
     }
+    const hostAnchor = anchorFromHost(parsed.host);
+    const peerAnchor = anchorFromPeerId(peerId);
     anchorsByPeerId[peerId] = {
       peerId,
-      ...anchorFromHost(parsed.host),
+      host: hostAnchor.host ?? peerAnchor.host,
+      region: hostAnchor.region ?? peerAnchor.region,
+      provider: hostAnchor.provider ?? peerAnchor.provider,
     };
   }
 

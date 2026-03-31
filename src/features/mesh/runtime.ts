@@ -227,7 +227,7 @@ export function mergeMeshStatusIntoState(
         return resetAgentMeshState(agent, updatedAt);
       }
 
-      const haiId = publishedAgents.get(agent.agentWallet);
+      const haiId = publishedAgents.get(agent.agentWallet.toLowerCase());
       if (!haiId || status.deviceId !== deviceId) {
         return resetAgentMeshState(agent, updatedAt);
       }
