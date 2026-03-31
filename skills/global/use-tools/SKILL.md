@@ -12,5 +12,6 @@ Use these distinctions consistently:
 - account: the user's authenticated identity for a provider or channel
 
 Prefer Compose-managed surfaces over ad hoc flows.
+For memory, use the runtime tool surface, not local files.
 
 Read the subskills in this folder before taking tool actions.

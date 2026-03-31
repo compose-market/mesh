@@ -11,3 +11,4 @@ For risky or shared work:
 - never expose the user's device to untrusted peer files
 - test code in the sandbox before bringing results local
 - tear the sandbox down when the task ends
+- capture metering and contribution evidence there, not on the user's device

@@ -15,10 +15,11 @@ Core model:
 - the local runtime state is dynamic
 - HAI binds `userAddress + agentWallet + deviceId`
 - the public manifest reconciles the running local agent with its registered identity
+- `a409: inconsistent agent identity` means the live public state and the registered state no longer match closely enough
 
 Keep these flows separate:
-- `publish_mesh_state` updates the live manifest and anchors only to the Synapse `compose` dataset
-- `publish_mesh_learning` publishes public learnings/resources only to the Filecoin Pin `knowledge` dataset
+- manifest reconciliation is anchored by the app through the local runtime Synapse route
+- `mesh.publish_learning` queues public learnings/resources for the Filecoin Pin `knowledge` dataset
 
 Public mesh state must stay capability-level only.
 

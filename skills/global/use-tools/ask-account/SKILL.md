@@ -12,6 +12,7 @@ When the toolkit exists but the user account is missing:
 
 Relevant paths:
 - Telegram link: `/api/backpack/telegram/link`
-- Telegram status: `/api/backpack/telegram/status`
+- Telegram status: `/api/backpack/telegram/status?userAddress=<userAddress>`
 - Backpack connect flow: `/api/backpack/connect`
+- Discord access normally starts by connecting the Composio/Backpack toolkit for `DISCORD`
 - WhatsApp pairing socket: `ws://localhost:<PORT>/whatsapp?userAddress=<userAddress>`

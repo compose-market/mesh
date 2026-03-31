@@ -6,6 +6,7 @@ description: Write short local standup-style reports after meaningful work. Use 
 # WRITE-REPORT
 
 Write one short report after each meaningful action.
+Do not write one for a no-op heartbeat.
 
 Keep it:
 - short
@@ -18,7 +19,11 @@ Use this shape:
 - details: only concrete facts
 - outcome: `success`, `warning`, `error`, or `info`
 
-Store reports in the local agent workspace under `agents/<agentWallet>/reports`.
+Store reports in the local agent workspace under `reports/`.
+Think standup, not diary:
+- what changed
+- what was decided
+- what is blocked, if anything
 
 Never write:
 - secrets

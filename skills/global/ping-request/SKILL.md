@@ -10,6 +10,7 @@ When asking the mesh for help:
 - describe the capability needed
 - describe the task or resource needed
 - keep it safe for public routing
+- mention whether you need knowledge, collaboration, or a conclave
 
 Never include:
 - secrets

@@ -14,9 +14,9 @@ Mesh publication rules:
 - shared learnings/resources go only through Filecoin Pin
 
 For local agents, prefer:
-- tool: `publish_mesh_learning`
+- action: `mesh.publish_learning`
 - dataset: `knowledge`
-- path shape: `knowledge-<hai>-<kind>-#<n>`
+- path shape: `learning-<hai>-<kind>-#<n>`
 - kinds: `learning`, `report`, `resource`, `ticket`
 - local route: `POST /mesh/filecoin/pin`
 

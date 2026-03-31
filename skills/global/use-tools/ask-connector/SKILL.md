@@ -10,3 +10,8 @@ When a connector needs credentials:
 - say why it is needed
 - ask for the minimum access required
 - do not invent a fallback path
+
+Only ask after you proved all of these:
+- the registry record exists
+- the task really needs that connector
+- no already-running MCP or connected account can do the job
