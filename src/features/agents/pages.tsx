@@ -81,7 +81,21 @@ function formatChatTimestamp(value: number): string {
 }
 
 function formatMicros(value: number): string {
-  return `$${(value / 1_000_000).toFixed(2)}`;
+  const amount = value / 1_000_000;
+  if (amount === 0) {
+    return "$0.00";
+  }
+  if (Math.abs(amount) < 0.01) {
+    return `$${amount.toFixed(6)}`;
+  }
+  if (Math.abs(amount) < 1) {
+    return `$${amount.toFixed(4)}`;
+  }
+  return `$${amount.toFixed(2)}`;
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
 function shortWallet(value: string): string {
@@ -407,6 +421,7 @@ export function AgentDetailPage({
   const [chatError, setChatError] = useState<string | null>(null);
   const economics = useMemo(() => summarizeAgentReportEconomics(agent.reports), [agent.reports]);
   const visiblePeers = useMemo(() => meshPeers.filter((peer) => peer.agentWallet !== agent.agentWallet), [agent.agentWallet, meshPeers]);
+  const manifest = agent.network.manifest;
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const identity = state.identity;
 
@@ -643,6 +658,18 @@ export function AgentDetailPage({
               <span className="jarvis-field__label">Network</span>
               <span className="jarvis-field__value">
                 {agent.permissions.network === "allow" ? agent.network.status : "denied"}
+              </span>
+            </div>
+            <div className="jarvis-field">
+              <span className="jarvis-field__label">Reputation</span>
+              <span className="jarvis-field__value" data-tone="green">
+                {formatPercent(manifest?.reputationScore ?? 0)}
+              </span>
+            </div>
+            <div className="jarvis-field">
+              <span className="jarvis-field__label">Conclaves</span>
+              <span className="jarvis-field__value" data-tone="cyan">
+                {`${manifest?.successfulConclaves ?? 0}/${manifest?.totalConclaves ?? 0}`}
               </span>
             </div>
           </div>

@@ -46,7 +46,10 @@ function normalizeList(values: string[]): string[] {
 }
 
 function latestReportLine(agent: InstalledAgent): string {
-  const latest = [...agent.reports].sort((left, right) => right.createdAt - left.createdAt)[0];
+  const latest = [...agent.reports]
+    .filter((report) => report.kind !== "economics")
+    .sort((left, right) => right.createdAt - left.createdAt)[0]
+    || [...agent.reports].sort((left, right) => right.createdAt - left.createdAt)[0];
   if (!latest) {
     return agent.running ? "Running locally" : "Installed locally";
   }
@@ -244,19 +247,35 @@ export function summarizeAgentReportEconomics(reports: AgentTaskReport[]): {
   revenueMicros: number;
   costMicros: number;
   netMicros: number;
+  inferenceCostMicros: number;
+  heartbeatCostMicros: number;
 } {
-  return summarizeAgentEconomics(
-    reports.flatMap((report) => {
-      const activities: AgentEconomicsActivity[] = [];
-      if (typeof report.costMicros === "number" && report.costMicros > 0) {
-        activities.push({ type: "session-spend", amountMicros: report.costMicros });
+  let revenueMicros = 0;
+  let costMicros = 0;
+  let inferenceCostMicros = 0;
+  let heartbeatCostMicros = 0;
+
+  for (const report of reports) {
+    if (typeof report.costMicros === "number" && report.costMicros > 0) {
+      costMicros += report.costMicros;
+      if (report.economicsCategory === "heartbeat" || report.kind === "heartbeat") {
+        heartbeatCostMicros += report.costMicros;
+      } else {
+        inferenceCostMicros += report.costMicros;
       }
-      if (typeof report.revenueMicros === "number" && report.revenueMicros > 0) {
-        activities.push({ type: "peer-revenue", amountMicros: report.revenueMicros });
-      }
-      return activities;
-    }),
-  );
+    }
+    if (typeof report.revenueMicros === "number" && report.revenueMicros > 0) {
+      revenueMicros += report.revenueMicros;
+    }
+  }
+
+  return {
+    revenueMicros,
+    costMicros,
+    netMicros: revenueMicros - costMicros,
+    inferenceCostMicros,
+    heartbeatCostMicros,
+  };
 }
 
 export function buildMeshAgentCard(agent: InstalledAgent): MeshAgentCard {
