@@ -28,12 +28,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 25.9.0
+          package-manager-cache: false
+
+      - name: Update npm
+        run: npm install -g npm@11.12.1
 
       - name: Resolve progressive release version
         id: version
@@ -138,7 +142,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -161,10 +165,14 @@ jobs:
           workspaces: tauri
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 25.9.0
           cache: npm
+          package-manager-cache: false
+
+      - name: Update npm
+        run: npm install -g npm@11.12.1
 
       - name: Install npm dependencies
         run: npm ci
