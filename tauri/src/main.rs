@@ -14,7 +14,7 @@ use libp2p::{
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
-use reqwest::Client as HttpClient;
+use reqwest::{Client as HttpClient, Url as HttpUrl};
 use sha2::{Digest, Sha256};
 use sha3::Keccak256;
 use std::collections::{HashMap, HashSet};
@@ -145,6 +145,11 @@ struct MeshRuntimeState {
     command_tx: Mutex<Option<mpsc::UnboundedSender<MeshLoopCommand>>>,
 }
 
+#[derive(Default)]
+struct SessionBudgetTracker {
+    last_budget_used: Mutex<Option<u64>>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MeshAgentCard {
@@ -245,14 +250,6 @@ struct MeshStateSnapshotManifest {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MeshStateSnapshotReceipts {
-    latest_conclave_ids: Vec<String>,
-    latest_hypercert_ids: Vec<String>,
-    latest_proof_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct MeshStateSnapshot {
     version: u64,
     created_at: u64,
@@ -263,7 +260,6 @@ struct MeshStateSnapshot {
     peer_id: String,
     runtime: MeshStateSnapshotRuntime,
     manifest: MeshStateSnapshotManifest,
-    receipts: MeshStateSnapshotReceipts,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -281,12 +277,6 @@ struct MeshStateSnapshotRequest {
     capabilities: Vec<String>,
     mcp_servers: Vec<String>,
     a2a_endpoints: Vec<String>,
-    #[serde(default)]
-    latest_conclave_ids: Vec<String>,
-    #[serde(default)]
-    latest_hypercert_ids: Vec<String>,
-    #[serde(default)]
-    latest_proof_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -370,6 +360,14 @@ struct MeshStateAnchorRuntimeResponse {
     payer_address: String,
     session_key_expires_at: u64,
     source: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshReputationRuntimeResponse {
+    reputation_score: f64,
+    total_conclaves: u64,
+    successful_conclaves: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -463,6 +461,7 @@ struct PersistedLocalIdentity {
     compose_key_token: String,
     session_id: String,
     budget: String,
+    budget_used: String,
     duration: u64,
     chain_id: u32,
     expires_at: u64,
@@ -476,6 +475,7 @@ struct ActiveSessionRefreshResponse {
     key_id: String,
     token: String,
     budget_remaining: String,
+    budget_used: String,
     expires_at: u64,
     chain_id: u32,
 }
@@ -849,6 +849,42 @@ fn normalize_device_id(value: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+fn normalize_mesh_api_url_with_loopback_policy(value: &str, allow_loopback: bool) -> String {
+    const DEFAULT_API_URL: &str = "https://api.compose.market";
+
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return DEFAULT_API_URL.to_string();
+    }
+
+    let Ok(parsed) = HttpUrl::parse(trimmed) else {
+        return DEFAULT_API_URL.to_string();
+    };
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return DEFAULT_API_URL.to_string();
+    }
+
+    let is_loopback_host = parsed
+        .host_str()
+        .map(|host| {
+            matches!(
+                host.to_ascii_lowercase().as_str(),
+                "localhost" | "127.0.0.1" | "0.0.0.0" | "::1"
+            )
+        })
+        .unwrap_or(false);
+    if is_loopback_host && !allow_loopback {
+        return DEFAULT_API_URL.to_string();
+    }
+
+    parsed.to_string().trim_end_matches('/').to_string()
+}
+
+fn normalize_mesh_api_url(value: &str) -> String {
+    normalize_mesh_api_url_with_loopback_policy(value, cfg!(debug_assertions))
+}
+
 fn normalize_capability(raw: &str) -> Option<String> {
     let trimmed = raw.trim().to_lowercase();
     if trimmed.is_empty() || trimmed.len() > 96 {
@@ -981,10 +1017,6 @@ fn hex_encode(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{:02x}", byte))
         .collect::<String>()
-}
-
-fn normalize_snapshot_receipt_ids(values: &[String]) -> Vec<String> {
-    normalize_manifest_atoms(values, 64, 128)
 }
 
 fn encode_hai_base36(mut value: u64) -> String {
@@ -1251,6 +1283,15 @@ async fn build_current_mesh_publication(
         .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
     let agent = ctx.agent.clone();
     let workspace_state = load_manifest_workspace_state(app, &agent)?;
+    let runtime_host = app.state::<LocalRuntimeHostState>();
+    let runtime_status = ensure_local_runtime_host(app, runtime_host.inner())?;
+    let auth_token = current_runtime_host_auth_token(runtime_host.inner())?;
+    let reputation = fetch_mesh_reputation_via_local_runtime(
+        &runtime_status.base_url,
+        &auth_token,
+        normalized_agent_wallet.as_str(),
+    )
+    .await?;
 
     let previous_manifest = agent.network.manifest.clone();
     let existing_card = agent.network.public_card.clone();
@@ -1365,18 +1406,9 @@ async fn build_current_mesh_publication(
             .or_else(|| {
                 derive_relay_peer_id_from_listen_multiaddrs(&live_status.listen_multiaddrs)
             }),
-        reputation_score: previous_manifest
-            .as_ref()
-            .map(|value| value.reputation_score)
-            .unwrap_or(0.0),
-        total_conclaves: previous_manifest
-            .as_ref()
-            .map(|value| value.total_conclaves)
-            .unwrap_or(0),
-        successful_conclaves: previous_manifest
-            .as_ref()
-            .map(|value| value.successful_conclaves)
-            .unwrap_or(0),
+        reputation_score: reputation.reputation_score,
+        total_conclaves: reputation.total_conclaves,
+        successful_conclaves: reputation.successful_conclaves,
         signed_at: 0,
         signature: String::new(),
     };
@@ -1395,9 +1427,6 @@ async fn build_current_mesh_publication(
         capabilities,
         mcp_servers: manifest.mcp_servers.clone(),
         a2a_endpoints,
-        latest_conclave_ids: Vec::new(),
-        latest_hypercert_ids: Vec::new(),
-        latest_proof_ids: Vec::new(),
     };
 
     let anchor_request = MeshStateAnchorCommandRequest {
@@ -1465,15 +1494,6 @@ fn normalize_mesh_state_snapshot_request(
             capabilities: normalize_manifest_atoms(&request.snapshot.capabilities, 128, 96),
             mcp_servers: normalize_manifest_atoms(&request.snapshot.mcp_servers, 64, 128),
             a2a_endpoints: normalize_manifest_urls(&request.snapshot.a2a_endpoints, 64),
-        },
-        receipts: MeshStateSnapshotReceipts {
-            latest_conclave_ids: normalize_snapshot_receipt_ids(
-                &request.snapshot.latest_conclave_ids,
-            ),
-            latest_hypercert_ids: normalize_snapshot_receipt_ids(
-                &request.snapshot.latest_hypercert_ids,
-            ),
-            latest_proof_ids: normalize_snapshot_receipt_ids(&request.snapshot.latest_proof_ids),
         },
     })
 }
@@ -1824,6 +1844,20 @@ fn normalize_local_state_json(raw: &str) -> Result<String, String> {
     let Some(root) = state.as_object_mut() else {
         return Err("local state root must be a JSON object".to_string());
     };
+
+    let settings = root
+        .entry("settings".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(settings_object) = settings.as_object_mut() {
+        let api_url = settings_object
+            .get("apiUrl")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        settings_object.insert(
+            "apiUrl".to_string(),
+            serde_json::Value::String(normalize_mesh_api_url(api_url)),
+        );
+    }
 
     let identity = root
         .get("identity")
@@ -3514,6 +3548,18 @@ struct LocalAgentConversationResult {
     raw: String,
 }
 
+#[derive(Debug, Clone)]
+struct LocalAgentTurnCharge {
+    cost_micros: u64,
+    tx_hash: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalAgentModelTurn {
+    raw: String,
+    charge: Option<LocalAgentTurnCharge>,
+}
+
 fn local_agent_slug(value: &str) -> String {
     let mut output = String::new();
     let mut last_dash = false;
@@ -3540,6 +3586,213 @@ fn local_agent_authored_skill_id(name: &str) -> String {
 
 fn local_agent_reports_dir(app: &tauri::AppHandle, agent_wallet: &str) -> Result<PathBuf, String> {
     Ok(daemon_agent_workspace_path(app, agent_wallet)?.join("reports"))
+}
+
+fn format_usdc_micros(value: u64) -> String {
+    format!("${}.{:06}", value / 1_000_000, value % 1_000_000)
+}
+
+fn json_u64(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|item| u64::try_from(item).ok()))
+        .or_else(|| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .and_then(|item| item.parse::<u64>().ok())
+        })
+}
+
+fn persist_local_agent_workspace_report(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+    report: &serde_json::Value,
+    fallback_kind: &str,
+) -> Result<(), String> {
+    let Some(object) = report.as_object() else {
+        return Ok(());
+    };
+
+    let title = object
+        .get("title")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "agent report title is required".to_string())?;
+    let summary = object
+        .get("summary")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "agent report summary is required".to_string())?;
+    let kind = object
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_kind);
+    let outcome = object
+        .get("outcome")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| matches!(*value, "success" | "warning" | "error" | "info"))
+        .unwrap_or("info");
+    let created_at = object
+        .get("createdAt")
+        .and_then(json_u64)
+        .unwrap_or_else(now_ms);
+    let id = object
+        .get("id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| format!("{kind}-{created_at}"));
+
+    let mut normalized = serde_json::Map::new();
+    normalized.insert("id".to_string(), serde_json::Value::String(id.clone()));
+    normalized.insert(
+        "kind".to_string(),
+        serde_json::Value::String(kind.to_string()),
+    );
+    normalized.insert(
+        "title".to_string(),
+        serde_json::Value::String(title.to_string()),
+    );
+    normalized.insert(
+        "summary".to_string(),
+        serde_json::Value::String(summary.to_string()),
+    );
+    normalized.insert(
+        "outcome".to_string(),
+        serde_json::Value::String(outcome.to_string()),
+    );
+    normalized.insert("createdAt".to_string(), serde_json::Value::from(created_at));
+
+    if let Some(details) = object
+        .get("details")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        normalized.insert(
+            "details".to_string(),
+            serde_json::Value::String(details.to_string()),
+        );
+    }
+    if let Some(cost_micros) = object.get("costMicros").and_then(json_u64) {
+        normalized.insert(
+            "costMicros".to_string(),
+            serde_json::Value::from(cost_micros),
+        );
+    }
+    if let Some(revenue_micros) = object.get("revenueMicros").and_then(json_u64) {
+        normalized.insert(
+            "revenueMicros".to_string(),
+            serde_json::Value::from(revenue_micros),
+        );
+    }
+    if let Some(category) = object
+        .get("economicsCategory")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| matches!(*value, "inference" | "heartbeat" | "peer-revenue"))
+    {
+        normalized.insert(
+            "economicsCategory".to_string(),
+            serde_json::Value::String(category.to_string()),
+        );
+    }
+    if let Some(tx_hash) = object
+        .get("txHash")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        normalized.insert(
+            "txHash".to_string(),
+            serde_json::Value::String(tx_hash.to_string()),
+        );
+    }
+
+    let reports_dir = local_agent_reports_dir(app, agent_wallet)?;
+    fs::create_dir_all(&reports_dir)
+        .map_err(|err| format!("failed to create reports dir: {err}"))?;
+    let file_name = format!("{}-{}.json", created_at, local_agent_slug(id.as_str()));
+    let serialized = serde_json::to_string_pretty(&serde_json::Value::Object(normalized))
+        .map_err(|err| format!("failed to encode agent report: {err}"))?;
+    write_string_atomically(&reports_dir.join(file_name), &serialized, "agent report")
+}
+
+fn build_local_agent_economics_report(
+    turn_charges: &[LocalAgentTurnCharge],
+    heartbeat_mode: bool,
+) -> Option<serde_json::Value> {
+    let total_cost = turn_charges
+        .iter()
+        .fold(0_u64, |sum, charge| sum.saturating_add(charge.cost_micros));
+    if total_cost == 0 {
+        return None;
+    }
+
+    let mut tx_hashes = turn_charges
+        .iter()
+        .filter_map(|charge| charge.tx_hash.clone())
+        .collect::<Vec<_>>();
+    tx_hashes.sort();
+    tx_hashes.dedup();
+
+    let turn_count = turn_charges.len();
+    let details = (!tx_hashes.is_empty()).then(|| {
+        format!(
+            "Settled across {turn_count} model turn{}.\n\nTransaction hashes:\n{}",
+            if turn_count == 1 { "" } else { "s" },
+            tx_hashes.join("\n")
+        )
+    });
+
+    Some(serde_json::json!({
+        "kind": "economics",
+        "title": if heartbeat_mode { "Heartbeat spend settled" } else { "Inference spend settled" },
+        "summary": format!(
+            "{} paid across {} model turn{}.",
+            format_usdc_micros(total_cost),
+            turn_count,
+            if turn_count == 1 { "" } else { "s" }
+        ),
+        "details": details,
+        "outcome": "info",
+        "costMicros": total_cost,
+        "economicsCategory": if heartbeat_mode { "heartbeat" } else { "inference" },
+        "txHash": tx_hashes.last().cloned(),
+    }))
+}
+
+fn persist_local_agent_execution_reports(
+    app: &tauri::AppHandle,
+    agent_wallet: &str,
+    report: Option<&serde_json::Value>,
+    turn_charges: &[LocalAgentTurnCharge],
+    heartbeat_mode: bool,
+) -> Result<(), String> {
+    if let Some(value) = report {
+        persist_local_agent_workspace_report(
+            app,
+            agent_wallet,
+            value,
+            if heartbeat_mode {
+                "heartbeat"
+            } else {
+                "runtime"
+            },
+        )?;
+    }
+    if let Some(economics) = build_local_agent_economics_report(turn_charges, heartbeat_mode) {
+        persist_local_agent_workspace_report(app, agent_wallet, &economics, "economics")?;
+    }
+    Ok(())
 }
 
 fn append_daemon_log(
@@ -3751,6 +4004,8 @@ fn apply_active_session_refresh(
     let session_id = response.key_id.trim();
     let compose_key_token = response.token.trim();
     let budget = normalize_session_budget_value(&response.budget_remaining)?;
+    let budget_used = normalize_session_budget_value(&response.budget_used)
+        .unwrap_or_else(|| identity.budget_used.clone());
     if session_id.is_empty() || compose_key_token.is_empty() || response.expires_at <= now {
         return None;
     }
@@ -3760,6 +4015,7 @@ fn apply_active_session_refresh(
         compose_key_token: compose_key_token.to_string(),
         session_id: session_id.to_string(),
         budget,
+        budget_used,
         duration: response.expires_at.saturating_sub(now),
         chain_id: if response.chain_id > 0 {
             response.chain_id
@@ -3780,6 +4036,7 @@ fn same_local_identity_session(
             current.compose_key_token == next.compose_key_token
                 && current.session_id == next.session_id
                 && current.budget == next.budget
+                && current.budget_used == next.budget_used
                 && current.duration == next.duration
                 && current.chain_id == next.chain_id
                 && current.expires_at == next.expires_at
@@ -3788,6 +4045,7 @@ fn same_local_identity_session(
             current.compose_key_token.trim().is_empty()
                 && current.session_id.trim().is_empty()
                 && current.budget.trim() == "0"
+                && current.budget_used.trim() == "0"
                 && current.duration == 0
                 && current.expires_at == 0
         }
@@ -3849,6 +4107,10 @@ fn persist_local_identity_session(
                 serde_json::Value::String(next.budget.clone()),
             );
             identity_object.insert(
+                "budgetUsed".to_string(),
+                serde_json::Value::String(next.budget_used.clone()),
+            );
+            identity_object.insert(
                 "duration".to_string(),
                 serde_json::Value::from(next.duration),
             );
@@ -3876,6 +4138,10 @@ fn persist_local_identity_session(
             );
             identity_object.insert(
                 "budget".to_string(),
+                serde_json::Value::String("0".to_string()),
+            );
+            identity_object.insert(
+                "budgetUsed".to_string(),
                 serde_json::Value::String("0".to_string()),
             );
             identity_object.insert("duration".to_string(), serde_json::Value::from(0_u64));
@@ -4202,6 +4468,57 @@ async fn decode_remote_json(
         .map_err(|err| format!("failed to decode {fallback_label} response: {err}"))
 }
 
+fn read_response_header(response: &reqwest::Response, name: &str) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn local_agent_turn_charge_from_response(
+    app: &tauri::AppHandle,
+    identity: &PersistedLocalIdentity,
+    response: &reqwest::Response,
+) -> Option<LocalAgentTurnCharge> {
+    let current_budget_used = read_response_header(response, "x-session-budget-used")
+        .and_then(|value| value.parse::<u64>().ok());
+    let explicit_cost = read_response_header(response, "x-compose-key-final-amount-wei")
+        .and_then(|value| value.parse::<u64>().ok());
+    let cost_micros = if let Some(value) = explicit_cost {
+        if let Some(current_budget_used) = current_budget_used {
+            if let Ok(mut tracker) = app.state::<SessionBudgetTracker>().last_budget_used.lock() {
+                *tracker = Some(current_budget_used);
+            }
+        }
+        value
+    } else {
+        let current_budget_used = current_budget_used?;
+        let tracker_state = app.state::<SessionBudgetTracker>();
+        let mut tracker = tracker_state.last_budget_used.lock().ok()?;
+        let baseline = tracker.unwrap_or_else(|| {
+            identity
+                .budget_used
+                .trim()
+                .parse::<u64>()
+                .unwrap_or(current_budget_used)
+        });
+        let delta = current_budget_used.saturating_sub(baseline);
+        *tracker = Some(current_budget_used);
+        delta
+    };
+    if cost_micros == 0 {
+        return None;
+    }
+    Some(LocalAgentTurnCharge {
+        cost_micros,
+        tx_hash: read_response_header(response, "x-compose-key-tx-hash")
+            .or_else(|| read_response_header(response, "x-transaction-hash")),
+    })
+}
+
 fn normalize_remote_action_service(value: Option<&str>) -> Result<&'static str, String> {
     match value.map(|item| item.trim().to_lowercase()) {
         Some(value) if value == "api" => Ok("api"),
@@ -4243,7 +4560,7 @@ fn remote_action_path_allowed(service: &str, path: &str) -> bool {
     let route = path.split('?').next().unwrap_or(path);
     match service {
         "api" | "connector" => route.starts_with('/'),
-        "runtime" => route == "/mesh/tools/execute",
+        "runtime" => matches!(route, "/mesh/tools/execute" | "/mesh/conclave/run"),
         _ => false,
     }
 }
@@ -4259,7 +4576,7 @@ fn local_agent_hai_id(
     )
 }
 
-fn build_local_runtime_tool_request_body(
+fn build_local_runtime_request_body(
     raw_body: Option<serde_json::Value>,
     agent: &PersistedInstalledAgent,
     identity: &PersistedLocalIdentity,
@@ -4291,6 +4608,7 @@ async fn execute_local_runtime_tool_request(
     client: &HttpClient,
     agent: &PersistedInstalledAgent,
     identity: &PersistedLocalIdentity,
+    path: &str,
     body: serde_json::Value,
     thread_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
@@ -4300,12 +4618,13 @@ async fn execute_local_runtime_tool_request(
 
     let response = client
         .post(format!(
-            "{}/mesh/tools/execute",
-            runtime_status.base_url.trim_end_matches('/')
+            "{}{}",
+            runtime_status.base_url.trim_end_matches('/'),
+            path
         ))
         .header(LOCAL_RUNTIME_AUTH_HEADER, auth_token)
         .header("Content-Type", "application/json")
-        .json(&build_local_runtime_tool_request_body(
+        .json(&build_local_runtime_request_body(
             Some(body),
             agent,
             identity,
@@ -4455,13 +4774,14 @@ fn normalize_shell_args(value: Option<&[String]>) -> Vec<String> {
 }
 
 async fn request_local_agent_model_turn(
+    app: &tauri::AppHandle,
     client: &HttpClient,
     state: &PersistedLocalState,
     agent: &PersistedInstalledAgent,
     identity: &PersistedLocalIdentity,
     prompt: &str,
     transcript: &[LocalAgentConversationMessage],
-) -> Result<String, String> {
+) -> Result<LocalAgentModelTurn, String> {
     let messages = transcript
         .iter()
         .filter_map(|message| {
@@ -4499,8 +4819,12 @@ async fn request_local_agent_model_turn(
     .send()
     .await
     .map_err(|err| format!("failed to execute local agent inference: {err}"))?;
+    let charge = local_agent_turn_charge_from_response(app, identity, &response);
     let payload = decode_remote_json(response, "local agent inference").await?;
-    Ok(extract_chat_completion_text(&payload))
+    Ok(LocalAgentModelTurn {
+        raw: extract_chat_completion_text(&payload),
+        charge,
+    })
 }
 
 async fn execute_local_agent_action(
@@ -4634,6 +4958,7 @@ async fn execute_local_agent_action(
                     client,
                     agent,
                     identity,
+                    &path,
                     action
                         .body
                         .clone()
@@ -4735,11 +5060,36 @@ async fn run_local_agent_execution(
         .map_err(|err| format!("failed to build local agent http client: {err}"))?;
     let permissions = resolve_local_agent_permissions(app, agent);
     let prompt = build_local_agent_prompt(agent, &documents, heartbeat_mode, &permissions);
+    let mut turn_charges = Vec::new();
 
     for _round in 0..6 {
-        let raw =
-            request_local_agent_model_turn(&client, state, agent, identity, &prompt, &transcript)
-                .await?;
+        let turn = match request_local_agent_model_turn(
+            app,
+            &client,
+            state,
+            agent,
+            identity,
+            &prompt,
+            &transcript,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                persist_local_agent_execution_reports(
+                    app,
+                    &agent.agent_wallet,
+                    None,
+                    &turn_charges,
+                    heartbeat_mode,
+                )?;
+                return Err(error);
+            }
+        };
+        if let Some(charge) = turn.charge {
+            turn_charges.push(charge);
+        }
+        let raw = turn.raw;
         let parsed = parse_local_agent_reply(&raw);
         if parsed.actions.is_empty() {
             let (authored_skill_id, authored_skill_path) =
@@ -4752,6 +5102,13 @@ async fn run_local_agent_execution(
                     (None, None)
                 };
             let report = append_skill_path_to_report(parsed.report, authored_skill_path.as_ref());
+            persist_local_agent_execution_reports(
+                app,
+                &agent.agent_wallet,
+                report.as_ref(),
+                &turn_charges,
+                heartbeat_mode,
+            )?;
             return Ok(LocalAgentConversationResult {
                 reply: parsed.reply.trim().to_string(),
                 report,
@@ -4807,6 +5164,13 @@ async fn run_local_agent_execution(
         });
     }
 
+    persist_local_agent_execution_reports(
+        app,
+        &agent.agent_wallet,
+        None,
+        &turn_charges,
+        heartbeat_mode,
+    )?;
     Err("local agent exceeded the maximum tool/action rounds".to_string())
 }
 
@@ -4954,6 +5318,18 @@ fn read_workspace_report(path: &Path) -> Option<serde_json::Value> {
             .get("createdAt")
             .and_then(|value| value.as_u64())
             .unwrap_or_else(|| file_modified_at_ms(path)),
+        "costMicros": object.get("costMicros").and_then(json_u64),
+        "revenueMicros": object.get("revenueMicros").and_then(json_u64),
+        "economicsCategory": object
+            .get("economicsCategory")
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim())
+            .filter(|value| matches!(*value, "inference" | "heartbeat" | "peer-revenue")),
+        "txHash": object
+            .get("txHash")
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty()),
     }))
 }
 
@@ -6655,6 +7031,33 @@ async fn pin_mesh_learning_via_local_runtime(
         .map_err(|err| format!("failed to decode local runtime Filecoin Pin response: {err}"))
 }
 
+async fn fetch_mesh_reputation_via_local_runtime(
+    base_url: &str,
+    auth_token: &str,
+    agent_wallet: &str,
+) -> Result<MeshReputationRuntimeResponse, String> {
+    let client = HttpClient::new();
+    let response = client
+        .get(format!(
+            "{}/mesh/reputation/summary",
+            base_url.trim_end_matches('/')
+        ))
+        .header(LOCAL_RUNTIME_AUTH_HEADER, auth_token)
+        .query(&[("agentWallet", agent_wallet)])
+        .send()
+        .await
+        .map_err(|err| format!("failed to call local runtime reputation route: {err}"))?;
+
+    if !response.status().is_success() {
+        return Err(runtime_error("local runtime reputation route", response).await);
+    }
+
+    response
+        .json::<MeshReputationRuntimeResponse>()
+        .await
+        .map_err(|err| format!("failed to decode local runtime reputation response: {err}"))
+}
+
 async fn anchor_mesh_state_from_command(
     app: &tauri::AppHandle,
     mesh_state: &MeshRuntimeState,
@@ -6770,14 +7173,14 @@ async fn anchor_mesh_state_from_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_active_session_refresh, build_local_runtime_tool_request_body, compose_hai_path,
+        apply_active_session_refresh, build_local_runtime_request_body, compose_hai_path,
         derive_hai_id, derive_relay_listen_multiaddrs, derive_relay_peer_id_from_listen_multiaddrs,
         merge_mesh_listen_multiaddrs, normalize_daemon_state_for_local_mode,
         normalize_local_state_json, normalize_manifest_publish_outcome,
-        normalize_state_root_hash_for_compare, now_ms, remote_action_path_allowed,
-        same_state_root_hash, write_string_atomically, ActiveSessionRefreshResponse,
-        DaemonAgentState, DaemonPermissionPolicy, DaemonStateFile, MeshManifest,
-        PersistedInstalledAgent, PersistedLocalIdentity,
+        normalize_mesh_api_url_with_loopback_policy, normalize_state_root_hash_for_compare, now_ms,
+        remote_action_path_allowed, same_state_root_hash, write_string_atomically,
+        ActiveSessionRefreshResponse, DaemonAgentState, DaemonPermissionPolicy, DaemonStateFile,
+        MeshManifest, PersistedInstalledAgent, PersistedLocalIdentity,
     };
     use crate::gossipsub;
     use std::{collections::HashMap, fs};
@@ -6881,11 +7284,12 @@ mod tests {
             "/registry/servers/search?q=mcp"
         ));
         assert!(remote_action_path_allowed("runtime", "/mesh/tools/execute"));
+        assert!(remote_action_path_allowed("runtime", "/mesh/conclave/run"));
         assert!(!remote_action_path_allowed("runtime", "/mesh/filecoin/pin"));
     }
 
     #[test]
-    fn build_local_runtime_tool_request_body_preserves_explicit_thread_id() {
+    fn build_local_runtime_request_body_preserves_explicit_thread_id() {
         let agent = PersistedInstalledAgent {
             agent_wallet: "0x1111111111111111111111111111111111111111".to_string(),
             ..Default::default()
@@ -6896,7 +7300,7 @@ mod tests {
             ..Default::default()
         };
 
-        let body = build_local_runtime_tool_request_body(
+        let body = build_local_runtime_request_body(
             Some(serde_json::json!({
                 "toolName": "search_memory",
                 "args": {
@@ -6926,7 +7330,7 @@ mod tests {
     }
 
     #[test]
-    fn build_local_runtime_tool_request_body_requires_explicit_thread_id() {
+    fn build_local_runtime_request_body_requires_explicit_thread_id() {
         let agent = PersistedInstalledAgent {
             agent_wallet: "0x1111111111111111111111111111111111111111".to_string(),
             ..Default::default()
@@ -6937,7 +7341,7 @@ mod tests {
             ..Default::default()
         };
 
-        let error = build_local_runtime_tool_request_body(
+        let error = build_local_runtime_request_body(
             Some(serde_json::json!({
                 "toolName": "search_memory",
                 "args": {
@@ -6992,6 +7396,18 @@ mod tests {
     }
 
     #[test]
+    fn normalize_mesh_api_url_rejects_loopback_when_not_explicitly_allowed() {
+        assert_eq!(
+            normalize_mesh_api_url_with_loopback_policy("http://127.0.0.1:3000", false),
+            "https://api.compose.market"
+        );
+        assert_eq!(
+            normalize_mesh_api_url_with_loopback_policy("http://127.0.0.1:3000", true),
+            "http://127.0.0.1:3000"
+        );
+    }
+
+    #[test]
     fn normalize_daemon_state_for_local_mode_keeps_agents_autonomous() {
         let mut daemon = DaemonStateFile {
             version: 1,
@@ -7041,6 +7457,7 @@ mod tests {
             compose_key_token: "compose-stale".to_string(),
             session_id: "stale-key".to_string(),
             budget: "0".to_string(),
+            budget_used: "0".to_string(),
             duration: 0,
             chain_id: 43113,
             expires_at: 1,
@@ -7051,6 +7468,7 @@ mod tests {
             key_id: "live-key".to_string(),
             token: "compose-live".to_string(),
             budget_remaining: "450000".to_string(),
+            budget_used: "550000".to_string(),
             expires_at: 1_700_000_120_000,
             chain_id: 8453,
             ..ActiveSessionRefreshResponse::default()
@@ -7062,6 +7480,7 @@ mod tests {
         assert_eq!(refreshed.compose_key_token, "compose-live");
         assert_eq!(refreshed.session_id, "live-key");
         assert_eq!(refreshed.budget, "450000");
+        assert_eq!(refreshed.budget_used, "550000");
         assert_eq!(refreshed.duration, 120_000);
         assert_eq!(refreshed.chain_id, 8453);
         assert_eq!(refreshed.expires_at, 1_700_000_120_000);
@@ -7076,6 +7495,7 @@ mod tests {
             compose_key_token: "compose-live".to_string(),
             session_id: "live-key".to_string(),
             budget: "450000".to_string(),
+            budget_used: "550000".to_string(),
             duration: 120_000,
             chain_id: 43113,
             expires_at: 1_700_000_120_000,
@@ -7269,7 +7689,7 @@ async fn process_mesh_learning_request(
         &ctx.device_id,
         &hai_row.hai_id,
         "learning.pin",
-        "knowledge",
+        "learnings",
         &path,
         Some(artifact_kind.clone()),
         Some(format!("0x{}", sha256_hex_string(&payload_json))),
@@ -7657,6 +8077,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PendingDeepLinks::default())
         .manage(MeshRuntimeState::default())
+        .manage(SessionBudgetTracker::default())
         .manage(LocalDaemonState::default())
         .manage(LocalRuntimeHostState::default())
         .invoke_handler(tauri::generate_handler![
