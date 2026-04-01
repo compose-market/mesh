@@ -20,6 +20,8 @@ import { SessionIndicator } from "./components/session";
 import { AgentDetailPage, AgentManagerPage } from "./features/agents/pages";
 import {
   appendAgentReport,
+  buildAgentLock,
+  createInstalledAgent,
   mergeMeshPeerSignals,
 } from "./features/agents/model";
 import {
@@ -33,7 +35,7 @@ import {
   resolveMeshBootstrap,
   type MeshBootstrapResolution,
 } from "./features/mesh";
-import { getActiveSessionStatus } from "./lib/api";
+import { fetchAgentMetadata, getActiveSessionStatus } from "./lib/api";
 import { daemonGetAgentStatus, mergeDaemonStatusIntoInstalledAgent } from "./lib/daemon";
 import {
   clearLocalConnectionState,
@@ -65,10 +67,12 @@ import {
   getLocalPaths,
   setLocalBaseDir,
   loadRuntimeState,
+  readManagedFile,
   saveRuntimeState,
   syncAgentLocalFiles,
 } from "./lib/storage";
 import type {
+  InstalledAgent,
   LocalIdentityContext,
   LocalRuntimeState,
   MeshPeerSignal,
@@ -80,6 +84,27 @@ import "./styles.css";
 const WEB_APP_URL = "https://compose.market";
 const CONNECT_LOCAL_PATH = "/connect-local";
 type BasePage = "agents" | "network" | "settings";
+
+type PersistedDaemonAgent = {
+  agentWallet: string;
+  runtimeId?: string | null;
+  running: boolean;
+  status: string;
+  dnaHash: string;
+  chainId: number;
+  modelId: string;
+  mcpToolsHash: string;
+  agentCardCid: string;
+  permissions?: LocalRuntimeState["permissionDefaults"];
+  desiredPermissions?: LocalRuntimeState["permissionDefaults"];
+  logsCursor?: number;
+  lastError?: string | null;
+  updatedAt: number;
+};
+
+type PersistedDaemonState = {
+  agents?: Record<string, PersistedDaemonAgent>;
+};
 
 const defaultSessionState: SessionState = {
   active: false,
@@ -236,20 +261,91 @@ function getOrCreateDeviceId(): string {
 
 
 async function syncInstalledAgentsWithDaemon(state: LocalRuntimeState): Promise<LocalRuntimeState> {
-  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window) || state.installedAgents.length === 0) {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
     return state;
   }
 
+  let hydratedState = state;
+  const knownWallets = new Set(state.installedAgents.map((agent) => agent.agentWallet));
+  const daemonStateRaw = await readManagedFile("daemon_state.json");
+  if (daemonStateRaw) {
+    try {
+      const parsed = JSON.parse(daemonStateRaw) as PersistedDaemonState;
+      const missingDaemonAgents = Object.values(parsed.agents || {}).filter((agent) => (
+        typeof agent.agentWallet === "string"
+        && typeof agent.agentCardCid === "string"
+        && !knownWallets.has(agent.agentWallet.toLowerCase())
+      ));
+
+      if (missingDaemonAgents.length > 0) {
+        const recoveredAgents = (
+          await Promise.all(missingDaemonAgents.map(async (daemonAgent) => {
+            try {
+              const metadata = await fetchAgentMetadata({
+                apiUrl: state.settings.apiUrl,
+                agentWallet: daemonAgent.agentWallet,
+                agentCardCid: daemonAgent.agentCardCid,
+              });
+              const lock = await buildAgentLock({
+                walletAddress: metadata.walletAddress,
+                agentCardUri: metadata.agentCardUri,
+                model: metadata.model,
+                plugins: metadata.plugins,
+                chainId: daemonAgent.chainId,
+                dnaHash: metadata.dnaHash,
+              });
+              const installed = await createInstalledAgent({
+                metadata,
+                lock,
+                permissions: state.permissionDefaults,
+                addedAt: daemonAgent.updatedAt,
+                runtimeId: daemonAgent.runtimeId || undefined,
+              });
+              const daemonStatus = {
+                ...daemonAgent,
+                runtimeId: daemonAgent.runtimeId ?? null,
+                permissions: daemonAgent.permissions || state.permissionDefaults,
+                desiredPermissions: daemonAgent.desiredPermissions || daemonAgent.permissions || state.permissionDefaults,
+                logsCursor: daemonAgent.logsCursor || 0,
+                lastError: daemonAgent.lastError || null,
+              };
+              return mergeDaemonStatusIntoInstalledAgent(installed, daemonStatus);
+            } catch (error) {
+              console.error(`[mesh] Failed to recover installed agent ${daemonAgent.agentWallet}`, error);
+              return null;
+            }
+          }))
+        ).filter((agent): agent is InstalledAgent => agent !== null);
+
+        if (recoveredAgents.length > 0) {
+          hydratedState = {
+            ...state,
+            installedAgents: [...state.installedAgents, ...recoveredAgents],
+          };
+          await saveRuntimeState(hydratedState).catch((error) => {
+            console.error("[mesh] Failed to persist recovered installed agents", error);
+          });
+        }
+      }
+    } catch (error) {
+      console.error("[mesh] Failed to parse daemon_state.json", error);
+    }
+  }
+
+  if (hydratedState.installedAgents.length === 0) {
+    return hydratedState;
+  }
+
   const statuses = await Promise.all(
-    state.installedAgents.map(async (agent) => [agent.agentWallet, await daemonGetAgentStatus(agent.agentWallet)] as const),
+    hydratedState.installedAgents.map(async (agent) => [agent.agentWallet, await daemonGetAgentStatus(agent.agentWallet)] as const),
   );
   const statusByWallet = new Map(
     statuses.filter((entry): entry is readonly [string, NonNullable<Awaited<ReturnType<typeof daemonGetAgentStatus>>>] => entry[1] !== null),
   );
 
   return {
-    ...state,
-    installedAgents: state.installedAgents.map((agent) => (
+    ...hydratedState,
+    installedAgents: hydratedState.installedAgents.map((agent) => (
       mergeDaemonStatusIntoInstalledAgent(agent, statusByWallet.get(agent.agentWallet) || null)
     )),
   };
@@ -272,13 +368,14 @@ export default function App() {
   const [meshBootstrap, setMeshBootstrap] = useState<MeshBootstrapResolution>(() => resolveLocalMeshBootstrap());
   const [paths, setPaths] = useState<Awaited<ReturnType<typeof getLocalPaths>>>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
-  const [deviceId] = useState(getOrCreateDeviceId);
+  const [fallbackDeviceId] = useState(getOrCreateDeviceId);
   const [connectModalOpen, setConnectModalOpen] = useState(false);
 
   const [appUpdate, setAppUpdate] = useState(() => createLocalUpdateState());
 
   const wallet = state?.identity?.userAddress || null;
   const apiUrl = state?.settings.apiUrl || "https://api.compose.market";
+  const deviceId = state?.identity?.deviceId?.trim() || fallbackDeviceId;
 
   const showNotification = useCallback((type: "success" | "error", message: string) => {
     setNotification({ type, message });
@@ -312,6 +409,13 @@ export default function App() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    if (!state?.identity?.deviceId?.trim()) {
+      return;
+    }
+    localStorage.setItem("compose_mesh_device_id", state.identity.deviceId.trim());
+  }, [state?.identity?.deviceId]);
 
   useEffect(() => {
     void (async () => {

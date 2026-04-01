@@ -33,6 +33,14 @@ export interface LocalAgentConversationResult extends LocalAgentStructuredReply 
   raw: string;
 }
 
+export function createLocalConversationThreadId(agentWallet: string): string {
+  const randomPart = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+  return `local-agent:${agentWallet.trim().toLowerCase()}:chat:${randomPart}`;
+}
+
 function slugify(value: string): string {
   const normalized = value
     .trim()
@@ -175,11 +183,13 @@ export async function runLocalAgentConversation(input: {
   state: LocalRuntimeState;
   history: LocalAgentMessage[];
   message: string;
+  threadId: string;
 }): Promise<LocalAgentConversationResult> {
   ensureTauriRuntime();
   return invoke<LocalAgentConversationResult>("daemon_run_local_agent_conversation", {
     agentWallet: input.agent.agentWallet,
     history: input.history,
     message: input.message,
+    threadId: input.threadId,
   });
 }
