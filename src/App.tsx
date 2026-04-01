@@ -19,7 +19,6 @@ import { DeepLinkHandler } from "./components/deep-link";
 import { SessionIndicator } from "./components/session";
 import { AgentDetailPage, AgentManagerPage } from "./features/agents/pages";
 import {
-  appendAgentReport,
   buildAgentLock,
   createInstalledAgent,
   mergeMeshPeerSignals,
@@ -129,12 +128,6 @@ type LocalSessionUpdate = {
   chainId?: number | null;
   composeKeyToken?: string | null;
 };
-
-function microsBigIntToUsd(value: bigint): string {
-  const whole = value / 1_000_000n;
-  const cents = (value % 1_000_000n) / 10_000n;
-  return `$${whole.toString()}.${cents.toString().padStart(2, "0")}`;
-}
 
 function identityFromRedeemedLocalContext(context: RedeemedLocalContext): LocalIdentityContext {
   if (!context.hasSession) {
@@ -384,6 +377,7 @@ export default function App() {
 
   const persistState = useCallback(async (
     nextOrUpdater: LocalRuntimeState | ((current: LocalRuntimeState) => LocalRuntimeState),
+    options?: { syncAgentFiles?: boolean },
   ) => {
     const current = stateRef.current;
     if (!current) {
@@ -403,7 +397,9 @@ export default function App() {
     stateRef.current = next;
     setState(next);
     await saveRuntimeState(next);
-    await Promise.all(next.installedAgents.map((agent) => syncAgentLocalFiles(agent)));
+    if (options?.syncAgentFiles !== false) {
+      await Promise.all(next.installedAgents.map((agent) => syncAgentLocalFiles(agent)));
+    }
   }, []);
 
   useEffect(() => {
@@ -570,41 +566,37 @@ export default function App() {
   useEffect(() => {
     void localMeshService.configurePeerIndex((payload) => {
       setMeshPeers((current) => mergeMeshPeerSignals(current, payload.peers));
-      setState((current) => {
-        if (!current) {
-          return current;
-        }
-        const next = mergePeerIndexIntoState(current, payload.peers, deviceId);
-        if (next !== current) {
-          void saveRuntimeState(next);
-        }
-        return next;
-      });
+      const current = stateRef.current;
+      if (!current) {
+        return;
+      }
+      const next = mergePeerIndexIntoState(current, payload.peers, deviceId);
+      if (next !== current) {
+        void persistState(next, { syncAgentFiles: false });
+      }
     });
 
     return () => {
       void localMeshService.configurePeerIndex(null);
     };
-  }, [deviceId]);
+  }, [deviceId, persistState]);
 
   useEffect(() => {
     localMeshService.configureManifest((manifest) => {
-      setState((current) => {
-        if (!current) {
-          return current;
-        }
-        const next = mergeManifestIntoState(current, manifest);
-        if (next !== current) {
-          void saveRuntimeState(next);
-        }
-        return next;
-      });
+      const current = stateRef.current;
+      if (!current) {
+        return;
+      }
+      const next = mergeManifestIntoState(current, manifest);
+      if (next !== current) {
+        void persistState(next, { syncAgentFiles: false });
+      }
     });
 
     return () => {
       localMeshService.configureManifest(null);
     };
-  }, []);
+  }, [persistState]);
 
   const publishedNetworkAgents = useMemo(
     () => state?.installedAgents.filter((agent) => canAgentUseMesh(agent, state.settings.meshEnabled)) || [],
@@ -736,29 +728,8 @@ export default function App() {
         nextIdentity.expiresAt !== latestIdentity.expiresAt ||
         nextIdentity.chainId !== latestIdentity.chainId
       );
-      const previousBudget = BigInt(latestIdentity.budget || "0");
-      const nextBudget = BigInt(budgetRemaining || "0");
-      const spentMicros = previousBudget > nextBudget ? previousBudget - nextBudget : 0n;
-
       let nextState: LocalRuntimeState = { ...latest, identity: nextIdentity };
-      if (spentMicros > 0n) {
-        nextState = {
-          ...nextState,
-          installedAgents: nextState.installedAgents.map((agent) => (
-            agent.agentWallet === latestIdentity.agentWallet
-              ? appendAgentReport(agent, {
-                kind: "economics",
-                title: "Session spend recorded",
-                summary: `${microsBigIntToUsd(spentMicros)} consumed from the active compose-key budget.`,
-                outcome: "info",
-                costMicros: Number(spentMicros > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : spentMicros),
-              })
-              : agent
-          )),
-        };
-      }
-
-      if (identityChanged || nextState.installedAgents !== latest.installedAgents) {
+      if (identityChanged) {
         await persistState(nextState);
       }
     })();

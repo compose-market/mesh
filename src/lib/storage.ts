@@ -31,6 +31,7 @@ const DEFAULT_API_URL = (
   import.meta.env.VITE_API_URL ||
   "https://api.compose.market"
 ).replace(/\/+$/, "");
+const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
 
 const defaultPermissions: AgentPermissionPolicy = {
   shell: "deny",
@@ -241,7 +242,13 @@ function normalizeAgentReport(value: Partial<AgentTaskReport> | null | undefined
     createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : Date.now(),
     costMicros: Number.isFinite(value.costMicros) ? Number(value.costMicros) : undefined,
     revenueMicros: Number.isFinite(value.revenueMicros) ? Number(value.revenueMicros) : undefined,
+    economicsCategory: value.economicsCategory === "heartbeat" || value.economicsCategory === "peer-revenue"
+      ? value.economicsCategory
+      : value.economicsCategory === "inference"
+        ? "inference"
+        : undefined,
     peerId: typeof value.peerId === "string" && value.peerId.trim().length > 0 ? value.peerId.trim() : undefined,
+    txHash: typeof value.txHash === "string" && value.txHash.trim().length > 0 ? value.txHash.trim() : undefined,
   };
 }
 
@@ -461,6 +468,35 @@ function cloneDefaultState(): LocalRuntimeState {
   };
 }
 
+export function normalizeApiUrl(
+  value: string | null | undefined,
+  options: { allowLoopback?: boolean } = {},
+): string {
+  const fallback = DEFAULT_API_URL;
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) {
+    return fallback;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return fallback;
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return fallback;
+  }
+
+  const allowLoopback = options.allowLoopback ?? Boolean(import.meta.env.DEV && import.meta.env.MODE !== "test");
+  if (!allowLoopback && LOOPBACK_API_HOSTS.has(parsed.hostname.toLowerCase())) {
+    return fallback;
+  }
+
+  return parsed.toString().replace(/\/+$/, "");
+}
+
 function createEmptyRequirements() {
   return {
     bins: [],
@@ -571,7 +607,7 @@ function normalizeState(state: Partial<LocalRuntimeState> | null | undefined): L
 
   return {
     settings: {
-      apiUrl: state.settings?.apiUrl || base.settings.apiUrl,
+      apiUrl: normalizeApiUrl(state.settings?.apiUrl || base.settings.apiUrl),
       meshEnabled: Boolean(state.settings?.meshEnabled ?? base.settings.meshEnabled),
     },
     identity: state.identity || null,
@@ -594,7 +630,16 @@ export const normalizeRuntimeState = normalizeState;
 async function readStateFromTauri(): Promise<LocalRuntimeState> {
   const raw = await invoke<string>("load_local_state");
   const parsed = raw ? (JSON.parse(raw) as Partial<LocalRuntimeState>) : null;
-  return normalizeState(parsed);
+  const normalized = normalizeState(parsed);
+
+  const persistedApiUrl = typeof parsed?.settings?.apiUrl === "string"
+    ? parsed.settings.apiUrl.trim().replace(/\/+$/, "")
+    : "";
+  if (persistedApiUrl !== normalized.settings.apiUrl) {
+    await writeStateToTauri(normalized);
+  }
+
+  return normalized;
 }
 
 async function writeStateToTauri(state: LocalRuntimeState): Promise<void> {
@@ -609,7 +654,15 @@ function readStateFromFallback(): LocalRuntimeState {
     return cloneDefaultState();
   }
   try {
-    return normalizeState(JSON.parse(raw) as Partial<LocalRuntimeState>);
+    const parsed = JSON.parse(raw) as Partial<LocalRuntimeState>;
+    const normalized = normalizeState(parsed);
+    const persistedApiUrl = typeof parsed?.settings?.apiUrl === "string"
+      ? parsed.settings.apiUrl.trim().replace(/\/+$/, "")
+      : "";
+    if (persistedApiUrl !== normalized.settings.apiUrl) {
+      writeStateToFallback(normalized);
+    }
+    return normalized;
   } catch {
     return cloneDefaultState();
   }

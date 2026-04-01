@@ -70,7 +70,9 @@ export interface AgentTaskReport {
   createdAt: number;
   costMicros?: number;
   revenueMicros?: number;
+  economicsCategory?: "inference" | "heartbeat" | "peer-revenue";
   peerId?: string;
+  txHash?: string;
 }
 
 export interface InstalledAgent {

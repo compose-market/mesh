@@ -1,8 +1,13 @@
 {
   "name": "compose-mesh",
-  "version": "0.9.1",
+  "version": "0.9.6",
   "private": false,
   "type": "module",
+  "packageManager": "npm@11.12.1",
+  "engines": {
+    "node": ">=25",
+    "npm": ">=11"
+  },
   "scripts": {
     "dev": "vite --port 1420 --strictPort",
     "build": "tsc --noEmit && vite build",
@@ -19,7 +24,7 @@
     "@deck.gl/mapbox": "^9.2.11",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-deep-link": "^2.4.7",
-    "@tauri-apps/plugin-dialog": "^2.4.1",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2.10.0",
