@@ -27,7 +27,7 @@ import {
   daemonUpdatePermissions,
 } from "../../lib/daemon";
 import { fetchAgentMetadata } from "../../lib/api";
-import { runLocalAgentConversation } from "../../lib/local-agent";
+import { createLocalConversationThreadId, runLocalAgentConversation } from "../../lib/local-agent";
 
 import {
   getDefaultPermissionPolicy,
@@ -401,6 +401,7 @@ export function AgentDetailPage({
   const [logCursor, setLogCursor] = useState<number | undefined>(undefined);
   const [permissionBusy, setPermissionBusy] = useState<null | keyof AgentPermissionPolicy>(null);
   const [chatMessages, setChatMessages] = useState<LocalChatMessage[]>([]);
+  const [chatThreadId, setChatThreadId] = useState(() => createLocalConversationThreadId(agent.agentWallet));
   const [chatInput, setChatInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -419,6 +420,7 @@ export function AgentDetailPage({
 
   useEffect(() => {
     setChatMessages([]);
+    setChatThreadId(createLocalConversationThreadId(agent.agentWallet));
     setChatInput("");
     setChatError(null);
   }, [agent.agentWallet]);
@@ -539,6 +541,7 @@ export function AgentDetailPage({
         state,
         history: priorMessages,
         message: content,
+        threadId: chatThreadId,
       });
       const fullResponse = result.reply.trim() || "No response received.";
       updateAssistantMessage(assistantId, fullResponse);
@@ -660,7 +663,11 @@ export function AgentDetailPage({
             <ShellButton
               tone="secondary"
               size="sm"
-              onClick={() => { setChatMessages([]); setChatError(null); }}
+              onClick={() => {
+                setChatMessages([]);
+                setChatThreadId(createLocalConversationThreadId(agent.agentWallet));
+                setChatError(null);
+              }}
               disabled={chatBusy || chatMessages.length === 0}
             >
               Clear
