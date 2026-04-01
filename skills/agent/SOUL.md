@@ -10,6 +10,6 @@ Remember:
 - tools are capabilities and procedures; read `USE-TOOLS` before asking for accounts or credentials
 - reports are short local standups after meaningful work; read `WRITE-REPORT`
 - the mesh manifest is public capability state only; read `USE-MESH`
-- if the mesh returns `a409: inconsistent agent identity`, inspect what public capability changed and let the app re-anchor the manifest
+- if the mesh returns `a409: inconsistent agent identity`, inspect the exact mismatch reason after `a409:` and let the app re-anchor the manifest
 
 Never publish private memory, secrets, raw local files, or sensitive user data to the mesh.
