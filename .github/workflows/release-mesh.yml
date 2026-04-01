@@ -130,15 +130,23 @@ jobs:
           - platform: macos-latest
             target: x86_64-apple-darwin
             label: macOS Intel
+            asset_pattern: intel[ext]
+            bundle_args: --bundles app,dmg
           - platform: macos-latest
             target: aarch64-apple-darwin
             label: macOS Apple Silicon
+            asset_pattern: apple-silicon[ext]
+            bundle_args: --bundles app,dmg
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: Linux
+            asset_pattern: linux[ext]
+            bundle_args: --bundles appimage,deb,rpm
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows
+            asset_pattern: windows[ext]
+            bundle_args: --bundles nsis
 
     steps:
       - name: Checkout
@@ -191,8 +199,92 @@ jobs:
           releaseName: ${{ needs.resolve-version.outputs.release_name }}
           releaseDraft: true
           prerelease: false
-          assetNamePattern: compose-mesh-[platform]-[arch][ext]
-          args: --target ${{ matrix.target }}
+          assetNamePattern: ${{ matrix.asset_pattern }}
+          args: --target ${{ matrix.target }} ${{ matrix.bundle_args }}
+
+  build-android:
+    name: Build Android APK
+    needs:
+      - resolve-version
+      - create-release
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: tauri
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 25.9.0
+          cache: npm
+          package-manager-cache: false
+
+      - name: Update npm
+        run: npm install -g npm@11.12.1
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+          cache-dependency-path: |
+            tauri/gen/android/**/*.gradle*
+            tauri/gen/android/**/gradle-wrapper.properties
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ""
+
+      - name: Install Android packages
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "build-tools;36.0.0" "platforms;android-36" "ndk;28.0.13004108"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.0.13004108" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.0.13004108" >> "$GITHUB_ENV"
+
+      - name: Setup Android signing
+        run: |
+          cd tauri/gen/android
+          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
+          echo "keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
+          echo "storePassword=${{ secrets.ANDROID_STORE_PASSWORD }}" >> keystore.properties
+          base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > "$RUNNER_TEMP/compose-mesh-android-keystore.jks"
+          echo "storeFile=$RUNNER_TEMP/compose-mesh-android-keystore.jks" >> keystore.properties
+
+      - name: Build and upload Android APK
+        uses: tauri-apps/tauri-action@action-v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPOSE_MESH_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+          NDK_HOME: ${{ env.NDK_HOME }}
+        with:
+          tauriScript: node scripts/tauri-cli.mjs
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          tagName: ${{ needs.resolve-version.outputs.tag }}
+          releaseName: ${{ needs.resolve-version.outputs.release_name }}
+          releaseDraft: true
+          prerelease: false
+          mobile: android
+          assetNamePattern: android[ext]
+          args: --apk --ci
 
   publish-release:
     name: Publish Release
@@ -202,6 +294,7 @@ jobs:
       - resolve-version
       - create-release
       - build
+      - build-android
     steps:
       - name: Publish draft release
         uses: actions/github-script@v7

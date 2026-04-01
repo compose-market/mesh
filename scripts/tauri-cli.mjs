@@ -99,21 +99,31 @@ function runTauri() {
     failMissingCargo(env);
   }
 
+  const localTauriJs = path.join(
+    process.cwd(),
+    "node_modules",
+    "@tauri-apps",
+    "cli",
+    "tauri.js",
+  );
   const localTauriBin = path.join(
     process.cwd(),
     "node_modules",
     ".bin",
     process.platform === "win32" ? "tauri.cmd" : "tauri",
   );
-  const tauriCmd = existsSync(localTauriBin)
-    ? localTauriBin
-    : process.platform === "win32"
-      ? "tauri.cmd"
-      : "tauri";
-  const result = spawnSync(tauriCmd, tauriArgs, {
+  const useNodeEntrypoint = existsSync(localTauriJs);
+  const tauriCmd = useNodeEntrypoint
+    ? process.execPath
+    : existsSync(localTauriBin)
+      ? localTauriBin
+      : process.platform === "win32"
+        ? "tauri.cmd"
+        : "tauri";
+  const tauriCmdArgs = useNodeEntrypoint ? [localTauriJs, ...tauriArgs] : tauriArgs;
+  const result = spawnSync(tauriCmd, tauriCmdArgs, {
     env,
     stdio: "inherit",
-    shell: process.platform === "win32",
   });
 
   if (result.error) {

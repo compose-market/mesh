@@ -15,7 +15,10 @@
     "test": "vitest run --coverage",
     "preview": "vite preview --port 1421",
     "tauri:dev": "node scripts/tauri-cli.mjs dev",
-    "tauri:build": "node scripts/tauri-cli.mjs build"
+    "tauri:build": "node scripts/tauri-cli.mjs build",
+    "tauri:android:init": "node scripts/tauri-cli.mjs android init --ci --skip-targets-install",
+    "tauri:android:dev": "node scripts/tauri-cli.mjs android dev",
+    "tauri:android:build": "node scripts/tauri-cli.mjs android build -- --apk"
   },
   "dependencies": {
     "@compose-market/theme": "^0.0.90",
