@@ -197,6 +197,7 @@ jobs:
   publish-release:
     name: Publish Release
     runs-on: ubuntu-22.04
+    if: ${{ always() && needs.resolve-version.result == 'success' && needs.create-release.result == 'success' }}
     needs:
       - resolve-version
       - create-release
@@ -207,10 +208,25 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const releaseId = Number(`${{ needs.create-release.outputs.release_id }}`);
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+              owner,
+              repo,
+              release_id: releaseId,
+              per_page: 100,
+            });
+
+            if (assets.length === 0) {
+              core.setFailed(`No release assets were uploaded for ${releaseId}; keeping release in draft.`);
+              return;
+            }
+
             await github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: Number(`${{ needs.create-release.outputs.release_id }}`),
+              owner,
+              repo,
+              release_id: releaseId,
               tag_name: `${{ needs.resolve-version.outputs.tag }}`,
               name: `${{ needs.resolve-version.outputs.release_name }}`,
               draft: false,

@@ -113,6 +113,7 @@ function runTauri() {
   const result = spawnSync(tauriCmd, tauriArgs, {
     env,
     stdio: "inherit",
+    shell: process.platform === "win32",
   });
 
   if (result.error) {

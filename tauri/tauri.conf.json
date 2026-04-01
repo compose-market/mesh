@@ -28,10 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "dmg",
-      "app"
-    ],
+    "targets": "all",
     "category": "public.app-category.productivity",
     "shortDescription": "Compose Mesh - Agent Gateway",
     "longDescription": "Compose Mesh provides a local runtime for autonomous agents with real-time session management, skills marketplace, and OpenClaw-style self-learning capabilities.",
