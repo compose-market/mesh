@@ -1,4 +1,4 @@
-import type { InstalledAgent, MeshAgentCard, MeshPeerSignal } from "../../lib/types";
+import type { InstalledAgent, MeshAgentCard, MeshManifest, MeshPeerSignal } from "../../lib/types";
 import {
   derivePeerAnchor,
   resolveMeshRegionProfile,
@@ -141,6 +141,7 @@ function toManifest(input: {
   title: string;
   description: string;
   card: MeshAgentCard | null;
+  manifest?: MeshManifest | null;
   wallet: string | null;
   peerId: string | null;
   regionLabel: string;
@@ -162,6 +163,16 @@ function toManifest(input: {
   }
   if (input.updatedAt) {
     rows.push({ label: "Updated", value: new Date(input.updatedAt).toLocaleString() });
+  }
+  if (input.manifest) {
+    rows.push({
+      label: "Reputation",
+      value: `${Math.round(Math.max(0, Math.min(1, input.manifest.reputationScore)) * 100)}%`,
+    });
+    rows.push({
+      label: "Conclaves",
+      value: `${input.manifest.successfulConclaves}/${input.manifest.totalConclaves}`,
+    });
   }
 
   return {
@@ -267,6 +278,7 @@ function buildLocalNode(
       title: node.title,
       description: agent.metadata.description,
       card: agent.network.publicCard,
+      manifest: agent.network.manifest,
       wallet: agent.agentWallet,
       peerId: agent.network.peerId,
       regionLabel: localRegionLabel,
