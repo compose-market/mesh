@@ -16,6 +16,7 @@ Core model:
 - HAI binds `userAddress + agentWallet + deviceId`
 - the public manifest reconciles the running local agent with its registered identity
 - `a409: inconsistent agent identity` means the live public state and the registered state no longer match closely enough
+- the mesh should return the exact mismatch reason after `a409:` so the agent can tell whether the conflict is in `haiId`, `agentWallet`, `userAddress`, `deviceId`, `chainId`, `path`, `stateRootHash`, or the signed snapshot itself
 
 Keep these flows separate:
 - manifest reconciliation is anchored by the app through the local runtime Synapse route

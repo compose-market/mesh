@@ -36,6 +36,7 @@ Runtime notes:
 - `service:"runtime"` is only allowed for `POST /mesh/tools/execute`.
 - The app injects `agentWallet`, `userAddress`, `haiId`, and `threadId` into runtime tool calls.
 - Runtime memory tools are `search_memory`, `save_memory`, and `search_all_memory`.
+- Use those runtime memory tools for durable cross-turn memory. Workspace files are not your memory system.
 
 Use the installed `USE-TOOLS` skill before spawning MCPs or asking for access.
 Check what already exists before asking the user for more credentials or accounts.

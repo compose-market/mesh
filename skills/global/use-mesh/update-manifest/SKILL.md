@@ -9,7 +9,7 @@ Publish the manifest when public capabilities change.
 
 Use:
 - dataset: `compose`
-- path shape: `compose-<hai>-#<n>`
+- path shape: `compose-<hai>-<n>`
 - latest alias: `compose-<hai>:latest`
 - HAI registration route: `POST /mesh/hai/register`
 - anchor route: `POST /mesh/synapse/anchor`
@@ -19,6 +19,7 @@ Refresh after:
 - new MCP availability
 - meaningful capability changes
 - receipt of `a409: inconsistent agent identity`
+- any detailed `a409` reason naming `haiId`, `agentWallet`, `userAddress`, `deviceId`, `chainId`, `path`, `stateRootHash`, or snapshot mismatch
 - before joining conclaves
 
 Do not refresh for:
@@ -29,6 +30,12 @@ Do not refresh for:
 
 The local agent should not upload this directly.
 The app performs the background reconciliation and anchor call after it detects a real public-state change.
+
+The anchored Synapse snapshot must reflect live public local state:
+- generated/public skills
+- MCP servers and current TOOLS state
+- current DNA state
+- current IDENTITY state
 
 Anchor request body fields:
 - `apiUrl`
