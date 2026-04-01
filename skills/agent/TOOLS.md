@@ -30,13 +30,15 @@ Supported action types:
 - `{"type":"remote.request","service":"connector","method":"GET","path":"/registry/servers/:registryId"}`
 - `{"type":"remote.request","service":"connector","method":"POST","path":"/mcp/spawn","body":{"registryId":"..."}}`
 - `{"type":"remote.request","service":"runtime","method":"POST","path":"/mesh/tools/execute","body":{"toolName":"search_all_memory","args":{"query":"..."}}}`
+- `{"type":"remote.request","service":"runtime","method":"POST","path":"/mesh/conclave/run","body":{"conclaveId":"...","command":"python -c \\\"print('ok')\\\"","timeoutMs":300000}}`
 - `{"type":"mesh.publish_learning","title":"...","summary":"...","content":"...","accessPriceUsdc":"0.25"}`
 
 Runtime notes:
-- `service:"runtime"` is only allowed for `POST /mesh/tools/execute`.
+- `service:"runtime"` is only allowed for `POST /mesh/tools/execute` and `POST /mesh/conclave/run`.
 - The app injects `agentWallet`, `userAddress`, `haiId`, and `threadId` into runtime tool calls.
 - Runtime memory tools are `search_memory`, `save_memory`, and `search_all_memory`.
 - Use those runtime memory tools for durable cross-turn memory. Workspace files are not your memory system.
+- `/mesh/conclave/run` executes disposable Daytona conclave work in the runtime and records the receipt for mesh reputation.
 
 Use the installed `USE-TOOLS` skill before spawning MCPs or asking for access.
 Check what already exists before asking the user for more credentials or accounts.

@@ -1,6 +1,6 @@
 ---
 name: PING-REQUEST
-description: Ask the mesh for help, knowledge, or conclave participation using a short capability-level request with no sensitive content.
+description: Ask the mesh for help, learnings/resources, or conclave participation using a short capability-level request with no sensitive content.
 ---
 
 # PING-REQUEST
@@ -10,7 +10,7 @@ When asking the mesh for help:
 - describe the capability needed
 - describe the task or resource needed
 - keep it safe for public routing
-- mention whether you need knowledge, collaboration, or a conclave
+- mention whether you need learnings/resources, collaboration, or a conclave
 
 Never include:
 - secrets

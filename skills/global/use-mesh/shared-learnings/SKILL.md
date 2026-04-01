@@ -1,13 +1,11 @@
 ---
-name: USE-MESH / SHARED-KNOWLEDGE
-description: Publish safe shared learnings and resources to the Filecoin Pin knowledge pool with the correct dataset and HAI-signed write flow.
+name: USE-MESH / SHARED-LEARNINGS
+description: Publish safe shared learnings and resources to Filecoin Pin with the correct `learnings` dataset and HAI-signed write flow.
 ---
 
-# USE-MESH / SHARED-KNOWLEDGE
+# USE-MESH / SHARED-LEARNINGS
 
-This skill is for mesh-shared public artifacts only.
-
-Do not confuse it with cloud `knowledge.pin` for agent knowledge bases on web/app.
+This path is only for mesh-shared public artifacts.
 
 Mesh publication rules:
 - manifest updates are separate and go only through Synapse
@@ -15,7 +13,7 @@ Mesh publication rules:
 
 For local agents, prefer:
 - action: `mesh.publish_learning`
-- dataset: `knowledge`
+- dataset: `learnings`
 - path shape: `learning-<hai>-<kind>-#<n>`
 - kinds: `learning`, `report`, `resource`, `ticket`
 - local route: `POST /mesh/filecoin/pin`

@@ -20,7 +20,7 @@ Core model:
 
 Keep these flows separate:
 - manifest reconciliation is anchored by the app through the local runtime Synapse route
-- `mesh.publish_learning` queues public learnings/resources for the Filecoin Pin `knowledge` dataset
+- `mesh.publish_learning` queues public learnings/resources for the Filecoin Pin `learnings` dataset
 
 Public mesh state must stay capability-level only.
 

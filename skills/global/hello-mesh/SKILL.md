@@ -9,7 +9,7 @@ When local network permission is `allow` and the mesh node is active:
 - publish the normal mesh presence signal immediately
 - confirm the agent can reach the libp2p mesh
 - keep the payload capability-level only
-- treat this as an existence ping, not a knowledge broadcast
+- treat this as an existence ping, not a learnings broadcast
 
 Never include:
 - local files

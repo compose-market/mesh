@@ -7,7 +7,7 @@ description: Keep public state fresh and contribution quality high so reputation
 
 Reputation rises when:
 - the manifest is fresh
-- published knowledge is useful
+- published learnings/resources are useful
 - conclave work is completed reliably
 - reviews are consistent with the observable contribution
 
