@@ -52,6 +52,58 @@ pub struct LocalRuntimeHostState {
     auth_token: Mutex<String>,
 }
 
+fn runtime_auth_token_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(resolve_base_dir(app)?.join("runtime-host.auth"))
+}
+
+fn load_persisted_runtime_auth_token(app: &AppHandle) -> Result<Option<String>, String> {
+    let file = runtime_auth_token_path(app)?;
+    if !file.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&file)
+        .map_err(|err| format!("failed to read local runtime auth token: {err}"))?;
+    let token = raw.trim().to_string();
+    if token.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(token))
+    }
+}
+
+fn persist_runtime_auth_token(app: &AppHandle, token: &str) -> Result<(), String> {
+    let file = runtime_auth_token_path(app)?;
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create local runtime auth token dir: {err}"))?;
+    }
+    fs::write(&file, token)
+        .map_err(|err| format!("failed to persist local runtime auth token: {err}"))
+}
+
+fn ensure_runtime_host_auth_token(
+    app: &AppHandle,
+    state: &LocalRuntimeHostState,
+) -> Result<String, String> {
+    let mut guard = state
+        .auth_token
+        .lock()
+        .map_err(|_| "failed to lock local runtime host auth token".to_string())?;
+    if !guard.trim().is_empty() {
+        return Ok(guard.clone());
+    }
+
+    if let Some(token) = load_persisted_runtime_auth_token(app)? {
+        *guard = token.clone();
+        return Ok(token);
+    }
+
+    let token = generate_runtime_auth_token();
+    persist_runtime_auth_token(app, &token)?;
+    *guard = token.clone();
+    Ok(token)
+}
+
 pub fn build_local_runtime_base_url(port: u16) -> String {
     format!("http://{LOCAL_RUNTIME_HOST}:{port}")
 }
@@ -67,17 +119,14 @@ pub fn current_runtime_host_status(
 }
 
 pub fn current_runtime_host_auth_token(state: &LocalRuntimeHostState) -> Result<String, String> {
-    state
+    let token = state
         .auth_token
         .lock()
-        .map(|token| {
-            if token.trim().is_empty() {
-                generate_runtime_auth_token()
-            } else {
-                token.clone()
-            }
-        })
-        .map_err(|_| "failed to read local runtime host auth token".to_string())
+        .map_err(|_| "failed to read local runtime host auth token".to_string())?;
+    if token.trim().is_empty() {
+        return Err("local runtime host auth token is not initialized".to_string());
+    }
+    Ok(token.clone())
 }
 
 pub fn ensure_local_runtime_host(
@@ -86,6 +135,7 @@ pub fn ensure_local_runtime_host(
 ) -> Result<LocalRuntimeHostStatus, String> {
     let port = runtime_port();
     let base_url = build_local_runtime_base_url(port);
+    let auth_token = ensure_runtime_host_auth_token(app, state)?;
 
     {
         let mut child_guard = state
@@ -178,10 +228,7 @@ pub fn ensure_local_runtime_host(
         .env("RUNTIME_HOST_MODE", "local")
         .env("RUNTIME_DISABLE_TEMPORAL_WORKERS", "true")
         .env("RUNTIME_URL", base_url.clone())
-        .env(
-            "COMPOSE_LOCAL_RUNTIME_AUTH_TOKEN",
-            current_runtime_host_auth_token(state)?,
-        )
+        .env("COMPOSE_LOCAL_RUNTIME_AUTH_TOKEN", auth_token)
         .env("COMPOSE_LOCAL_BASE_DIR", resolve_base_dir(app)?)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -342,7 +389,7 @@ impl Default for LocalRuntimeHostState {
         Self {
             status: Mutex::new(LocalRuntimeHostStatus::default()),
             child: Mutex::new(None),
-            auth_token: Mutex::new(generate_runtime_auth_token()),
+            auth_token: Mutex::new(String::new()),
         }
     }
 }
