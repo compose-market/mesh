@@ -236,9 +236,53 @@ function buildLocalNode(
     return null;
   }
 
-  const localAnchorMatch = derivePeerAnchor(agent.network.listenMultiaddrs, anchorsByPeerId);
-  const localAnchor = findAnchorByMatch(scene, localAnchorMatch);
-  const localRegionProfile = resolveMeshRegionProfile(localAnchor?.region || null);
+  const runtimeAnchorMatch = derivePeerAnchor(agent.network.listenMultiaddrs, anchorsByPeerId);
+  const manifestAnchorMatch = agent.network.manifest
+    ? derivePeerAnchor(agent.network.manifest.listenMultiaddrs, anchorsByPeerId)
+    : null;
+  const relayAnchor = (
+    runtimeAnchorMatch.relayPeerId
+    ? anchorsByPeerId[runtimeAnchorMatch.relayPeerId]
+    : null
+  ) || (
+    manifestAnchorMatch?.relayPeerId
+      ? anchorsByPeerId[manifestAnchorMatch.relayPeerId]
+      : null
+  ) || (
+    agent.network.manifest?.relayPeerId
+      ? anchorsByPeerId[agent.network.manifest.relayPeerId]
+      : null
+  ) || null;
+
+  const localAnchorMatch = {
+    relayPeerId: runtimeAnchorMatch.relayPeerId
+      || manifestAnchorMatch?.relayPeerId
+      || agent.network.manifest?.relayPeerId
+      || null,
+    anchorHost: runtimeAnchorMatch.anchorHost
+      || manifestAnchorMatch?.anchorHost
+      || relayAnchor?.host
+      || null,
+    anchorRegion: runtimeAnchorMatch.anchorRegion
+      || manifestAnchorMatch?.anchorRegion
+      || relayAnchor?.region
+      || null,
+    anchorProvider: runtimeAnchorMatch.anchorProvider
+      || manifestAnchorMatch?.anchorProvider
+      || relayAnchor?.provider
+      || null,
+  };
+
+  const localAnchor = findAnchorByMatch(scene, localAnchorMatch)
+    || (
+      relayAnchor
+        ? findAnchorByMatch(scene, {
+          anchorHost: relayAnchor.host,
+          anchorRegion: relayAnchor.region,
+        })
+        : null
+    );
+  const localRegionProfile = resolveMeshRegionProfile(localAnchor?.region || localAnchorMatch.anchorRegion || null);
   const localRegionLabel = localAnchor
     ? formatRegion(localAnchor)
     : localRegionProfile
@@ -249,9 +293,17 @@ function buildLocalNode(
   const radius = localCount > 1 ? 3.4 : 2.8;
   const x = clamp((localAnchor?.x ?? 50) + (Math.cos(angle) * radius), 6, 94);
   const y = clamp((localAnchor?.y ?? 50) + (Math.sin(angle) * radius * 0.72), 10, 90);
+  const geographicPosition = localAnchor
+    ? offsetCoordinates(localAnchor, x, y)
+    : localRegionProfile
+      ? {
+        lon: localRegionProfile.lon + (Math.cos(angle) * 1.35),
+        lat: localRegionProfile.lat + (Math.sin(angle) * 0.95),
+      }
+      : { lon: null, lat: null };
   const nodeId = `local:${agent.agentWallet}`;
   const node: MeshStageNode = {
-    ...offsetCoordinates(localAnchor, x, y),
+    ...geographicPosition,
     id: nodeId,
     kind: "local",
     x,

@@ -180,6 +180,10 @@ function parseMultiaddrParts(input: string): { host: string | null; peerIds: str
 
   for (let index = 0; index < parts.length; index += 1) {
     const protocol = parts[index];
+    if (protocol === "p2p-circuit") {
+      hasCircuit = true;
+      continue;
+    }
     const value = parts[index + 1];
     if (!value) {
       continue;
@@ -193,9 +197,6 @@ function parseMultiaddrParts(input: string): { host: string | null; peerIds: str
       peerIds.push(value);
       index += 1;
       continue;
-    }
-    if (protocol === "p2p-circuit") {
-      hasCircuit = true;
     }
   }
 
