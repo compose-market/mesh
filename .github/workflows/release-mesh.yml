@@ -36,9 +36,6 @@ jobs:
           node-version: 25.9.0
           package-manager-cache: false
 
-      - name: Update npm
-        run: npm install -g npm@11.12.1
-
       - name: Resolve progressive release version
         id: version
         env:
@@ -186,10 +183,10 @@ jobs:
         run: npm ci
 
       - name: Sync project version for release artifacts
-        env:
-          COMPOSE_MESH_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: node scripts/tauri-cli.mjs sync-version
+
+      - name: Build frontend
+        run: npm run build
 
       - name: Build and upload Tauri bundles
         uses: tauri-apps/tauri-action@action-v0.6.2
@@ -197,7 +194,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          COMPOSE_MESH_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
         with:
           tauriScript: node scripts/tauri-cli.mjs
           releaseId: ${{ needs.create-release.outputs.release_id }}
@@ -241,6 +237,12 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Sync project version for release artifacts
+        run: node scripts/tauri-cli.mjs sync-version
+
+      - name: Build frontend
+        run: npm run build
+
       - name: Setup Java
         uses: actions/setup-java@v5
         with:
@@ -277,7 +279,6 @@ jobs:
 
       - name: Build Android APK
         env:
-          COMPOSE_MESH_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}

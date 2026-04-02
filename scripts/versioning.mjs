@@ -47,13 +47,6 @@ export function compareVersions(left, right) {
   return Math.sign(a.patch - b.patch);
 }
 
-export function incrementReleaseVersion(input) {
-  const { major, minor } = parseVersionParts(input);
-  const nextMinor = minor + 1;
-  const carry = Math.floor(nextMinor / 10);
-  return `${major + carry}.${nextMinor % 10}.0`;
-}
-
 export function computeReleaseVersion({ packageVersion, publishedVersions }) {
   const normalizedPackageVersion = normalizeReleaseVersion(packageVersion);
   const normalizedPublishedVersions = Array.from(
@@ -63,16 +56,12 @@ export function computeReleaseVersion({ packageVersion, publishedVersions }) {
   ).sort(compareVersions);
   const publishedVersion = normalizedPublishedVersions.at(-1) ?? null;
 
-  const releaseVersion = !publishedVersion || compareVersions(normalizedPackageVersion, publishedVersion) > 0
-    ? normalizedPackageVersion
-    : incrementReleaseVersion(publishedVersion);
-
   return {
     packageVersion: normalizedPackageVersion,
     publishedVersion,
-    releaseVersion,
-    source: releaseVersion === normalizedPackageVersion ? "package" : "auto-bump",
-    tag: `v${releaseVersion}`,
+    releaseVersion: normalizedPackageVersion,
+    source: "package",
+    tag: `v${normalizedPackageVersion}`,
   };
 }
 
@@ -86,10 +75,6 @@ export function readPackageVersion(rootDir = process.cwd()) {
 }
 
 export function resolveBuildVersion(rootDir = process.cwd()) {
-  if (process.env.COMPOSE_MESH_BUILD_VERSION) {
-    return ensureVersionString(process.env.COMPOSE_MESH_BUILD_VERSION);
-  }
-
   return readPackageVersion(rootDir);
 }
 
