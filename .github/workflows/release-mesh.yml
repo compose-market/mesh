@@ -185,6 +185,12 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Sync project version for release artifacts
+        env:
+          COMPOSE_MESH_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: node scripts/tauri-cli.mjs sync-version
+
       - name: Build and upload Tauri bundles
         uses: tauri-apps/tauri-action@action-v0.6.2
         env:
@@ -245,10 +251,12 @@ jobs:
             tauri/gen/android/**/*.gradle*
             tauri/gen/android/**/gradle-wrapper.properties
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: ""
+      - name: Configure Android SDK
+        run: |
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+          echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/lib/android/sdk/platform-tools" >> "$GITHUB_PATH"
 
       - name: Install Android packages
         run: |
@@ -267,24 +275,33 @@ jobs:
           base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > "$RUNNER_TEMP/compose-mesh-android-keystore.jks"
           echo "storeFile=$RUNNER_TEMP/compose-mesh-android-keystore.jks" >> keystore.properties
 
-      - name: Build and upload Android APK
-        uses: tauri-apps/tauri-action@action-v0.6.2
+      - name: Build Android APK
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMPOSE_MESH_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
           NDK_HOME: ${{ env.NDK_HOME }}
-        with:
-          tauriScript: node scripts/tauri-cli.mjs
-          releaseId: ${{ needs.create-release.outputs.release_id }}
-          tagName: ${{ needs.resolve-version.outputs.tag }}
-          releaseName: ${{ needs.resolve-version.outputs.release_name }}
-          releaseDraft: true
-          prerelease: false
-          mobile: android
-          assetNamePattern: android[ext]
-          args: --apk --ci
+        run: node scripts/tauri-cli.mjs android build --apk --ci
+
+      - name: Resolve Android APK path
+        id: android_apk
+        run: |
+          APK_PATH="$(find tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' | sort | tail -n 1)"
+          if [ -z "$APK_PATH" ]; then
+            echo "Android APK not found after build." >&2
+            exit 1
+          fi
+          echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Android APK to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.resolve-version.outputs.tag }}" \
+            "${{ steps.android_apk.outputs.path }}#android.apk" \
+            --clobber \
+            --repo "${{ github.repository }}"
 
   publish-release:
     name: Publish Release
