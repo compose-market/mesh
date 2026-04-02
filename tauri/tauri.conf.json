@@ -4,8 +4,8 @@
   "version": "0.9.6",
   "identifier": "compose.market.mesh",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "node --run dev",
+    "beforeBuildCommand": "node --run build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
