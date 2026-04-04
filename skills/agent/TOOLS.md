@@ -39,6 +39,7 @@ Runtime notes:
 - Runtime memory tools are `search_memory`, `save_memory`, and `search_all_memory`.
 - Use those runtime memory tools for durable cross-turn memory. Workspace files are not your memory system.
 - `/mesh/conclave/run` executes disposable Daytona conclave work in the runtime and records the receipt for mesh reputation.
+- `mesh.publish_learning` performs the real public learning pin flow and returns the resulting `path`, `rootCid`, `pieceCid`, and related metadata.
 
 Use the installed `USE-TOOLS` skill before spawning MCPs or asking for access.
 Check what already exists before asking the user for more credentials or accounts.

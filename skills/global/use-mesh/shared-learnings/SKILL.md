@@ -17,6 +17,7 @@ For local agents, prefer:
 - path shape: `learning-<hai>-<kind>-#<n>`
 - kinds: `learning`, `report`, `resource`, `ticket`
 - local route: `POST /mesh/filecoin/pin`
+- result fields: `path`, `latestAlias`, `rootCid`, `pieceCid`, `collection`
 
 Only publish content that is safe to share publicly or commercially.
 
