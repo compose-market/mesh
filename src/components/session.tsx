@@ -2,12 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, ChevronDown, Clock, Copy, Key, Plus, Shield, Trash2, Wallet, Zap } from "lucide-react";
 import {
   ComposeKeyDialogShell,
-  SessionBudgetDialogShell,
   SessionIndicatorShell,
   SessionManageDialogShell,
   type SessionManageKey,
   type SessionSummaryRow,
 } from "@compose-market/theme/session";
+import {
+  ShellButton,
+  ShellModal,
+  ShellNotice,
+} from "@compose-market/theme/shell";
 import {
   createSession,
   listComposeKeys,
@@ -178,7 +182,7 @@ function SessionBudgetDialog({
   onNotify,
 }: SessionBudgetDialogProps) {
   const [selectedBudget, setSelectedBudget] = useState<string>(BUDGET_PRESETS[1].value);
-  const [durationHours, setDurationHours] = useState<number>(24);
+  const [selectedDurationHours, setSelectedDurationHours] = useState<number>(24);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -189,24 +193,24 @@ function SessionBudgetDialog({
     },
     {
       label: "Expires After",
-      value: `${durationHours} hours`,
+      value: `${selectedDurationHours} hours`,
     },
     {
-      label: "Approvals Required",
-      value: "1 (now)",
+      label: "Wallet Approval",
+      value: "Use your existing approval",
     },
-  ], [durationHours, selectedBudget]);
+  ], [selectedBudget, selectedDurationHours]);
 
   const handleCreateSession = async () => {
     setCreating(true);
     setError(null);
     try {
-      const expiresAt = Date.now() + durationHours * 60 * 60 * 1000;
+      const expiresAt = Date.now() + selectedDurationHours * 60 * 60 * 1000;
       await createSession({
         apiUrl,
         identity,
         payload: {
-          budgetLimit: Number.parseInt(selectedBudget, 10),
+          budgetLimit: selectedBudget,
           expiresAt,
           chainId: identity.chainId,
           purpose: "session",
@@ -219,39 +223,85 @@ function SessionBudgetDialog({
     } catch (createError) {
       const message = createError instanceof Error ? createError.message : "Failed to create session";
       setError(message);
-      onNotify("error", "Failed to create session");
+      onNotify("error", message);
     } finally {
       setCreating(false);
     }
   };
 
   return (
-    <SessionBudgetDialogShell
+    <ShellModal
       open={open}
-      title="Session Budget"
-      subtitle="Set a spending limit to skip wallet signatures for each AI call. One approval, unlimited inference within your budget."
-      titleIcon={<Shield size={18} />}
-      budgetLabel="Budget Limit (USDC)"
-      durationLabel="Session Duration"
-      durationIcon={<Clock size={14} />}
-      budgetChoices={BUDGET_PRESETS.map((preset) => ({
-        label: preset.label,
-        active: selectedBudget === preset.value,
-        onSelect: () => setSelectedBudget(preset.value),
-      }))}
-      durationChoices={DURATION_OPTIONS.map((hours) => ({
-        label: `${hours}h`,
-        active: durationHours === hours,
-        onSelect: () => setDurationHours(hours),
-      }))}
-      summaryRows={summaryRows}
-      error={error || undefined}
+      title={(
+        <span className="cm-session-modal__title-wrap">
+          <Shield size={18} />
+          Session Budget
+        </span>
+      )}
+      subtitle="Pick a budget and duration for your session."
       onClose={onClose}
-      onSubmit={() => void handleCreateSession()}
-      submitting={creating}
-      submitLabel="Approve & Start Session"
-      submittingLabel="Creating..."
-    />
+      className="cm-session-modal"
+      contentClassName="cm-session-modal__body"
+    >
+      <div className="cm-session-section">
+        <div className="cm-session-section__label">Budget Limit (USDC)</div>
+        <div className="cm-session-choice-grid">
+          {BUDGET_PRESETS.map((preset) => (
+            <button
+              key={preset.value}
+              type="button"
+              className={`cm-session-choice${selectedBudget === preset.value ? " active" : ""}`}
+              onClick={() => setSelectedBudget(preset.value)}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="cm-session-section">
+        <div className="cm-session-section__label">
+          <Clock size={14} />
+          Session Duration
+        </div>
+        <div className="cm-session-choice-grid">
+          {DURATION_OPTIONS.map((hours) => (
+            <button
+              key={hours}
+              type="button"
+              className={`cm-session-choice${selectedDurationHours === hours ? " active" : ""}`}
+              onClick={() => setSelectedDurationHours(hours)}
+            >
+              {hours}h
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="cm-session-summary">
+        {summaryRows.map((row, index) => (
+          <div key={index} className="cm-session-summary__row">
+            <span>{row.label}</span>
+            <strong>{row.value}</strong>
+          </div>
+        ))}
+      </div>
+
+      {error ? <ShellNotice tone="error">{error}</ShellNotice> : null}
+
+      <div className="cm-session-modal__footer">
+        <ShellButton tone="ghost" onClick={onClose} disabled={creating}>
+          Cancel
+        </ShellButton>
+        <ShellButton
+          tone="primary"
+          onClick={() => void handleCreateSession()}
+          disabled={creating}
+        >
+          {creating ? "Creating..." : "Start Session"}
+        </ShellButton>
+      </div>
+    </ShellModal>
   );
 }
 
