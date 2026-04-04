@@ -94,6 +94,19 @@ async function requestJson<T>(url: string, init: RequestInit, timeoutMs = DEFAUL
     });
     if (!response.ok) {
       const text = await response.text();
+      if (text) {
+        try {
+          const parsed = JSON.parse(text) as { error?: string; hint?: string };
+          if (parsed.error) {
+            const message = parsed.hint ? `${parsed.error} ${parsed.hint}` : parsed.error;
+            throw new Error(`HTTP ${response.status}: ${message}`);
+          }
+        } catch (parseError) {
+          if (parseError instanceof Error && parseError.message.startsWith(`HTTP ${response.status}:`)) {
+            throw parseError;
+          }
+        }
+      }
       throw new Error(`HTTP ${response.status}: ${text || response.statusText}`);
     }
     return (await response.json()) as T;

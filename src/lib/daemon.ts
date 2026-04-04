@@ -57,6 +57,17 @@ function toWorkerState(status: DaemonAgentStatus | null | undefined): AgentWorke
   };
 }
 
+function toStoppedWorkerState(updatedAt = Date.now()): AgentWorkerState {
+  return {
+    running: false,
+    status: "stopped",
+    runtimeId: null,
+    lastHeartbeatAt: null,
+    lastError: null,
+    updatedAt,
+  };
+}
+
 export async function daemonInstallAgent(payload: DaemonInstallPayload): Promise<DaemonAgentStatus> {
   ensureTauriRuntime();
   return invoke<DaemonAgentStatus>("daemon_install_agent", { payload });
@@ -88,7 +99,12 @@ export function daemonStatusToWorkerState(status: DaemonAgentStatus | null | und
 
 export function mergeDaemonStatusIntoInstalledAgent(agent: InstalledAgent, status: DaemonAgentStatus | null | undefined): InstalledAgent {
   if (!status) {
-    return agent;
+    return {
+      ...agent,
+      running: false,
+      runtimeId: "",
+      workerState: toStoppedWorkerState(agent.workerState?.updatedAt || agent.network.updatedAt || Date.now()),
+    };
   }
 
   const desiredPermissions = status.desiredPermissions
@@ -100,7 +116,7 @@ export function mergeDaemonStatusIntoInstalledAgent(agent: InstalledAgent, statu
   return {
     ...agent,
     running: Boolean(status.running),
-    runtimeId: status.runtimeId || agent.runtimeId,
+    runtimeId: status.runtimeId || "",
     desiredPermissions,
     permissions: { ...status.permissions },
     network: {
