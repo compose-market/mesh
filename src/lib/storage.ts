@@ -11,6 +11,7 @@ import type {
   AgentDnaLock,
   AgentPermissionPolicy,
   AgentSkillState,
+  AgentWorkerState,
   MeshManifest,
   AgentTaskReport,
   InstalledSkill,
@@ -309,6 +310,17 @@ function normalizeNetworkState(value: Partial<AgentNetworkState> | null | undefi
   };
 }
 
+function stoppedWorkerState(value: Partial<AgentWorkerState> | null | undefined): AgentWorkerState {
+  return {
+    running: false,
+    status: "stopped",
+    runtimeId: null,
+    lastHeartbeatAt: null,
+    lastError: null,
+    updatedAt: Number.isFinite(value?.updatedAt) ? Number(value?.updatedAt) : Date.now(),
+  };
+}
+
 function normalizeInstalledSkill(skill: Partial<InstalledSkill> | null | undefined): InstalledSkill | null {
   if (!skill || typeof skill.id !== "string" || skill.id.trim().length === 0) {
     return null;
@@ -428,10 +440,13 @@ function normalizeInstalledAgent(
       chainId: Number.isFinite(lock.chainId) ? Number(lock.chainId) : 0,
       dnaHash: typeof lock.dnaHash === "string" ? lock.dnaHash : "",
     },
+    running: false,
+    runtimeId: "",
     desiredPermissions: normalizedDesiredPermissions,
     permissions: normalizedPermissions,
     mcpServers: normalizedMcpServers,
     network: normalizedNetwork,
+    workerState: stoppedWorkerState((agent as InstalledAgent).workerState),
     skillStates: normalizeAgentSkillStateRecord((agent as InstalledAgent).skillStates),
     reports: Array.isArray((agent as InstalledAgent).reports)
       ? (agent as InstalledAgent).reports.map((item) => normalizeAgentReport(item)).filter((item): item is AgentTaskReport => item !== null).slice(0, 128)
