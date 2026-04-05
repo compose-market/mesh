@@ -1,249 +1,29 @@
 use super::*;
+use crate::manifest::*;
 
-pub(crate) const COMPOSE_SYNAPSE_COLLECTION: &str = "compose";
-pub(crate) const A409_INCONSISTENT_AGENT_IDENTITY: &str = "a409: inconsistent agent identity";
 pub(crate) const MESH_IDENTIFY_PROTOCOL: &str =
     concat!("/", env!("COMPOSE_MESH_PROTOCOL_NAMESPACE"));
 pub(crate) const MESH_KAD_PROTOCOL: &str =
     concat!("/", env!("COMPOSE_MESH_PROTOCOL_NAMESPACE"), "/kad");
-pub(crate) const MESH_MANIFEST_VERIFY_PROTOCOL: &str = concat!(
-    "/",
-    env!("COMPOSE_MESH_PROTOCOL_NAMESPACE"),
-    "/manifest-verify"
-);
 #[derive(Default)]
 pub(crate) struct MeshRuntimeState {
-    status: Mutex<MeshRuntimeStatus>,
-    stop_tx: Mutex<Option<oneshot::Sender<()>>>,
-    command_tx: Mutex<Option<mpsc::UnboundedSender<MeshLoopCommand>>>,
-    run_generation: Mutex<u64>,
-    active_request: Mutex<Option<MeshJoinRequest>>,
+    pub(crate) status: Mutex<MeshRuntimeStatus>,
+    pub(crate) stop_tx: Mutex<Option<oneshot::Sender<()>>>,
+    pub(crate) command_tx: Mutex<Option<mpsc::UnboundedSender<MeshLoopCommand>>>,
+    pub(crate) run_generation: Mutex<u64>,
+    pub(crate) active_request: Mutex<Option<MeshJoinRequest>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeshAgentCard {
-    name: String,
-    description: String,
-    model: String,
-    framework: String,
-    headline: String,
-    status_line: String,
-    capabilities: Vec<String>,
-    updated_at: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeshManifest {
-    agent_wallet: String,
-    #[serde(rename = "userAddress")]
-    user_wallet: String,
-    device_id: String,
-    peer_id: String,
-    chain_id: u32,
-    state_version: u64,
-    state_root_hash: Option<String>,
-    pdp_piece_cid: Option<String>,
-    pdp_anchored_at: Option<u64>,
-    name: String,
-    description: String,
-    model: String,
-    framework: String,
-    headline: String,
-    status_line: String,
-    skills: Vec<String>,
-    mcp_servers: Vec<String>,
-    a2a_endpoints: Vec<String>,
-    capabilities: Vec<String>,
-    agent_card_uri: String,
-    listen_multiaddrs: Vec<String>,
-    relay_peer_id: Option<String>,
-    reputation_score: f64,
-    total_conclaves: u64,
-    successful_conclaves: u64,
-    signed_at: u64,
-    signature: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeshManifestUnsigned {
-    agent_wallet: String,
-    #[serde(rename = "userAddress")]
-    user_wallet: String,
-    device_id: String,
-    peer_id: String,
-    chain_id: u32,
-    state_version: u64,
-    state_root_hash: Option<String>,
-    pdp_piece_cid: Option<String>,
-    pdp_anchored_at: Option<u64>,
-    name: String,
-    description: String,
-    model: String,
-    framework: String,
-    headline: String,
-    status_line: String,
-    skills: Vec<String>,
-    mcp_servers: Vec<String>,
-    a2a_endpoints: Vec<String>,
-    capabilities: Vec<String>,
-    agent_card_uri: String,
-    listen_multiaddrs: Vec<String>,
-    relay_peer_id: Option<String>,
-    reputation_score: f64,
-    total_conclaves: u64,
-    successful_conclaves: u64,
-    signed_at: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeshManifestVerificationRequest {
-    hai_id: String,
-    manifest: MeshManifest,
-    latest_retrieval_url: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeshManifestVerificationResponse {
-    ok: bool,
-    error: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeshStateSnapshotRuntime {
-    dna_hash: String,
-    identity_hash: String,
-    model_id: String,
-    chain_id: u32,
-    agent_card_cid: String,
-    mcp_tools_hash: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeshStateSnapshotManifest {
-    skills: Vec<String>,
-    capabilities: Vec<String>,
-    mcp_servers: Vec<String>,
-    a2a_endpoints: Vec<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeshStateSnapshot {
-    version: u64,
-    created_at: u64,
-    agent_wallet: String,
-    #[serde(rename = "userAddress")]
-    user_wallet: String,
-    device_id: String,
-    peer_id: String,
-    runtime: MeshStateSnapshotRuntime,
-    manifest: MeshStateSnapshotManifest,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeshStateSnapshotRequest {
-    agent_wallet: String,
-    chain_id: u32,
-    peer_id: String,
-    model_id: String,
-    dna_hash: String,
-    identity_hash: String,
-    agent_card_cid: String,
-    mcp_tools_hash: String,
-    skills: Vec<String>,
-    capabilities: Vec<String>,
-    mcp_servers: Vec<String>,
-    a2a_endpoints: Vec<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeshStateAnchorCommandRequest {
-    api_url: String,
-    compose_key_token: String,
-    user_address: String,
-    device_id: String,
-    target_synapse_expiry: u64,
-    snapshot: MeshStateSnapshotRequest,
-    previous_state_root_hash: Option<String>,
-    previous_pdp_piece_cid: Option<String>,
-    previous_pdp_anchored_at: Option<u64>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SignedMeshStateEnvelope {
-    version: u32,
-    kind: String,
-    collection: String,
-    hai_id: String,
-    update_number: u64,
-    path: String,
-    peer_id: String,
-    agent_wallet: String,
-    #[serde(rename = "userAddress")]
-    user_wallet: String,
-    device_id: String,
-    chain_id: u32,
-    signed_at: u64,
-    state_root_hash: String,
-    snapshot: MeshStateSnapshot,
-    signature: String,
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub(crate) struct LocalHaiState {
-    version: u32,
-    agent_wallet: String,
-    #[serde(rename = "userAddress")]
-    user_wallet: String,
-    device_id: String,
-    hai_id: String,
-    synapse_session_private_key: String,
-    next_update_number: u64,
-    #[serde(default = "default_learning_number")]
-    next_learning_number: u64,
-    last_update_number: Option<u64>,
-    last_learning_number: Option<u64>,
-    last_anchor_path: Option<String>,
-    last_learning_path: Option<String>,
-    last_state_root_hash: Option<String>,
-    last_anchor_piece_cid: Option<String>,
-    last_learning_piece_cid: Option<String>,
-    last_retrieval_url: Option<String>,
-    last_anchored_at: Option<u64>,
-    updated_at: u64,
-}
-
-pub(crate) fn default_learning_number() -> u64 {
-    1
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeshStateAnchorRuntimeResponse {
-    hai_id: String,
-    update_number: u64,
-    path: String,
-    file_name: String,
-    latest_alias: String,
-    state_root_hash: String,
-    pdp_piece_cid: String,
-    pdp_anchored_at: u64,
-    payload_size: usize,
-    provider_id: String,
-    data_set_id: Option<String>,
-    piece_id: Option<String>,
-    retrieval_url: Option<String>,
-    source: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) model: String,
+    pub(crate) framework: String,
+    pub(crate) headline: String,
+    pub(crate) status_line: String,
+    pub(crate) capabilities: Vec<String>,
+    pub(crate) updated_at: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -280,104 +60,104 @@ pub(crate) enum MeshPublicationQueueKind {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeshPublicationQueueRequest {
-    request_id: String,
-    kind: MeshPublicationQueueKind,
-    agent_wallet: String,
-    requested_at: u64,
-    reason: Option<String>,
-    title: Option<String>,
-    summary: Option<String>,
-    content: Option<String>,
-    access_price_usdc: Option<String>,
+    pub(crate) request_id: String,
+    pub(crate) kind: MeshPublicationQueueKind,
+    pub(crate) agent_wallet: String,
+    pub(crate) requested_at: u64,
+    pub(crate) reason: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) summary: Option<String>,
+    pub(crate) content: Option<String>,
+    pub(crate) access_price_usdc: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeshPublicationQueueResult {
-    request_id: String,
-    agent_wallet: Option<String>,
-    kind: Option<MeshPublicationQueueKind>,
-    success: bool,
-    error: Option<String>,
-    hai_id: Option<String>,
-    update_number: Option<u64>,
-    artifact_kind: Option<MeshSharedArtifactKind>,
-    artifact_number: Option<u64>,
-    path: Option<String>,
-    latest_alias: Option<String>,
-    root_cid: Option<String>,
-    piece_cid: Option<String>,
-    collection: Option<String>,
-    state_root_hash: Option<String>,
-    pdp_piece_cid: Option<String>,
-    pdp_anchored_at: Option<u64>,
-    manifest: Option<MeshManifest>,
+    pub(crate) request_id: String,
+    pub(crate) agent_wallet: Option<String>,
+    pub(crate) kind: Option<MeshPublicationQueueKind>,
+    pub(crate) success: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) hai_id: Option<String>,
+    pub(crate) update_number: Option<u64>,
+    pub(crate) artifact_kind: Option<MeshSharedArtifactKind>,
+    pub(crate) artifact_number: Option<u64>,
+    pub(crate) path: Option<String>,
+    pub(crate) latest_alias: Option<String>,
+    pub(crate) root_cid: Option<String>,
+    pub(crate) piece_cid: Option<String>,
+    pub(crate) collection: Option<String>,
+    pub(crate) state_root_hash: Option<String>,
+    pub(crate) pdp_piece_cid: Option<String>,
+    pub(crate) pdp_anchored_at: Option<u64>,
+    pub(crate) manifest: Option<MeshManifest>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedLocalState {
-    settings: PersistedLocalSettings,
-    identity: Option<PersistedLocalIdentity>,
-    installed_agents: Vec<PersistedInstalledAgent>,
-    installed_skills: Vec<PersistedInstalledSkill>,
+    pub(crate) settings: PersistedLocalSettings,
+    pub(crate) identity: Option<PersistedLocalIdentity>,
+    pub(crate) installed_agents: Vec<PersistedInstalledAgent>,
+    pub(crate) installed_skills: Vec<PersistedInstalledSkill>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedLocalSettings {
-    api_url: String,
-    mesh_enabled: bool,
+    pub(crate) api_url: String,
+    pub(crate) mesh_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedLocalIdentity {
-    user_address: String,
-    compose_key_token: String,
-    session_id: String,
-    budget: String,
-    budget_used: String,
-    duration: u64,
-    chain_id: u32,
-    expires_at: u64,
-    device_id: String,
+    pub(crate) user_address: String,
+    pub(crate) compose_key_token: String,
+    pub(crate) session_id: String,
+    pub(crate) budget: String,
+    pub(crate) budget_used: String,
+    pub(crate) duration: u64,
+    pub(crate) chain_id: u32,
+    pub(crate) expires_at: u64,
+    pub(crate) device_id: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct ActiveSessionRefreshResponse {
-    has_session: bool,
-    key_id: String,
-    token: String,
-    budget_remaining: String,
-    budget_used: String,
-    expires_at: u64,
-    chain_id: u32,
+    pub(crate) has_session: bool,
+    pub(crate) key_id: String,
+    pub(crate) token: String,
+    pub(crate) budget_remaining: String,
+    pub(crate) budget_used: String,
+    pub(crate) expires_at: u64,
+    pub(crate) chain_id: u32,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedInstalledSkill {
-    id: String,
-    enabled: bool,
-    relative_path: String,
+    pub(crate) id: String,
+    pub(crate) enabled: bool,
+    pub(crate) relative_path: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedInstalledAgent {
-    agent_wallet: String,
-    metadata: PersistedAgentMetadata,
-    lock: PersistedAgentLock,
-    network: PersistedAgentNetworkState,
-    heartbeat: PersistedAgentHeartbeatState,
+    pub(crate) agent_wallet: String,
+    pub(crate) metadata: PersistedAgentMetadata,
+    pub(crate) lock: PersistedAgentLock,
+    pub(crate) network: PersistedAgentNetworkState,
+    pub(crate) heartbeat: PersistedAgentHeartbeatState,
     #[serde(default)]
-    desired_permissions: DaemonPermissionPolicy,
+    pub(crate) desired_permissions: DaemonPermissionPolicy,
     #[serde(default)]
-    permissions: DaemonPermissionPolicy,
-    mcp_servers: Vec<String>,
-    skill_states: HashMap<String, PersistedAgentSkillState>,
+    pub(crate) permissions: DaemonPermissionPolicy,
+    pub(crate) mcp_servers: Vec<String>,
+    pub(crate) skill_states: HashMap<String, PersistedAgentSkillState>,
 }
 
 pub(crate) fn default_agent_heartbeat_enabled() -> bool {
@@ -392,60 +172,60 @@ pub(crate) fn default_agent_heartbeat_interval_ms() -> u64 {
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedAgentHeartbeatState {
     #[serde(default = "default_agent_heartbeat_enabled")]
-    enabled: bool,
+    pub(crate) enabled: bool,
     #[serde(default = "default_agent_heartbeat_interval_ms")]
-    interval_ms: u64,
-    last_run_at: Option<u64>,
-    last_result: Option<String>,
+    pub(crate) interval_ms: u64,
+    pub(crate) last_run_at: Option<u64>,
+    pub(crate) last_result: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedAgentMetadata {
-    name: String,
-    description: String,
-    agent_card_uri: String,
-    model: String,
-    framework: String,
-    plugins: Vec<serde_json::Value>,
-    endpoints: PersistedAgentEndpoints,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) agent_card_uri: String,
+    pub(crate) model: String,
+    pub(crate) framework: String,
+    pub(crate) plugins: Vec<serde_json::Value>,
+    pub(crate) endpoints: PersistedAgentEndpoints,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedAgentEndpoints {
-    chat: String,
-    stream: String,
+    pub(crate) chat: String,
+    pub(crate) stream: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedAgentLock {
-    agent_wallet: String,
-    agent_card_cid: String,
-    model_id: String,
-    mcp_tools_hash: String,
-    chain_id: u32,
-    dna_hash: String,
+    pub(crate) agent_wallet: String,
+    pub(crate) agent_card_cid: String,
+    pub(crate) model_id: String,
+    pub(crate) mcp_tools_hash: String,
+    pub(crate) chain_id: u32,
+    pub(crate) dna_hash: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedAgentNetworkState {
-    enabled: bool,
-    public_card: Option<MeshAgentCard>,
-    manifest: Option<MeshManifest>,
+    pub(crate) enabled: bool,
+    pub(crate) public_card: Option<MeshAgentCard>,
+    pub(crate) manifest: Option<MeshManifest>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PersistedAgentSkillState {
-    skill_id: String,
-    enabled: bool,
-    eligible: bool,
-    source: String,
-    revision: String,
-    updated_at: Option<u64>,
+    pub(crate) skill_id: String,
+    pub(crate) enabled: bool,
+    pub(crate) eligible: bool,
+    pub(crate) source: String,
+    pub(crate) revision: String,
+    pub(crate) updated_at: Option<u64>,
 }
 
 pub(crate) enum MeshLoopCommand {
@@ -463,83 +243,78 @@ pub(crate) enum MeshLoopCommand {
     },
 }
 
-pub(crate) struct PendingManifestVerification {
-    agent_wallet: String,
-    reply: Option<oneshot::Sender<Result<(), String>>>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeshJoinRequest {
-    user_address: String,
-    device_id: String,
-    chain_id: u32,
-    gossip_topic: String,
+    pub(crate) user_address: String,
+    pub(crate) device_id: String,
+    pub(crate) chain_id: u32,
+    pub(crate) gossip_topic: String,
     #[serde(default = "default_announce_topic")]
-    announce_topic: String,
+    pub(crate) announce_topic: String,
     #[serde(default = "default_manifest_topic")]
-    manifest_topic: String,
+    pub(crate) manifest_topic: String,
     #[serde(default = "default_conclave_topic")]
-    conclave_topic: String,
+    pub(crate) conclave_topic: String,
     #[serde(default = "default_mesh_heartbeat_ms")]
-    heartbeat_ms: u64,
+    pub(crate) heartbeat_ms: u64,
     #[serde(default = "default_kad_protocol")]
-    kad_protocol: String,
+    pub(crate) kad_protocol: String,
     #[serde(default)]
-    session_id: String,
+    pub(crate) session_id: String,
     #[serde(default)]
-    bootstrap_multiaddrs: Vec<String>,
+    pub(crate) bootstrap_multiaddrs: Vec<String>,
     #[serde(default)]
-    relay_multiaddrs: Vec<String>,
+    pub(crate) relay_multiaddrs: Vec<String>,
     #[serde(default)]
-    published_agents: Vec<MeshPublishedAgent>,
+    pub(crate) published_agents: Vec<MeshPublishedAgent>,
     #[serde(default)]
-    capabilities: Vec<String>,
+    pub(crate) capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeshPublishedAgent {
-    agent_wallet: String,
-    dna_hash: String,
-    capabilities_hash: String,
-    capabilities: Vec<String>,
-    public_card: Option<MeshAgentCard>,
+    pub(crate) agent_wallet: String,
+    pub(crate) dna_hash: String,
+    pub(crate) capabilities_hash: String,
+    pub(crate) capabilities: Vec<String>,
+    pub(crate) public_card: Option<MeshAgentCard>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeshPublishedAgentStatus {
-    agent_wallet: String,
-    hai_id: String,
+    pub(crate) agent_wallet: String,
+    pub(crate) hai_id: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeshRuntimeStatus {
-    running: bool,
-    status: String,
-    user_address: Option<String>,
-    published_agents: Vec<MeshPublishedAgentStatus>,
-    device_id: Option<String>,
-    peer_id: Option<String>,
-    listen_multiaddrs: Vec<String>,
-    relay_peer_id: Option<String>,
-    peers_discovered: u32,
-    last_heartbeat_at: Option<u64>,
-    last_error: Option<String>,
-    updated_at: u64,
+    pub(crate) running: bool,
+    pub(crate) status: String,
+    pub(crate) user_address: Option<String>,
+    pub(crate) published_agents: Vec<MeshPublishedAgentStatus>,
+    pub(crate) device_id: Option<String>,
+    pub(crate) peer_id: Option<String>,
+    pub(crate) listen_multiaddrs: Vec<String>,
+    pub(crate) relay_peer_id: Option<String>,
+    pub(crate) peers_discovered: u32,
+    pub(crate) last_heartbeat_at: Option<u64>,
+    pub(crate) last_error: Option<String>,
+    pub(crate) updated_at: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LocalUpdateCheckResult {
-    enabled: bool,
-    available: bool,
-    current_version: Option<String>,
-    version: Option<String>,
-    body: Option<String>,
-    date: Option<String>,
+    pub(crate) enabled: bool,
+    pub(crate) available: bool,
+    pub(crate) current_version: Option<String>,
+    pub(crate) version: Option<String>,
+    pub(crate) body: Option<String>,
+    pub(crate) date: Option<String>,
 }
 
 impl Default for MeshRuntimeStatus {
@@ -564,20 +339,20 @@ impl Default for MeshRuntimeStatus {
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "MeshBehaviourEvent")]
 pub(crate) struct MeshBehaviour {
-    relay_client: relay::client::Behaviour,
-    dcutr: dcutr::Behaviour,
-    autonat: autonat::Behaviour,
-    mdns: mdns::tokio::Behaviour,
-    ping: ping::Behaviour,
-    identify: identify::Behaviour,
-    gossipsub: gossipsub::Behaviour,
-    manifest_verify: request_response::cbor::Behaviour<
+    pub(crate) relay_client: relay::client::Behaviour,
+    pub(crate) dcutr: dcutr::Behaviour,
+    pub(crate) autonat: autonat::Behaviour,
+    pub(crate) mdns: mdns::tokio::Behaviour,
+    pub(crate) ping: ping::Behaviour,
+    pub(crate) identify: identify::Behaviour,
+    pub(crate) gossipsub: gossipsub::Behaviour,
+    pub(crate) manifest_verify: request_response::cbor::Behaviour<
         MeshManifestVerificationRequest,
         MeshManifestVerificationResponse,
     >,
-    kad: kad::Behaviour<kad::store::MemoryStore>,
-    rendezvous: rendezvous::client::Behaviour,
-    connection_limits: connection_limits::Behaviour,
+    pub(crate) kad: kad::Behaviour<kad::store::MemoryStore>,
+    pub(crate) rendezvous: rendezvous::client::Behaviour,
+    pub(crate) connection_limits: connection_limits::Behaviour,
 }
 
 #[derive(Debug)]
@@ -822,172 +597,6 @@ pub(crate) fn normalize_capability(raw: &str) -> Option<String> {
     Some(trimmed)
 }
 
-pub(crate) fn normalize_manifest_atom(raw: &str, max_len: usize) -> Option<String> {
-    let trimmed = raw.trim().to_lowercase();
-    if trimmed.is_empty() || trimmed.len() > max_len {
-        return None;
-    }
-    if !trimmed
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/' | '@'))
-    {
-        return None;
-    }
-    Some(trimmed)
-}
-
-pub(crate) fn normalize_manifest_atoms(
-    values: &[String],
-    max_items: usize,
-    max_len: usize,
-) -> Vec<String> {
-    let mut out = values
-        .iter()
-        .filter_map(|value| normalize_manifest_atom(value, max_len))
-        .collect::<Vec<_>>();
-    out.sort();
-    out.dedup();
-    out.truncate(max_items);
-    out
-}
-
-pub(crate) fn normalize_manifest_urls(values: &[String], max_items: usize) -> Vec<String> {
-    let mut out = values
-        .iter()
-        .map(|value| truncate_string(value.clone(), 256))
-        .filter(|value| {
-            let lower = value.to_lowercase();
-            lower.starts_with("https://") || lower.starts_with("http://")
-        })
-        .collect::<Vec<_>>();
-    out.sort();
-    out.dedup();
-    out.truncate(max_items);
-    out
-}
-
-pub(crate) fn normalize_optional_hex_32(value: Option<String>) -> Result<Option<String>, String> {
-    let Some(raw) = value else {
-        return Ok(None);
-    };
-    let trimmed = raw.trim().to_lowercase();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("stateRootHash must be a 64-character hex string".to_string());
-    }
-    Ok(Some(trimmed))
-}
-
-pub(crate) fn normalize_state_root_hash_for_compare(value: &str) -> Option<String> {
-    let trimmed = value.trim().to_lowercase();
-    let normalized = trimmed.strip_prefix("0x").unwrap_or(&trimmed);
-    if normalized.len() != 64 || !normalized.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    Some(normalized.to_string())
-}
-
-pub(crate) fn same_state_root_hash(previous: Option<&str>, next: &str) -> bool {
-    let Some(previous_normalized) = previous.and_then(normalize_state_root_hash_for_compare) else {
-        return false;
-    };
-    let Some(next_normalized) = normalize_state_root_hash_for_compare(next) else {
-        return false;
-    };
-    previous_normalized == next_normalized
-}
-
-pub(crate) fn normalize_optional_cid(value: Option<String>) -> Option<String> {
-    let trimmed = value.unwrap_or_default().trim().to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(truncate_string(trimmed, 256))
-    }
-}
-
-pub(crate) fn normalize_multiaddr_strings(values: &[String]) -> Vec<String> {
-    let mut out = values
-        .iter()
-        .filter_map(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            trimmed
-                .parse::<Multiaddr>()
-                .ok()
-                .map(|addr| addr.to_string())
-        })
-        .collect::<Vec<_>>();
-    out.sort();
-    out.dedup();
-    out
-}
-
-pub(crate) fn hex_encode(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte| format!("{:02x}", byte))
-        .collect::<String>()
-}
-
-pub(crate) fn decode_hex_string(value: &str) -> Result<Vec<u8>, String> {
-    let normalized = value.trim();
-    if normalized.len() % 2 != 0 {
-        return Err("hex string must have an even number of characters".to_string());
-    }
-
-    let mut out = Vec::with_capacity(normalized.len() / 2);
-    let mut chars = normalized.chars();
-    while let (Some(left), Some(right)) = (chars.next(), chars.next()) {
-        let byte = u8::from_str_radix(format!("{left}{right}").as_str(), 16)
-            .map_err(|_| "hex string contains invalid characters".to_string())?;
-        out.push(byte);
-    }
-    Ok(out)
-}
-
-pub(crate) fn encode_hai_base36(mut value: u64) -> String {
-    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut out = [b'0'; 6];
-    for index in (0..6).rev() {
-        out[index] = ALPHABET[(value % 36) as usize];
-        value /= 36;
-    }
-    String::from_utf8_lossy(&out).to_string()
-}
-
-pub(crate) fn wallet_bytes(value: &str) -> [u8; 20] {
-    let normalized = value.trim().trim_start_matches("0x");
-    let mut out = [0u8; 20];
-    for index in 0..20 {
-        let start = index * 2;
-        let end = start + 2;
-        out[index] = u8::from_str_radix(&normalized[start..end], 16).unwrap_or(0);
-    }
-    out
-}
-
-pub(crate) fn derive_hai_id(agent_wallet: &str, user_address: &str, device_id: &str) -> String {
-    let mut hasher = Keccak256::new();
-    hasher.update(b":compose:hai:v1");
-    hasher.update(wallet_bytes(user_address));
-    hasher.update(wallet_bytes(agent_wallet));
-    hasher.update(device_id.trim().as_bytes());
-    let digest = hasher.finalize();
-    let prefix = u64::from_be_bytes([
-        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
-    ]);
-    encode_hai_base36(prefix % 2_176_782_336)
-}
-
-pub(crate) fn compose_hai_path(hai_id: &str, update_number: u64) -> String {
-    format!("compose-{}-{}", hai_id, update_number)
-}
-
 pub(crate) fn learning_path_slug(title: &str) -> String {
     let slug = local_agent_slug(title);
     if slug == "skill" {
@@ -1006,173 +615,124 @@ pub(crate) fn learning_hai_path(hai_id: &str, title: &str, artifact_number: u64)
     )
 }
 
-pub(crate) fn normalize_synapse_session_private_key(value: &str) -> Option<String> {
-    let normalized = value.trim().to_lowercase();
-    if normalized.len() != 66 || !normalized.starts_with("0x") {
-        return None;
-    }
-    if normalized
-        .chars()
-        .skip(2)
-        .all(|char| char.is_ascii_hexdigit())
-    {
-        Some(normalized)
-    } else {
-        None
-    }
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct LocalLearningHaiState {
+    pub(crate) version: u32,
+    pub(crate) agent_wallet: String,
+    #[serde(rename = "userAddress")]
+    pub(crate) user_wallet: String,
+    pub(crate) device_id: String,
+    pub(crate) hai_id: String,
+    pub(crate) next_learning_number: u64,
+    pub(crate) last_learning_number: Option<u64>,
+    pub(crate) last_learning_path: Option<String>,
+    pub(crate) last_learning_piece_cid: Option<String>,
+    pub(crate) updated_at: u64,
 }
 
-pub(crate) fn generate_synapse_session_private_key() -> String {
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    format!("0x{}", hex_encode(&bytes))
-}
-
-pub(crate) fn local_hai_state_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(resolve_base_dir(app)?.join("mesh").join("hai"))
-}
-
-pub(crate) fn local_hai_state_path(
+pub(crate) fn local_learning_hai_state_path(
     app: &tauri::AppHandle,
     agent_wallet: &str,
     user_wallet: &str,
     device_id: &str,
 ) -> Result<PathBuf, String> {
     let agent_wallet = normalize_wallet(agent_wallet)
-        .ok_or_else(|| "local HAI agentWallet must be a valid wallet address".to_string())?;
+        .ok_or_else(|| "local learning agentWallet must be a valid wallet address".to_string())?;
     let user_wallet = normalize_wallet(user_wallet)
-        .ok_or_else(|| "local HAI userAddress must be a valid wallet address".to_string())?;
+        .ok_or_else(|| "local learning userAddress must be a valid wallet address".to_string())?;
     let device_id = normalize_device_id(device_id)
-        .ok_or_else(|| "local HAI deviceId format is invalid".to_string())?;
+        .ok_or_else(|| "local learning deviceId format is invalid".to_string())?;
     let device_key = sha256_hex_string(device_id.as_str());
     Ok(local_hai_state_dir(app)?.join(format!(
-        "{}__{}__{}.json",
+        "{}__{}__{}.learning.json",
         agent_wallet, user_wallet, device_key
     )))
 }
 
-pub(crate) fn normalize_local_hai_state(
-    value: LocalHaiState,
+pub(crate) fn normalize_local_learning_hai_state(
+    value: LocalLearningHaiState,
     agent_wallet: &str,
     user_wallet: &str,
     device_id: &str,
-) -> Result<LocalHaiState, String> {
+) -> Result<LocalLearningHaiState, String> {
     let agent_wallet = normalize_wallet(agent_wallet)
-        .ok_or_else(|| "local HAI agentWallet must be a valid wallet address".to_string())?;
+        .ok_or_else(|| "local learning agentWallet must be a valid wallet address".to_string())?;
     let user_wallet = normalize_wallet(user_wallet)
-        .ok_or_else(|| "local HAI userAddress must be a valid wallet address".to_string())?;
+        .ok_or_else(|| "local learning userAddress must be a valid wallet address".to_string())?;
     let device_id = normalize_device_id(device_id)
-        .ok_or_else(|| "local HAI deviceId format is invalid".to_string())?;
+        .ok_or_else(|| "local learning deviceId format is invalid".to_string())?;
 
-    Ok(LocalHaiState {
+    Ok(LocalLearningHaiState {
         version: 1,
         agent_wallet: agent_wallet.clone(),
         user_wallet: user_wallet.clone(),
         device_id: device_id.clone(),
         hai_id: derive_hai_id(&agent_wallet, &user_wallet, &device_id),
-        synapse_session_private_key: normalize_synapse_session_private_key(
-            &value.synapse_session_private_key,
-        )
-        .unwrap_or_else(generate_synapse_session_private_key),
-        next_update_number: value.next_update_number.max(1),
         next_learning_number: value.next_learning_number.max(1),
-        last_update_number: value.last_update_number.filter(|value| *value > 0),
         last_learning_number: value.last_learning_number.filter(|value| *value > 0),
-        last_anchor_path: value
-            .last_anchor_path
-            .map(|path| path.trim().to_string())
-            .filter(|path| !path.is_empty()),
         last_learning_path: value
             .last_learning_path
-            .map(|path| path.trim().to_string())
-            .filter(|path| !path.is_empty()),
-        last_state_root_hash: value
-            .last_state_root_hash
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-        last_anchor_piece_cid: value
-            .last_anchor_piece_cid
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
         last_learning_piece_cid: value
             .last_learning_piece_cid
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
-        last_retrieval_url: value
-            .last_retrieval_url
-            .and_then(|value| normalize_persisted_url(value.as_str())),
-        last_anchored_at: value.last_anchored_at.filter(|value| *value > 0),
         updated_at: now_ms(),
     })
 }
 
-pub(crate) fn save_local_hai_state(
+pub(crate) fn save_local_learning_hai_state(
     app: &tauri::AppHandle,
-    value: &LocalHaiState,
+    state: &LocalLearningHaiState,
 ) -> Result<(), String> {
-    let path = local_hai_state_path(
+    let path = local_learning_hai_state_path(
         app,
-        &value.agent_wallet,
-        &value.user_wallet,
-        &value.device_id,
+        &state.agent_wallet,
+        &state.user_wallet,
+        &state.device_id,
     )?;
-    let serialized = serde_json::to_string_pretty(value)
-        .map_err(|err| format!("failed to encode local HAI state: {err}"))?;
-    write_string_atomically(&path, &serialized, "local HAI state")
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create local learning state directory: {err}"))?;
+    }
+    let serialized = serde_json::to_string_pretty(state)
+        .map_err(|err| format!("failed to encode local learning state: {err}"))?;
+    fs::write(&path, serialized)
+        .map_err(|err| format!("failed to persist local learning state: {err}"))
 }
 
-pub(crate) fn ensure_local_hai_state(
+pub(crate) fn ensure_local_learning_hai_state(
     app: &tauri::AppHandle,
     agent_wallet: &str,
     user_wallet: &str,
     device_id: &str,
-) -> Result<LocalHaiState, String> {
-    let path = local_hai_state_path(app, agent_wallet, user_wallet, device_id)?;
+) -> Result<LocalLearningHaiState, String> {
+    let path = local_learning_hai_state_path(app, agent_wallet, user_wallet, device_id)?;
     let normalized = if path.exists() {
         let raw = fs::read_to_string(&path)
-            .map_err(|err| format!("failed to read local HAI state: {err}"))?;
-        let parsed = serde_json::from_str::<LocalHaiState>(&raw)
-            .map_err(|err| format!("failed to parse local HAI state: {err}"))?;
-        normalize_local_hai_state(parsed, agent_wallet, user_wallet, device_id)?
+            .map_err(|err| format!("failed to read local learning state: {err}"))?;
+        let parsed = serde_json::from_str::<LocalLearningHaiState>(&raw)
+            .map_err(|err| format!("failed to parse local learning state: {err}"))?;
+        normalize_local_learning_hai_state(parsed, agent_wallet, user_wallet, device_id)?
     } else {
-        normalize_local_hai_state(
-            LocalHaiState::default(),
+        normalize_local_learning_hai_state(
+            LocalLearningHaiState::default(),
             agent_wallet,
             user_wallet,
             device_id,
         )?
     };
-    save_local_hai_state(app, &normalized)?;
+    save_local_learning_hai_state(app, &normalized)?;
     Ok(normalized)
-}
-
-pub(crate) fn record_local_hai_anchor(
-    app: &tauri::AppHandle,
-    state: &LocalHaiState,
-    response: &MeshStateAnchorRuntimeResponse,
-) -> Result<LocalHaiState, String> {
-    let mut updated = state.clone();
-    updated.hai_id = response.hai_id.clone();
-    updated.next_update_number = response.update_number.saturating_add(1);
-    updated.last_update_number = Some(response.update_number);
-    updated.last_anchor_path = Some(response.path.clone());
-    updated.last_state_root_hash = Some(response.state_root_hash.clone());
-    updated.last_anchor_piece_cid = Some(response.pdp_piece_cid.clone());
-    updated.last_retrieval_url = response
-        .retrieval_url
-        .clone()
-        .and_then(|value| normalize_persisted_url(value.as_str()));
-    updated.last_anchored_at = Some(response.pdp_anchored_at);
-    updated.updated_at = now_ms();
-    save_local_hai_state(app, &updated)?;
-    Ok(updated)
 }
 
 pub(crate) fn record_local_hai_learning(
     app: &tauri::AppHandle,
-    state: &LocalHaiState,
+    state: &LocalLearningHaiState,
     response: &MeshSharedArtifactPinRuntimeResponse,
-) -> Result<LocalHaiState, String> {
+) -> Result<LocalLearningHaiState, String> {
     let mut updated = state.clone();
     updated.hai_id = response.hai_id.clone();
     updated.next_learning_number = response.artifact_number.saturating_add(1);
@@ -1180,961 +740,8 @@ pub(crate) fn record_local_hai_learning(
     updated.last_learning_path = Some(response.path.clone());
     updated.last_learning_piece_cid = Some(response.piece_cid.clone());
     updated.updated_at = now_ms();
-    save_local_hai_state(app, &updated)?;
+    save_local_learning_hai_state(app, &updated)?;
     Ok(updated)
-}
-
-pub(crate) fn persist_manifest_update(
-    app: &tauri::AppHandle,
-    manifest: &MeshManifest,
-) -> Result<(), String> {
-    let mut value = load_local_state_value(app)?;
-
-    let Some(installed_agents) = value
-        .get_mut("installedAgents")
-        .and_then(|items| items.as_array_mut())
-    else {
-        return Ok(());
-    };
-
-    for agent in installed_agents.iter_mut() {
-        let wallet = agent
-            .get("agentWallet")
-            .and_then(|entry| entry.as_str())
-            .and_then(normalize_wallet);
-        if wallet.as_deref() != Some(manifest.agent_wallet.as_str()) {
-            continue;
-        }
-
-        let current_hash = agent
-            .as_object()
-            .ok_or_else(|| "installed agent entry must be a JSON object".to_string())
-            .and_then(|object| {
-                current_manifest_sync_hash(app, manifest.agent_wallet.as_str(), object)
-            })?;
-
-        if !agent.get("network").is_some_and(|entry| entry.is_object()) {
-            agent["network"] = serde_json::json!({});
-        }
-        agent["network"]["manifest"] = serde_json::to_value(manifest)
-            .map_err(|err| format!("failed to encode published manifest: {err}"))?;
-        agent["network"]["manifestSyncHash"] = serde_json::Value::String(current_hash.clone());
-        agent["network"]["lastPublishedManifestSyncHash"] = serde_json::Value::String(current_hash);
-        agent["network"]["manifestRepublishOnA409"] = serde_json::Value::Bool(false);
-        break;
-    }
-
-    save_local_state_value(app, &value)
-}
-
-fn current_manifest_sync_hash(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-    agent_object: &serde_json::Map<String, serde_json::Value>,
-) -> Result<String, String> {
-    let workspace = daemon_agent_workspace_path(app, agent_wallet)?;
-    let authored_skills = agent_object
-        .get("skillStates")
-        .and_then(|value| value.as_object())
-        .map(|states| {
-            let mut items = states
-                .iter()
-                .filter(|(key, value)| skill_state_is_agent_authored(value, key))
-                .map(|(key, value)| {
-                    serde_json::json!({
-                        "key": key,
-                        "skillId": value.get("skillId").and_then(|item| item.as_str()).unwrap_or_default(),
-                        "revision": value.get("revision").and_then(|item| item.as_str()).unwrap_or_default(),
-                    })
-                })
-                .collect::<Vec<_>>();
-            items.sort_by(|left, right| left.to_string().cmp(&right.to_string()));
-            items
-        })
-        .unwrap_or_default();
-
-    let payload = serde_json::json!({
-        "dna": workspace_document_hash(&workspace.join("DNA.md")),
-        "identity": workspace_document_hash(&workspace.join("IDENTITY.md")),
-        "tools": workspace_document_hash(&workspace.join("TOOLS.md")),
-        "skills": authored_skills,
-    });
-
-    Ok(format!(
-        "0x{}",
-        sha256_hex_string(
-            &serde_json::to_string(&payload)
-                .map_err(|err| format!("failed to encode manifest sync payload: {err}"))?,
-        )
-    ))
-}
-
-pub(crate) fn sync_local_agent_workspace_manifest_state(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-    agent_object: &mut serde_json::Map<String, serde_json::Value>,
-) -> Result<bool, String> {
-    let next_hash = current_manifest_sync_hash(app, agent_wallet, agent_object)?;
-
-    if !agent_object
-        .get("network")
-        .is_some_and(|value| value.is_object())
-    {
-        agent_object.insert("network".to_string(), serde_json::json!({}));
-    }
-
-    let Some(network) = agent_object
-        .get_mut("network")
-        .and_then(|value| value.as_object_mut())
-    else {
-        return Ok(false);
-    };
-
-    let changed = network
-        .get("manifestSyncHash")
-        .and_then(|value| value.as_str())
-        .map(|value| value != next_hash)
-        .unwrap_or(true);
-    network.insert(
-        "manifestSyncHash".to_string(),
-        serde_json::Value::String(next_hash),
-    );
-    Ok(changed)
-}
-
-fn installed_agent_object<'a>(
-    state_value: &'a serde_json::Value,
-    agent_wallet: &str,
-) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
-    state_value
-        .get("installedAgents")
-        .and_then(|value| value.as_array())
-        .and_then(|agents| {
-            agents.iter().find_map(|agent| {
-                let object = agent.as_object()?;
-                let wallet = object
-                    .get("agentWallet")
-                    .and_then(|value| value.as_str())
-                    .and_then(normalize_wallet)?;
-                if wallet == agent_wallet {
-                    Some(object)
-                } else {
-                    None
-                }
-            })
-        })
-}
-
-fn installed_agent_has_persisted_manifest(
-    state_value: &serde_json::Value,
-    agent_wallet: &str,
-) -> bool {
-    installed_agent_object(state_value, agent_wallet)
-        .and_then(|agent| agent.get("network"))
-        .and_then(|network| network.get("manifest"))
-        .is_some_and(|manifest| manifest.is_object())
-}
-
-fn installed_agent_manifest_has_anchorable_transport(
-    state_value: &serde_json::Value,
-    agent_wallet: &str,
-) -> bool {
-    let Some(manifest) = installed_agent_object(state_value, agent_wallet)
-        .and_then(|agent| agent.get("network"))
-        .and_then(|network| network.get("manifest"))
-    else {
-        return false;
-    };
-
-    let listen_multiaddrs = manifest
-        .get("listenMultiaddrs")
-        .and_then(|value| value.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_str())
-                .map(|item| item.to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    derive_relay_peer_id_from_listen_multiaddrs(&listen_multiaddrs).is_some()
-        || listen_multiaddrs_have_anchorable_path(&listen_multiaddrs)
-}
-
-fn manifest_sync_hash(
-    state_value: &serde_json::Value,
-    agent_wallet: &str,
-    key: &str,
-) -> Option<String> {
-    installed_agent_object(state_value, agent_wallet)
-        .and_then(|agent| agent.get("network"))
-        .and_then(|network| network.get(key))
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-}
-
-fn manifest_publication_required(state_value: &serde_json::Value, agent_wallet: &str) -> bool {
-    if !installed_agent_has_persisted_manifest(state_value, agent_wallet) {
-        return true;
-    }
-
-    manifest_sync_hash(state_value, agent_wallet, "manifestSyncHash")
-        != manifest_sync_hash(state_value, agent_wallet, "lastPublishedManifestSyncHash")
-}
-
-fn manifest_republish_on_a409_requested(
-    state_value: &serde_json::Value,
-    agent_wallet: &str,
-) -> bool {
-    installed_agent_object(state_value, agent_wallet)
-        .and_then(|agent| agent.get("network"))
-        .and_then(|network| network.get("manifestRepublishOnA409"))
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-}
-
-fn set_manifest_republish_on_a409(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-    enabled: bool,
-) -> Result<(), String> {
-    let mut value = load_local_state_value(app)?;
-    let Some(installed_agents) = value
-        .get_mut("installedAgents")
-        .and_then(|items| items.as_array_mut())
-    else {
-        return Ok(());
-    };
-
-    for agent in installed_agents.iter_mut() {
-        let wallet = agent
-            .get("agentWallet")
-            .and_then(|entry| entry.as_str())
-            .and_then(normalize_wallet);
-        if wallet.as_deref() != Some(agent_wallet) {
-            continue;
-        }
-
-        if !agent.get("network").is_some_and(|entry| entry.is_object()) {
-            agent["network"] = serde_json::json!({});
-        }
-        agent["network"]["manifestRepublishOnA409"] = serde_json::Value::Bool(enabled);
-        break;
-    }
-
-    save_local_state_value(app, &value)
-}
-
-fn should_queue_manifest_publication(
-    state_value: &serde_json::Value,
-    agent_wallet: &str,
-    reason: &str,
-) -> bool {
-    match reason {
-        "mesh-runtime-online" => {
-            manifest_publication_required(state_value, agent_wallet)
-                || !installed_agent_manifest_has_anchorable_transport(state_value, agent_wallet)
-        }
-        "mesh-a409-reconcile" => {
-            manifest_publication_required(state_value, agent_wallet)
-                || manifest_republish_on_a409_requested(state_value, agent_wallet)
-        }
-        _ => false,
-    }
-}
-
-pub(crate) fn preserve_internal_manifest_network_state(
-    previous_state: &serde_json::Value,
-    next_state: &mut serde_json::Value,
-) {
-    let Some(next_agents) = next_state
-        .get_mut("installedAgents")
-        .and_then(|value| value.as_array_mut())
-    else {
-        return;
-    };
-
-    for next_agent in next_agents.iter_mut() {
-        let Some(next_wallet) = next_agent
-            .get("agentWallet")
-            .and_then(|value| value.as_str())
-            .and_then(normalize_wallet)
-        else {
-            continue;
-        };
-        let Some(previous_agent) = installed_agent_object(previous_state, next_wallet.as_str())
-        else {
-            continue;
-        };
-        let Some(previous_network) = previous_agent
-            .get("network")
-            .and_then(|value| value.as_object())
-        else {
-            continue;
-        };
-
-        if !next_agent
-            .get("network")
-            .is_some_and(|value| value.is_object())
-        {
-            next_agent["network"] = serde_json::json!({});
-        }
-        let Some(next_network) = next_agent
-            .get_mut("network")
-            .and_then(|value| value.as_object_mut())
-        else {
-            continue;
-        };
-
-        for key in [
-            "manifestSyncHash",
-            "lastPublishedManifestSyncHash",
-            "manifestRepublishOnA409",
-        ] {
-            if next_network.get(key).is_none() {
-                if let Some(previous_value) = previous_network.get(key) {
-                    next_network.insert(key.to_string(), previous_value.clone());
-                }
-            }
-        }
-    }
-}
-
-fn queue_manifest_publication_request(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-    reason: &str,
-) -> Result<(), String> {
-    let state_value = load_local_state_value(app)?;
-    if !should_queue_manifest_publication(&state_value, agent_wallet, reason) {
-        return Ok(());
-    }
-
-    let can_publish = with_mesh_status(app, |status| {
-        status.running && status_has_published_agent(status, agent_wallet)
-    })
-    .unwrap_or(false);
-    if !can_publish {
-        return Ok(());
-    }
-
-    let requests_dir = mesh_publication_agent_requests_dir(app, agent_wallet)?;
-    let has_pending_manifest = fs::read_dir(&requests_dir)
-        .map_err(|err| format!("failed to read mesh publication request dir: {err}"))?
-        .filter_map(|entry| entry.ok().map(|value| value.path()))
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
-        .filter_map(|path| {
-            path.file_stem()
-                .and_then(|value| value.to_str())
-                .map(|value| value.to_string())
-        })
-        .any(|value| value.starts_with("manifest-"));
-    if has_pending_manifest {
-        return Ok(());
-    }
-
-    let request = MeshPublicationQueueRequest {
-        request_id: format!("manifest-{}-{}", now_ms(), local_agent_slug(agent_wallet)),
-        kind: MeshPublicationQueueKind::ManifestPublish,
-        agent_wallet: agent_wallet.to_string(),
-        requested_at: now_ms(),
-        reason: Some(reason.to_string()),
-        title: None,
-        summary: None,
-        content: None,
-        access_price_usdc: None,
-    };
-    let path = requests_dir.join(format!("{}.json", request.request_id));
-    fs::write(
-        &path,
-        serde_json::to_string_pretty(&request)
-            .map_err(|err| format!("failed to encode manifest publication request: {err}"))?,
-    )
-    .map_err(|err| format!("failed to persist manifest publication request: {err}"))?;
-
-    let _ = append_daemon_log(
-        app,
-        agent_wallet,
-        &format!("manifest publish queued: {reason}"),
-    );
-
-    Ok(())
-}
-
-pub(crate) fn normalize_persisted_url(value: &str) -> Option<String> {
-    let trimmed = truncate_string(value.to_string(), 256);
-    let lower = trimmed.to_lowercase();
-    if lower.starts_with("https://") || lower.starts_with("http://") {
-        Some(trimmed)
-    } else {
-        None
-    }
-}
-
-pub(crate) fn normalize_agent_card_uri(
-    metadata_uri: &str,
-    fallback_cid: &str,
-) -> Result<String, String> {
-    let metadata_uri = metadata_uri.trim();
-    if !metadata_uri.is_empty() {
-        if metadata_uri.starts_with("ipfs://") {
-            return Ok(metadata_uri.to_string());
-        }
-        return Ok(format!("ipfs://{}", metadata_uri.trim_start_matches('/')));
-    }
-
-    let fallback = fallback_cid.trim();
-    if fallback.is_empty() {
-        return Err("agentCardCid is required to build the mesh manifest".to_string());
-    }
-    Ok(format!("ipfs://{}", fallback))
-}
-
-pub(crate) fn extract_plugin_capabilities(values: &[serde_json::Value]) -> Vec<String> {
-    let mut out = values
-        .iter()
-        .filter_map(|value| {
-            if let Some(raw) = value.as_str() {
-                return normalize_capability(raw);
-            }
-            value
-                .as_object()
-                .and_then(|entry| entry.get("registryId"))
-                .and_then(|entry| entry.as_str())
-                .and_then(normalize_capability)
-        })
-        .collect::<Vec<_>>();
-    out.sort();
-    out.dedup();
-    out
-}
-
-pub(crate) fn merge_mesh_skill_ids(
-    installed_skills: &[PersistedInstalledSkill],
-    agent_skills: &HashMap<String, PersistedAgentSkillState>,
-) -> Vec<String> {
-    let mut values = installed_skills
-        .iter()
-        .filter(|skill| skill.enabled)
-        .map(|skill| skill.id.clone())
-        .collect::<Vec<_>>();
-
-    values.extend(
-        agent_skills
-            .values()
-            .filter(|state| state.enabled && state.eligible)
-            .filter_map(|state| {
-                if state.skill_id.trim().is_empty() {
-                    None
-                } else {
-                    Some(state.skill_id.clone())
-                }
-            }),
-    );
-
-    normalize_manifest_atoms(&values, 128, 96)
-}
-
-pub(crate) fn manifest_comparable_payload(manifest: &MeshManifest) -> serde_json::Value {
-    serde_json::json!({
-        "agentWallet": manifest.agent_wallet,
-        "userAddress": manifest.user_wallet,
-        "deviceId": manifest.device_id,
-        "chainId": manifest.chain_id,
-        "stateRootHash": manifest.state_root_hash,
-        "pdpPieceCid": manifest.pdp_piece_cid,
-        "pdpAnchoredAt": manifest.pdp_anchored_at,
-        "name": manifest.name,
-        "description": manifest.description,
-        "model": manifest.model,
-        "framework": manifest.framework,
-        "headline": manifest.headline,
-        "statusLine": manifest.status_line,
-        "skills": manifest.skills,
-        "mcpServers": manifest.mcp_servers,
-        "a2aEndpoints": manifest.a2a_endpoints,
-        "capabilities": manifest.capabilities,
-        "agentCardUri": manifest.agent_card_uri,
-        "reputationScore": manifest.reputation_score,
-        "totalConclaves": manifest.total_conclaves,
-        "successfulConclaves": manifest.successful_conclaves,
-    })
-}
-
-pub(crate) fn next_manifest_state_version(
-    previous_manifest: Option<&MeshManifest>,
-    next_manifest: &MeshManifest,
-) -> u64 {
-    match previous_manifest {
-        None => 1,
-        Some(previous) => {
-            if manifest_comparable_payload(previous) == manifest_comparable_payload(next_manifest) {
-                previous.state_version
-            } else {
-                previous.state_version.saturating_add(1)
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct MeshPubCtx {
-    api_url: String,
-    compose_key_token: String,
-    user_wallet: String,
-    device_id: String,
-    chain_id: u32,
-    target_synapse_expiry: u64,
-    installed_skills: Vec<PersistedInstalledSkill>,
-    agent: PersistedInstalledAgent,
-}
-
-pub(crate) async fn load_mesh_pub_ctx(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-) -> Result<MeshPubCtx, String> {
-    let state = load_persisted_local_state(app)?;
-    let client = HttpClient::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| format!("failed to build compose-key session client: {err}"))?;
-    let identity = refresh_local_identity_session(app, &state, &client)
-        .await?
-        .ok_or_else(|| {
-            "an active compose-key session is required for mesh publication".to_string()
-        })?;
-    let user_wallet = normalize_wallet(&identity.user_address)
-        .ok_or_else(|| "local identity userAddress is invalid".to_string())?;
-    let device_id = normalize_device_id(&identity.device_id)
-        .ok_or_else(|| "local identity deviceId is invalid".to_string())?;
-    let compose_key_token = identity.compose_key_token.trim().to_string();
-    if compose_key_token.is_empty() {
-        return Err("local identity composeKeyToken is required for mesh publication".to_string());
-    }
-
-    let normalized_agent_wallet = normalize_wallet(agent_wallet)
-        .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
-    let agent = state
-        .installed_agents
-        .iter()
-        .find(|entry| {
-            normalize_wallet(&entry.agent_wallet).as_deref()
-                == Some(normalized_agent_wallet.as_str())
-        })
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "local state is missing installed agent {}",
-                normalized_agent_wallet
-            )
-        })?;
-
-    Ok(MeshPubCtx {
-        api_url: normalize_persisted_url(&state.settings.api_url)
-            .ok_or_else(|| "local settings apiUrl is invalid for mesh publication".to_string())?,
-        compose_key_token,
-        user_wallet,
-        device_id,
-        chain_id: if identity.chain_id > 0 {
-            identity.chain_id
-        } else {
-            agent.lock.chain_id
-        },
-        target_synapse_expiry: identity.expires_at,
-        installed_skills: state.installed_skills.clone(),
-        agent,
-    })
-}
-
-pub(crate) fn build_current_mesh_manifest_core(
-    app: &tauri::AppHandle,
-    user_wallet: &str,
-    device_id: &str,
-    chain_id: u32,
-    installed_skills: &[PersistedInstalledSkill],
-    agent: &PersistedInstalledAgent,
-    live_status: &MeshRuntimeStatus,
-) -> Result<(MeshManifest, MeshStateSnapshotRequest), String> {
-    let normalized_agent_wallet = normalize_wallet(&agent.agent_wallet)
-        .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
-    let workspace_state = load_manifest_workspace_state(app, agent)?;
-    let previous_manifest = agent.network.manifest.clone();
-    let existing_card = agent.network.public_card.clone();
-    let model_id = if !agent.lock.model_id.trim().is_empty() {
-        agent.lock.model_id.clone()
-    } else {
-        agent.metadata.model.clone()
-    };
-    if model_id.trim().is_empty() {
-        return Err("installed agent lock is missing modelId".to_string());
-    }
-
-    let framework = if !agent.metadata.framework.trim().is_empty() {
-        agent.metadata.framework.clone()
-    } else {
-        "manowar".to_string()
-    };
-    let capabilities = {
-        let base = existing_card
-            .as_ref()
-            .map(|card| card.capabilities.clone())
-            .filter(|items| !items.is_empty())
-            .unwrap_or_else(|| extract_plugin_capabilities(&agent.metadata.plugins));
-        normalize_manifest_atoms(&base, 128, 96)
-    };
-    let skills = merge_mesh_skill_ids(installed_skills, &agent.skill_states);
-    let a2a_endpoints = normalize_manifest_urls(
-        &[
-            agent.metadata.endpoints.chat.clone(),
-            agent.metadata.endpoints.stream.clone(),
-        ]
-        .into_iter()
-        .filter(|value| !value.trim().is_empty())
-        .collect::<Vec<_>>(),
-        16,
-    );
-    let mcp_servers = normalize_manifest_atoms(&agent.mcp_servers, 64, 128);
-    let peer_id = live_status
-        .peer_id
-        .clone()
-        .ok_or_else(|| "mesh runtime does not have a live peerId yet".to_string())?;
-
-    let advertised_listen_multiaddrs =
-        preferred_advertised_listen_multiaddrs(&live_status.listen_multiaddrs);
-
-    let mut manifest = MeshManifest {
-        agent_wallet: normalized_agent_wallet.clone(),
-        user_wallet: user_wallet.to_string(),
-        device_id: device_id.to_string(),
-        peer_id,
-        chain_id,
-        state_version: 1,
-        state_root_hash: previous_manifest
-            .as_ref()
-            .and_then(|value| value.state_root_hash.clone()),
-        pdp_piece_cid: previous_manifest
-            .as_ref()
-            .and_then(|value| value.pdp_piece_cid.clone()),
-        pdp_anchored_at: previous_manifest
-            .as_ref()
-            .and_then(|value| value.pdp_anchored_at),
-        name: truncate_string(
-            existing_card
-                .as_ref()
-                .map(|card| card.name.clone())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| agent.metadata.name.clone()),
-            80,
-        ),
-        description: truncate_string(agent.metadata.description.clone(), 240),
-        model: truncate_string(
-            existing_card
-                .as_ref()
-                .map(|card| card.model.clone())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| model_id.clone()),
-            120,
-        ),
-        framework: truncate_string(
-            existing_card
-                .as_ref()
-                .map(|card| card.framework.clone())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| framework.clone()),
-            80,
-        ),
-        headline: truncate_string(
-            existing_card
-                .as_ref()
-                .map(|card| card.headline.clone())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| format!("{} on {}", agent.metadata.name, framework)),
-            120,
-        ),
-        status_line: truncate_string(
-            existing_card
-                .as_ref()
-                .map(|card| card.status_line.clone())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| agent.metadata.description.clone()),
-            180,
-        ),
-        skills: skills.clone(),
-        mcp_servers: mcp_servers.clone(),
-        a2a_endpoints: a2a_endpoints.clone(),
-        capabilities: capabilities.clone(),
-        agent_card_uri: normalize_agent_card_uri(
-            &agent.metadata.agent_card_uri,
-            &agent.lock.agent_card_cid,
-        )?,
-        listen_multiaddrs: advertised_listen_multiaddrs.clone(),
-        relay_peer_id: derive_relay_peer_id_from_listen_multiaddrs(&advertised_listen_multiaddrs),
-        reputation_score: 0.0,
-        total_conclaves: 0,
-        successful_conclaves: 0,
-        signed_at: 0,
-        signature: String::new(),
-    };
-    manifest.state_version = next_manifest_state_version(previous_manifest.as_ref(), &manifest);
-
-    let snapshot = MeshStateSnapshotRequest {
-        agent_wallet: normalized_agent_wallet,
-        chain_id: manifest.chain_id,
-        peer_id: manifest.peer_id.clone(),
-        model_id,
-        dna_hash: workspace_state.dna_hash,
-        identity_hash: workspace_state.identity_hash,
-        agent_card_cid: agent.lock.agent_card_cid.clone(),
-        mcp_tools_hash: workspace_state.mcp_tools_hash,
-        skills,
-        capabilities,
-        mcp_servers: manifest.mcp_servers.clone(),
-        a2a_endpoints,
-    };
-
-    Ok((manifest, snapshot))
-}
-
-pub(crate) fn load_mesh_manifest_preview_inputs(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-) -> Result<
-    (
-        String,
-        String,
-        u32,
-        Vec<PersistedInstalledSkill>,
-        PersistedInstalledAgent,
-    ),
-    String,
-> {
-    let state = load_persisted_local_state(app)?;
-    let identity = state
-        .identity
-        .clone()
-        .ok_or_else(|| "local identity is required for mesh manifest verification".to_string())?;
-    let user_wallet = normalize_wallet(&identity.user_address)
-        .ok_or_else(|| "local identity userAddress is invalid".to_string())?;
-    let device_id = normalize_device_id(&identity.device_id)
-        .ok_or_else(|| "local identity deviceId is invalid".to_string())?;
-    let normalized_agent_wallet = normalize_wallet(agent_wallet)
-        .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
-    let agent = state
-        .installed_agents
-        .iter()
-        .find(|entry| {
-            normalize_wallet(&entry.agent_wallet).as_deref()
-                == Some(normalized_agent_wallet.as_str())
-        })
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "local state is missing installed agent {}",
-                normalized_agent_wallet
-            )
-        })?;
-
-    Ok((
-        user_wallet,
-        device_id,
-        if identity.chain_id > 0 {
-            identity.chain_id
-        } else {
-            agent.lock.chain_id
-        },
-        state.installed_skills,
-        agent,
-    ))
-}
-
-pub(crate) async fn build_current_mesh_publication(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-    live_status: &MeshRuntimeStatus,
-) -> Result<(MeshManifest, MeshStateAnchorCommandRequest), String> {
-    let ctx = load_mesh_pub_ctx(app, agent_wallet).await?;
-    let (manifest, snapshot) = build_current_mesh_manifest_core(
-        app,
-        &ctx.user_wallet,
-        &ctx.device_id,
-        ctx.chain_id,
-        &ctx.installed_skills,
-        &ctx.agent,
-        live_status,
-    )?;
-    let previous_manifest = ctx.agent.network.manifest.clone();
-
-    let anchor_request = MeshStateAnchorCommandRequest {
-        api_url: ctx.api_url,
-        compose_key_token: ctx.compose_key_token,
-        user_address: ctx.user_wallet,
-        device_id: ctx.device_id,
-        target_synapse_expiry: ctx.target_synapse_expiry,
-        previous_state_root_hash: previous_manifest
-            .as_ref()
-            .and_then(|value| value.state_root_hash.clone()),
-        previous_pdp_piece_cid: previous_manifest
-            .as_ref()
-            .and_then(|value| value.pdp_piece_cid.clone()),
-        previous_pdp_anchored_at: previous_manifest
-            .as_ref()
-            .and_then(|value| value.pdp_anchored_at),
-        snapshot,
-    };
-
-    Ok((manifest, anchor_request))
-}
-
-pub(crate) fn build_current_mesh_manifest_verification_request(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-    live_status: &MeshRuntimeStatus,
-) -> Result<MeshManifestVerificationRequest, String> {
-    let (user_wallet, device_id, chain_id, installed_skills, agent) =
-        load_mesh_manifest_preview_inputs(app, agent_wallet)?;
-    let (mut manifest, snapshot_request) = build_current_mesh_manifest_core(
-        app,
-        &user_wallet,
-        &device_id,
-        chain_id,
-        &installed_skills,
-        &agent,
-        live_status,
-    )?;
-    let snapshot = normalize_mesh_state_snapshot_request(
-        &MeshStateAnchorCommandRequest {
-            api_url: String::new(),
-            compose_key_token: String::new(),
-            user_address: user_wallet.clone(),
-            device_id: device_id.clone(),
-            target_synapse_expiry: 0,
-            snapshot: snapshot_request,
-            previous_state_root_hash: None,
-            previous_pdp_piece_cid: None,
-            previous_pdp_anchored_at: None,
-        },
-        live_status,
-    )?;
-    let current_state_root_hash = sha256_hex_string(&canonical_snapshot_json(&snapshot)?);
-    manifest.state_root_hash = Some(current_state_root_hash);
-    manifest.state_version =
-        next_manifest_state_version(agent.network.manifest.as_ref(), &manifest);
-
-    let validated = validate_mesh_manifest(manifest, live_status)?;
-    let signed = sign_mesh_manifest(&load_or_create_mesh_identity(app)?, &validated)?;
-    let hai_state = ensure_local_hai_state(
-        app,
-        &signed.agent_wallet,
-        &signed.user_wallet,
-        &signed.device_id,
-    )?;
-
-    Ok(MeshManifestVerificationRequest {
-        hai_id: hai_state.hai_id,
-        manifest: signed,
-        latest_retrieval_url: hai_state.last_retrieval_url.clone(),
-    })
-}
-
-pub(crate) fn select_manifest_verification_peer(
-    connected_peers: &HashSet<PeerId>,
-    local_peer_id: &str,
-) -> Option<PeerId> {
-    connected_peers
-        .iter()
-        .copied()
-        .find(|peer_id| peer_id.to_string() != local_peer_id)
-}
-
-pub(crate) fn start_manifest_verification_request(
-    swarm: &mut Swarm<MeshBehaviour>,
-    local_peer_id: &str,
-    connected_peers: &HashSet<PeerId>,
-    request: MeshManifestVerificationRequest,
-    pending: &mut HashMap<request_response::OutboundRequestId, PendingManifestVerification>,
-    agent_wallet: &str,
-    reply: Option<oneshot::Sender<Result<(), String>>>,
-) {
-    let Some(peer_id) = select_manifest_verification_peer(connected_peers, local_peer_id) else {
-        if let Some(reply) = reply {
-            let _ = reply.send(Ok(()));
-        }
-        return;
-    };
-
-    let request_id = swarm
-        .behaviour_mut()
-        .manifest_verify
-        .send_request(&peer_id, request);
-    pending.insert(
-        request_id,
-        PendingManifestVerification {
-            agent_wallet: agent_wallet.to_string(),
-            reply,
-        },
-    );
-}
-
-pub(crate) fn normalize_mesh_state_snapshot_request(
-    request: &MeshStateAnchorCommandRequest,
-    live_status: &MeshRuntimeStatus,
-) -> Result<MeshStateSnapshot, String> {
-    let user_wallet = normalize_wallet(&request.user_address)
-        .ok_or_else(|| "userAddress must be a valid wallet address".to_string())?;
-    let agent_wallet = normalize_wallet(&request.snapshot.agent_wallet)
-        .ok_or_else(|| "snapshot.agentWallet must be a valid wallet address".to_string())?;
-    let device_id = normalize_device_id(&request.device_id)
-        .ok_or_else(|| "deviceId format is invalid".to_string())?;
-    if !status_has_published_agent(live_status, agent_wallet.as_str()) {
-        return Err("snapshot agentWallet does not match the running mesh agent".to_string());
-    }
-    if live_status.device_id.as_deref() != Some(device_id.as_str()) {
-        return Err("snapshot deviceId does not match the running mesh device".to_string());
-    }
-    let peer_id = live_status
-        .peer_id
-        .clone()
-        .ok_or_else(|| "mesh runtime does not have a live peerId yet".to_string())?;
-    if peer_id != request.snapshot.peer_id.trim() {
-        return Err("snapshot.peerId does not match the running mesh peer".to_string());
-    }
-
-    Ok(MeshStateSnapshot {
-        version: 2,
-        created_at: now_ms(),
-        agent_wallet,
-        user_wallet,
-        device_id,
-        peer_id,
-        runtime: MeshStateSnapshotRuntime {
-            dna_hash: truncate_string(request.snapshot.dna_hash.clone(), 256),
-            identity_hash: truncate_string(request.snapshot.identity_hash.clone(), 256),
-            model_id: truncate_string(request.snapshot.model_id.clone(), 128),
-            chain_id: request.snapshot.chain_id,
-            agent_card_cid: truncate_string(request.snapshot.agent_card_cid.clone(), 256),
-            mcp_tools_hash: truncate_string(request.snapshot.mcp_tools_hash.clone(), 256),
-        },
-        manifest: MeshStateSnapshotManifest {
-            skills: normalize_manifest_atoms(&request.snapshot.skills, 128, 96),
-            capabilities: normalize_manifest_atoms(&request.snapshot.capabilities, 128, 96),
-            mcp_servers: normalize_manifest_atoms(&request.snapshot.mcp_servers, 64, 128),
-            a2a_endpoints: normalize_manifest_urls(&request.snapshot.a2a_endpoints, 64),
-        },
-    })
-}
-
-pub(crate) fn canonical_snapshot_json(snapshot: &MeshStateSnapshot) -> Result<String, String> {
-    serde_json::to_string(snapshot)
-        .map_err(|err| format!("failed to encode canonical state snapshot: {err}"))
-}
-
-pub(crate) fn sha256_hex_string(value: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(value.as_bytes());
-    hex_encode(&hasher.finalize())
 }
 
 pub(crate) fn default_capabilities(agent_wallet: &str) -> Vec<String> {
@@ -2191,16 +798,6 @@ pub(crate) fn status_has_published_agent(status: &MeshRuntimeStatus, agent_walle
         .published_agents
         .iter()
         .any(|item| item.agent_wallet == agent_wallet)
-}
-
-pub(crate) fn normalize_manifest_publish_outcome(
-    result: Result<gossipsub::MessageId, gossipsub::PublishError>,
-    manifest: &MeshManifest,
-) -> Result<MeshManifest, String> {
-    match result {
-        Ok(_) | Err(gossipsub::PublishError::InsufficientPeers) => Ok(manifest.clone()),
-        Err(error) => Err(format!("manifest publish failed: {error}")),
-    }
 }
 
 pub(crate) fn validate_mesh_join_request(
@@ -2335,280 +932,6 @@ pub(crate) fn sync_mesh_request_capabilities(
         refresh_rendezvous_registrations(swarm, next, rendezvous_peers);
         discover_capabilities(swarm, next, rendezvous_peers);
     }
-}
-
-pub(crate) fn unsigned_manifest_bytes(value: &MeshManifestUnsigned) -> Result<Vec<u8>, String> {
-    serde_cbor::to_vec(value).map_err(|err| format!("failed to encode unsigned manifest: {err}"))
-}
-
-pub(crate) fn sign_mesh_manifest(
-    local_key: &identity::Keypair,
-    manifest: &MeshManifest,
-) -> Result<MeshManifest, String> {
-    let unsigned = MeshManifestUnsigned {
-        agent_wallet: manifest.agent_wallet.clone(),
-        user_wallet: manifest.user_wallet.clone(),
-        device_id: manifest.device_id.clone(),
-        peer_id: manifest.peer_id.clone(),
-        chain_id: manifest.chain_id,
-        state_version: manifest.state_version,
-        state_root_hash: manifest.state_root_hash.clone(),
-        pdp_piece_cid: manifest.pdp_piece_cid.clone(),
-        pdp_anchored_at: manifest.pdp_anchored_at,
-        name: manifest.name.clone(),
-        description: manifest.description.clone(),
-        model: manifest.model.clone(),
-        framework: manifest.framework.clone(),
-        headline: manifest.headline.clone(),
-        status_line: manifest.status_line.clone(),
-        skills: manifest.skills.clone(),
-        mcp_servers: manifest.mcp_servers.clone(),
-        a2a_endpoints: manifest.a2a_endpoints.clone(),
-        capabilities: manifest.capabilities.clone(),
-        agent_card_uri: manifest.agent_card_uri.clone(),
-        listen_multiaddrs: manifest.listen_multiaddrs.clone(),
-        relay_peer_id: manifest.relay_peer_id.clone(),
-        reputation_score: manifest.reputation_score,
-        total_conclaves: manifest.total_conclaves,
-        successful_conclaves: manifest.successful_conclaves,
-        signed_at: manifest.signed_at,
-    };
-    let sign_bytes = unsigned_manifest_bytes(&unsigned)?;
-    let sig = local_key
-        .sign(&sign_bytes)
-        .map_err(|err| format!("failed to sign manifest: {err}"))?;
-
-    Ok(MeshManifest {
-        signature: hex_encode(&sig),
-        ..manifest.clone()
-    })
-}
-
-pub(crate) fn a409_with_reason(_reason: &str) -> String {
-    A409_INCONSISTENT_AGENT_IDENTITY.to_string()
-}
-
-pub(crate) fn is_a409_error(error: &str) -> bool {
-    error.trim().to_lowercase().starts_with("a409:")
-}
-
-pub(crate) fn verify_mesh_manifest_signature(manifest: &MeshManifest) -> Result<(), String> {
-    let peer_id = PeerId::from_str(&manifest.peer_id)
-        .map_err(|err| format!("invalid manifest peerId: {err}"))?;
-    let multihash = peer_id.as_ref();
-    if multihash.code() != 0 {
-        return Err(a409_with_reason(
-            "manifest peerId must contain inline public key material",
-        ));
-    }
-    let public_key = identity::PublicKey::try_decode_protobuf(multihash.digest())
-        .map_err(|err| format!("failed to decode manifest public key: {err}"))?;
-    let signature = decode_hex_string(&manifest.signature)
-        .map_err(|err| format!("invalid manifest signature encoding: {err}"))?;
-    let unsigned = MeshManifestUnsigned {
-        agent_wallet: manifest.agent_wallet.clone(),
-        user_wallet: manifest.user_wallet.clone(),
-        device_id: manifest.device_id.clone(),
-        peer_id: manifest.peer_id.clone(),
-        chain_id: manifest.chain_id,
-        state_version: manifest.state_version,
-        state_root_hash: manifest.state_root_hash.clone(),
-        pdp_piece_cid: manifest.pdp_piece_cid.clone(),
-        pdp_anchored_at: manifest.pdp_anchored_at,
-        name: manifest.name.clone(),
-        description: manifest.description.clone(),
-        model: manifest.model.clone(),
-        framework: manifest.framework.clone(),
-        headline: manifest.headline.clone(),
-        status_line: manifest.status_line.clone(),
-        skills: manifest.skills.clone(),
-        mcp_servers: manifest.mcp_servers.clone(),
-        a2a_endpoints: manifest.a2a_endpoints.clone(),
-        capabilities: manifest.capabilities.clone(),
-        agent_card_uri: manifest.agent_card_uri.clone(),
-        listen_multiaddrs: manifest.listen_multiaddrs.clone(),
-        relay_peer_id: manifest.relay_peer_id.clone(),
-        reputation_score: manifest.reputation_score,
-        total_conclaves: manifest.total_conclaves,
-        successful_conclaves: manifest.successful_conclaves,
-        signed_at: manifest.signed_at,
-    };
-    let sign_bytes = unsigned_manifest_bytes(&unsigned)?;
-    if !public_key.verify(&sign_bytes, &signature) {
-        return Err(a409_with_reason("manifest signature verification failed"));
-    }
-    Ok(())
-}
-
-pub(crate) async fn fetch_authoritative_mesh_state(
-    retrieval_url: &str,
-) -> Result<SignedMeshStateEnvelope, String> {
-    let client = HttpClient::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|err| format!("failed to build manifest verification client: {err}"))?;
-    let response = client
-        .get(retrieval_url)
-        .send()
-        .await
-        .map_err(|err| format!("failed to fetch latest anchored mesh state: {err}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "latest anchored mesh state fetch failed: HTTP {}",
-            response.status()
-        ));
-    }
-    response
-        .json::<SignedMeshStateEnvelope>()
-        .await
-        .map_err(|err| format!("failed to decode latest anchored mesh state JSON: {err}"))
-}
-
-pub(crate) async fn verify_mesh_manifest_identity(
-    request: &MeshManifestVerificationRequest,
-) -> Result<(), String> {
-    verify_mesh_manifest_signature(&request.manifest)?;
-
-    let derived_hai = derive_hai_id(
-        &request.manifest.agent_wallet,
-        &request.manifest.user_wallet,
-        &request.manifest.device_id,
-    );
-    if derived_hai != request.hai_id {
-        return Err(a409_with_reason(
-            "haiId does not match the manifest triplet",
-        ));
-    }
-
-    let Some(current_state_root_hash) = request
-        .manifest
-        .state_root_hash
-        .as_deref()
-        .and_then(normalize_state_root_hash_for_compare)
-    else {
-        return Err(a409_with_reason(
-            "stateRootHash is missing from the current manifest",
-        ));
-    };
-
-    let Some(retrieval_url) = request
-        .latest_retrieval_url
-        .as_deref()
-        .and_then(normalize_persisted_url)
-    else {
-        return Ok(());
-    };
-
-    let authority = match fetch_authoritative_mesh_state(retrieval_url.as_str()).await {
-        Ok(value) => value,
-        Err(_) => return Ok(()),
-    };
-
-    if authority.hai_id != derived_hai {
-        return Err(a409_with_reason(
-            "haiId does not match the latest anchored state",
-        ));
-    }
-    if authority.agent_wallet != request.manifest.agent_wallet {
-        return Err(a409_with_reason(
-            "agentWallet does not match the latest anchored state",
-        ));
-    }
-    if authority.user_wallet != request.manifest.user_wallet {
-        return Err(a409_with_reason(
-            "userAddress does not match the latest anchored state",
-        ));
-    }
-    if authority.device_id != request.manifest.device_id {
-        return Err(a409_with_reason(
-            "deviceId does not match the latest anchored state",
-        ));
-    }
-    if authority.chain_id != request.manifest.chain_id {
-        return Err(a409_with_reason(
-            "chainId does not match the latest anchored state",
-        ));
-    }
-    if !same_state_root_hash(
-        Some(authority.state_root_hash.as_str()),
-        current_state_root_hash.as_str(),
-    ) {
-        return Err(a409_with_reason(
-            "stateRootHash does not match the latest anchored state",
-        ));
-    }
-
-    Ok(())
-}
-
-pub(crate) fn validate_mesh_manifest(
-    manifest: MeshManifest,
-    status: &MeshRuntimeStatus,
-) -> Result<MeshManifest, String> {
-    let agent_wallet = normalize_wallet(&manifest.agent_wallet)
-        .ok_or_else(|| "manifest.agentWallet must be a valid wallet address".to_string())?;
-    let user_wallet = normalize_wallet(&manifest.user_wallet)
-        .ok_or_else(|| "manifest.userAddress must be a valid wallet address".to_string())?;
-    let device_id = normalize_device_id(&manifest.device_id)
-        .ok_or_else(|| "manifest.deviceId format is invalid".to_string())?;
-
-    if !status_has_published_agent(status, agent_wallet.as_str()) {
-        return Err("manifest agentWallet does not match the running mesh agent".to_string());
-    }
-    if status.device_id.as_deref() != Some(device_id.as_str()) {
-        return Err("manifest deviceId does not match the running mesh device".to_string());
-    }
-    if manifest.chain_id == 0 {
-        return Err("manifest.chainId must be positive".to_string());
-    }
-    if manifest.state_version == 0 {
-        return Err("manifest.stateVersion must be positive".to_string());
-    }
-
-    let peer_id = status
-        .peer_id
-        .clone()
-        .ok_or_else(|| "mesh runtime does not have a live peerId yet".to_string())?;
-    PeerId::from_str(&peer_id)
-        .map_err(|err| format!("mesh runtime returned invalid peerId: {err}"))?;
-
-    let advertised_listen_multiaddrs = preferred_advertised_listen_multiaddrs(
-        &normalize_multiaddr_strings(&status.listen_multiaddrs),
-    );
-
-    Ok(MeshManifest {
-        agent_wallet,
-        user_wallet,
-        device_id,
-        peer_id,
-        chain_id: manifest.chain_id,
-        state_version: manifest.state_version,
-        state_root_hash: normalize_optional_hex_32(manifest.state_root_hash)?,
-        pdp_piece_cid: normalize_optional_cid(manifest.pdp_piece_cid),
-        pdp_anchored_at: manifest.pdp_anchored_at,
-        name: truncate_string(manifest.name, 80),
-        description: truncate_string(manifest.description, 240),
-        model: truncate_string(manifest.model, 120),
-        framework: truncate_string(manifest.framework, 80),
-        headline: truncate_string(manifest.headline, 120),
-        status_line: truncate_string(manifest.status_line, 180),
-        skills: normalize_manifest_atoms(&manifest.skills, 128, 96),
-        mcp_servers: normalize_manifest_atoms(&manifest.mcp_servers, 64, 128),
-        a2a_endpoints: normalize_manifest_urls(&manifest.a2a_endpoints, 16),
-        capabilities: normalize_manifest_atoms(&manifest.capabilities, 128, 96),
-        agent_card_uri: truncate_string(manifest.agent_card_uri, 512),
-        listen_multiaddrs: advertised_listen_multiaddrs.clone(),
-        relay_peer_id: derive_relay_peer_id_from_listen_multiaddrs(&advertised_listen_multiaddrs),
-        reputation_score: if manifest.reputation_score.is_finite() {
-            manifest.reputation_score.clamp(0.0, 1.0)
-        } else {
-            0.0
-        },
-        total_conclaves: manifest.total_conclaves,
-        successful_conclaves: manifest.successful_conclaves,
-        signed_at: now_ms(),
-        signature: String::new(),
-    })
 }
 
 pub(crate) fn resolve_base_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -4181,7 +2504,7 @@ pub(crate) async fn run_mesh_loop(
                             request_response::Event::Message { message, .. } => {
                                 match message {
                                     request_response::Message::Request { request, channel, .. } => {
-                                        let response = match verify_mesh_manifest_identity(&request).await {
+                                        let response = match verify_mesh_manifest_identity(&app, &request).await {
                                             Ok(()) => MeshManifestVerificationResponse {
                                                 ok: true,
                                                 error: None,
@@ -4204,7 +2527,7 @@ pub(crate) async fn run_mesh_loop(
                                                 Ok(())
                                             } else {
                                                 Err(response.error.unwrap_or_else(|| {
-                                                    A409_INCONSISTENT_AGENT_IDENTITY.to_string()
+                                                    A509_INCONSISTENT_AGENT_IDENTITY.to_string()
                                                 }))
                                             };
 
@@ -4214,8 +2537,8 @@ pub(crate) async fn run_mesh_loop(
                                                     &pending.agent_wallet,
                                                     error,
                                                 );
-                                                if is_a409_error(error) {
-                                                    let _ = queue_manifest_reconcile_after_a409(
+                                                if is_a509_error(error) {
+                                                    let _ = queue_manifest_reconcile_after_a509(
                                                         &app,
                                                         &pending.agent_wallet,
                                                     );
@@ -4442,91 +2765,7 @@ pub(crate) async fn run_mesh_loop(
         }
     }
 }
-pub(crate) async fn verify_manifest_with_mesh(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-) -> Result<(), String> {
-    let mesh_state = app.state::<MeshRuntimeState>();
-    let live_status = mesh_state
-        .status
-        .lock()
-        .map_err(|_| "failed to read mesh runtime status".to_string())?
-        .clone();
-    if !live_status.running || !status_has_published_agent(&live_status, agent_wallet) {
-        return Ok(());
-    }
 
-    let request =
-        build_current_mesh_manifest_verification_request(app, agent_wallet, &live_status)?;
-    let command_tx = mesh_state
-        .command_tx
-        .lock()
-        .map_err(|_| "failed to read mesh command channel".to_string())?
-        .clone()
-        .ok_or_else(|| "mesh runtime command channel is unavailable".to_string())?;
-    let (reply_tx, reply_rx) = oneshot::channel();
-    command_tx
-        .send(MeshLoopCommand::VerifyManifest {
-            request,
-            reply: reply_tx,
-        })
-        .map_err(|_| "mesh runtime is no longer accepting manifest verification".to_string())?;
-    reply_rx
-        .await
-        .map_err(|_| "mesh runtime dropped the manifest verification response".to_string())?
-}
-pub(crate) fn queue_runtime_manifest_publications_if_ready(
-    app: &tauri::AppHandle,
-    request: &MeshJoinRequest,
-    reason: &str,
-) {
-    let Some(live_status) = with_mesh_status(app, |status| status.clone()) else {
-        return;
-    };
-    if !live_status.running
-        || !listen_multiaddrs_have_anchorable_path(&preferred_advertised_listen_multiaddrs(
-            &live_status.listen_multiaddrs,
-        ))
-    {
-        return;
-    }
-
-    for published in &request.published_agents {
-        if let Err(error) = queue_manifest_publication_request(app, &published.agent_wallet, reason)
-        {
-            eprintln!(
-                "[mesh] failed to queue manifest publication for {}: {}",
-                published.agent_wallet, error
-            );
-        }
-    }
-}
-
-pub(crate) fn queue_manifest_reconcile_after_a409(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-) -> Result<(), String> {
-    let normalized_wallet =
-        normalize_wallet(agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
-    let state_value = load_local_state_value(app)?;
-    let already_requested =
-        manifest_republish_on_a409_requested(&state_value, normalized_wallet.as_str());
-    if !manifest_publication_required(&state_value, normalized_wallet.as_str())
-        && !already_requested
-    {
-        return Ok(());
-    }
-
-    if !already_requested {
-        let _ = append_daemon_log(
-            app,
-            normalized_wallet.as_str(),
-            A409_INCONSISTENT_AGENT_IDENTITY,
-        );
-    }
-    set_manifest_republish_on_a409(app, normalized_wallet.as_str(), true)?;
-    queue_manifest_publication_request(app, normalized_wallet.as_str(), "mesh-a409-reconcile")
-}
 #[tauri::command]
 pub fn local_network_status(
     state: tauri::State<MeshRuntimeState>,
@@ -4658,41 +2897,6 @@ pub async fn local_network_leave(
     local_network_status(state)
 }
 
-pub(crate) fn build_signed_state_envelope(
-    local_key: &identity::Keypair,
-    snapshot: &MeshStateSnapshot,
-    hai_id: &str,
-    update_number: u64,
-) -> Result<(String, String, String), String> {
-    let canonical = canonical_snapshot_json(snapshot)?;
-    let state_root_hash = sha256_hex_string(&canonical);
-    let signed_at = now_ms();
-    let path = compose_hai_path(hai_id, update_number);
-    let signature = local_key
-        .sign(canonical.as_bytes())
-        .map_err(|err| format!("failed to sign mesh state snapshot: {err}"))?;
-    let envelope = SignedMeshStateEnvelope {
-        version: 2,
-        kind: "compose.mesh.state.v2".to_string(),
-        collection: COMPOSE_SYNAPSE_COLLECTION.to_string(),
-        hai_id: hai_id.to_string(),
-        update_number,
-        path,
-        peer_id: snapshot.peer_id.clone(),
-        agent_wallet: snapshot.agent_wallet.clone(),
-        user_wallet: snapshot.user_wallet.clone(),
-        device_id: snapshot.device_id.clone(),
-        chain_id: snapshot.runtime.chain_id,
-        signed_at,
-        state_root_hash: format!("0x{}", state_root_hash),
-        snapshot: snapshot.clone(),
-        signature: hex_encode(&signature),
-    };
-    let envelope_json = serde_json::to_string(&envelope)
-        .map_err(|err| format!("failed to encode signed mesh state envelope: {err}"))?;
-    Ok((canonical, format!("0x{}", state_root_hash), envelope_json))
-}
-
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SignedMeshRequestEnvelope {
@@ -4734,14 +2938,14 @@ pub(crate) struct MeshLearningPayload {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeshSharedArtifactPinRuntimeResponse {
-    hai_id: String,
-    artifact_kind: MeshSharedArtifactKind,
-    artifact_number: u64,
-    path: String,
-    latest_alias: String,
-    root_cid: String,
-    piece_cid: String,
-    collection: String,
+    pub(crate) hai_id: String,
+    pub(crate) artifact_kind: MeshSharedArtifactKind,
+    pub(crate) artifact_number: u64,
+    pub(crate) path: String,
+    pub(crate) latest_alias: String,
+    pub(crate) root_cid: String,
+    pub(crate) piece_cid: String,
+    pub(crate) collection: String,
 }
 
 pub(crate) fn signed_mesh_request_bytes(
@@ -4865,56 +3069,6 @@ pub(crate) fn build_learning_payload_json(
     .map_err(|err| format!("failed to encode mesh learning payload: {err}"))
 }
 
-pub(crate) async fn runtime_error(route: &str, response: reqwest::Response) -> String {
-    let status = response.status();
-    let body = response.text().await.unwrap_or_else(|_| String::new());
-    if status.as_u16() == 409 {
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
-            if let Some(error) = parsed.get("error").and_then(|value| value.as_str()) {
-                let trimmed = error.trim();
-                if !trimmed.is_empty() {
-                    return trimmed.to_string();
-                }
-            }
-        }
-        let trimmed = body.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-        return A409_INCONSISTENT_AGENT_IDENTITY.to_string();
-    }
-    if body.trim().is_empty() {
-        format!("{route} failed: HTTP {status}")
-    } else {
-        format!("{route} failed: HTTP {status}: {body}")
-    }
-}
-
-pub(crate) async fn anchor_mesh_state_via_local_runtime(
-    base_url: &str,
-    body: serde_json::Value,
-) -> Result<MeshStateAnchorRuntimeResponse, String> {
-    let client = HttpClient::new();
-    let response = client
-        .post(format!(
-            "{}/mesh/synapse/anchor",
-            base_url.trim_end_matches('/')
-        ))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|err| format!("failed to call local runtime Synapse route: {err}"))?;
-
-    if !response.status().is_success() {
-        return Err(runtime_error("local runtime Synapse route", response).await);
-    }
-
-    response
-        .json::<MeshStateAnchorRuntimeResponse>()
-        .await
-        .map_err(|err| format!("failed to decode local runtime Synapse response: {err}"))
-}
-
 pub(crate) async fn pin_mesh_learning_via_local_runtime(
     base_url: &str,
     body: serde_json::Value,
@@ -4940,132 +3094,30 @@ pub(crate) async fn pin_mesh_learning_via_local_runtime(
         .map_err(|err| format!("failed to decode local runtime Filecoin Pin response: {err}"))
 }
 
-pub(crate) async fn anchor_mesh_state_from_command(
-    app: &tauri::AppHandle,
-    mesh_state: &MeshRuntimeState,
-    runtime_host: &LocalRuntimeHostState,
-    request: MeshStateAnchorCommandRequest,
-) -> Result<MeshStateAnchorRuntimeResponse, String> {
-    let live_status = mesh_state
-        .status
-        .lock()
-        .map_err(|_| "failed to read mesh runtime status".to_string())?
-        .clone();
-    if !live_status.running {
-        return Err("mesh runtime is not running".to_string());
-    }
-
-    let snapshot = normalize_mesh_state_snapshot_request(&request, &live_status)?;
-    let runtime_status = ensure_local_runtime_host(app, runtime_host)?;
-    let hai_state = ensure_local_hai_state(
-        app,
-        &snapshot.agent_wallet,
-        &snapshot.user_wallet,
-        &snapshot.device_id,
-    )?;
-
-    let (canonical_snapshot_json, state_root_hash, envelope_json) = build_signed_state_envelope(
-        &load_or_create_mesh_identity(app)?,
-        &snapshot,
-        &hai_state.hai_id,
-        hai_state.next_update_number,
-    )?;
-
-    if same_state_root_hash(
-        request.previous_state_root_hash.as_deref(),
-        &state_root_hash,
-    ) && request
-        .previous_pdp_piece_cid
-        .as_ref()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
-        && request.previous_pdp_anchored_at.unwrap_or(0) > 0
-    {
-        let last_update_number = hai_state
-            .last_update_number
-            .unwrap_or_else(|| hai_state.next_update_number.saturating_sub(1));
-        let last_path = hai_state
-            .last_anchor_path
-            .clone()
-            .unwrap_or_else(|| compose_hai_path(&hai_state.hai_id, last_update_number));
-        let last_piece_cid = request
-            .previous_pdp_piece_cid
-            .clone()
-            .or_else(|| hai_state.last_anchor_piece_cid.clone())
-            .ok_or_else(|| "previous PDP piece CID is required for a skipped anchor".to_string())?;
-        let last_anchored_at = request
-            .previous_pdp_anchored_at
-            .or(hai_state.last_anchored_at)
-            .ok_or_else(|| {
-                "previous PDP anchor timestamp is required for a skipped anchor".to_string()
-            })?;
-
-        return Ok(MeshStateAnchorRuntimeResponse {
-            hai_id: hai_state.hai_id.clone(),
-            update_number: last_update_number,
-            path: last_path,
-            file_name: compose_hai_path(&hai_state.hai_id, last_update_number),
-            latest_alias: format!("compose-{}:latest", hai_state.hai_id),
-            state_root_hash,
-            pdp_piece_cid: last_piece_cid,
-            pdp_anchored_at: last_anchored_at,
-            payload_size: envelope_json.len(),
-            provider_id: String::new(),
-            data_set_id: None,
-            piece_id: None,
-            retrieval_url: None,
-            source: "local-skip".to_string(),
-        });
-    }
-
-    let response = anchor_mesh_state_via_local_runtime(
-        &runtime_status.base_url,
-        serde_json::json!({
-            "apiUrl": request.api_url,
-            "composeKeyToken": request.compose_key_token,
-            "userAddress": snapshot.user_wallet,
-            "agentWallet": snapshot.agent_wallet,
-            "deviceId": snapshot.device_id,
-            "chainId": snapshot.runtime.chain_id,
-            "targetSynapseExpiry": request.target_synapse_expiry,
-            "haiId": hai_state.hai_id,
-            "updateNumber": hai_state.next_update_number,
-            "path": compose_hai_path(&hai_state.hai_id, hai_state.next_update_number),
-            "canonicalSnapshotJson": canonical_snapshot_json,
-            "stateRootHash": state_root_hash,
-            "envelopeJson": envelope_json,
-            "sessionKeyPrivateKey": hai_state.synapse_session_private_key,
-        }),
-    )
-    .await?;
-
-    let _ = record_local_hai_anchor(app, &hai_state, &response)?;
-    Ok(response)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         apply_active_session_refresh, build_local_runtime_request_body,
-        build_signed_envelope_payload, compose_hai_path, decode_and_validate_envelope,
-        default_kad_protocol, derive_hai_id, derive_relay_listen_multiaddrs,
-        derive_relay_peer_id_from_listen_multiaddrs, derive_relay_reservation_confirmed_multiaddrs,
-        ensure_multiaddr_has_peer_id, extract_bootstrap_and_rendezvous_peers,
-        extract_skill_name_from_markdown, installed_agent_has_persisted_manifest,
-        installed_agent_manifest_has_anchorable_transport, listen_multiaddrs_have_anchorable_path,
-        load_local_state_value_from_path, manifest_republish_on_a409_requested,
+        build_signed_envelope_payload, decode_and_validate_envelope, default_kad_protocol,
+        derive_relay_listen_multiaddrs, derive_relay_peer_id_from_listen_multiaddrs,
+        derive_relay_reservation_confirmed_multiaddrs, ensure_multiaddr_has_peer_id,
+        extract_bootstrap_and_rendezvous_peers, extract_skill_name_from_markdown,
+        listen_multiaddrs_have_anchorable_path, load_local_state_value_from_path,
         markdown_represents_agent_skill, mesh_request_requires_restart,
         normalize_daemon_state_for_local_mode, normalize_local_state_json,
-        normalize_manifest_publish_outcome, normalize_mesh_api_url_with_loopback_policy,
-        normalize_state_root_hash_for_compare, now_ms, parse_local_agent_reply,
+        normalize_mesh_api_url_with_loopback_policy, now_ms, parse_local_agent_reply,
         preferred_advertised_listen_multiaddrs, preferred_connected_relay_peer_id,
-        remote_action_path_allowed, same_state_root_hash, should_queue_manifest_publication,
-        sign_mesh_manifest, verify_mesh_manifest_signature, write_string_atomically,
-        ActiveSessionRefreshResponse, DaemonAgentState, DaemonPermissionPolicy, DaemonStateFile,
-        MeshJoinRequest, MeshManifest, MeshPublishedAgent, PersistedInstalledAgent,
-        PersistedLocalIdentity, MESH_KAD_PROTOCOL,
+        remote_action_path_allowed, write_string_atomically, ActiveSessionRefreshResponse,
+        DaemonAgentState, DaemonPermissionPolicy, DaemonStateFile, MeshJoinRequest,
+        MeshPublishedAgent, PersistedInstalledAgent, PersistedLocalIdentity, MESH_KAD_PROTOCOL,
     };
     use crate::gossipsub;
+    use crate::manifest::{
+        compose_hai_path, derive_hai_id, installed_agent_has_persisted_manifest,
+        installed_agent_manifest_has_anchorable_transport, manifest_republish_on_a509_requested,
+        normalize_manifest_publish_outcome, normalize_state_root_hash_for_compare,
+        same_state_root_hash, should_queue_manifest_publication, sign_mesh_manifest, MeshManifest,
+    };
     use libp2p::{identity, Multiaddr, PeerId};
     use std::{
         collections::{HashMap, HashSet},
@@ -5285,12 +3337,12 @@ mod tests {
         };
 
         let signed = sign_mesh_manifest(&local_key, &manifest).expect("sign manifest");
-        verify_mesh_manifest_signature(&signed).expect("signature should verify");
+        crate::manifest::verify_mesh_manifest_signature(&signed).expect("signature should verify");
 
         let mut tampered = signed.clone();
         tampered.name = "Tampered".to_string();
-        let error =
-            verify_mesh_manifest_signature(&tampered).expect_err("tampered manifest should fail");
+        let error = crate::manifest::verify_mesh_manifest_signature(&tampered)
+            .expect_err("tampered manifest should fail");
         assert!(error.contains("manifest signature verification failed"));
     }
 
@@ -5518,14 +3570,14 @@ mod tests {
         let state = manifest_state_fixture(agent_wallet, "Alpha", true, true);
 
         assert!(installed_agent_has_persisted_manifest(&state, agent_wallet));
-        assert!(!manifest_republish_on_a409_requested(&state, agent_wallet));
+        assert!(!manifest_republish_on_a509_requested(&state, agent_wallet));
         assert!(should_queue_manifest_publication(
             &state,
             agent_wallet,
             "mesh-runtime-online"
         ));
 
-        let a409_state = serde_json::json!({
+        let a509_state = serde_json::json!({
             "installedSkills": [],
             "installedAgents": [
                 {
@@ -5535,19 +3587,19 @@ mod tests {
                         "manifest": {
                             "agentWallet": agent_wallet
                         },
-                        "manifestRepublishOnA409": true
+                        "manifestRepublishOnA509": true
                     }
                 }
             ]
         });
-        assert!(manifest_republish_on_a409_requested(
-            &a409_state,
+        assert!(manifest_republish_on_a509_requested(
+            &a509_state,
             agent_wallet
         ));
         assert!(should_queue_manifest_publication(
-            &a409_state,
+            &a509_state,
             agent_wallet,
-            "mesh-a409-reconcile"
+            "mesh-a509-reconcile"
         ));
 
         let first_publish_state = serde_json::json!({
@@ -5568,7 +3620,7 @@ mod tests {
         assert!(should_queue_manifest_publication(
             &first_publish_state,
             agent_wallet,
-            "mesh-a409-reconcile"
+            "mesh-a509-reconcile"
         ));
     }
 
@@ -6052,7 +4104,7 @@ mod tests {
     }
 
     #[test]
-    fn mesh_a409_reconcile_requires_missing_manifest_or_retry_flag() {
+    fn mesh_a509_reconcile_requires_missing_manifest_or_retry_flag() {
         let no_manifest = serde_json::json!({
             "installedAgents": [
                 {
@@ -6064,7 +4116,7 @@ mod tests {
         assert!(should_queue_manifest_publication(
             &no_manifest,
             "0x1111111111111111111111111111111111111111",
-            "mesh-a409-reconcile",
+            "mesh-a509-reconcile",
         ));
 
         let with_manifest = serde_json::json!({
@@ -6082,10 +4134,10 @@ mod tests {
         assert!(!should_queue_manifest_publication(
             &with_manifest,
             "0x1111111111111111111111111111111111111111",
-            "mesh-a409-reconcile",
+            "mesh-a509-reconcile",
         ));
 
-        let with_a409_retry = serde_json::json!({
+        let with_a509_retry = serde_json::json!({
             "installedAgents": [
                 {
                     "agentWallet": "0x1111111111111111111111111111111111111111",
@@ -6093,20 +4145,20 @@ mod tests {
                         "manifest": {
                             "stateVersion": 3
                         },
-                        "manifestRepublishOnA409": true
+                        "manifestRepublishOnA509": true
                     }
                 }
             ]
         });
         assert!(should_queue_manifest_publication(
-            &with_a409_retry,
+            &with_a509_retry,
             "0x1111111111111111111111111111111111111111",
-            "mesh-a409-reconcile",
+            "mesh-a509-reconcile",
         ));
     }
 
     #[test]
-    fn non_a409_manifest_reasons_do_not_queue_with_existing_manifest() {
+    fn non_a509_manifest_reasons_do_not_queue_with_existing_manifest() {
         let state = serde_json::json!({
             "installedAgents": [
                 {
@@ -6133,7 +4185,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_retry_helpers_read_persisted_manifest_and_a409_flag() {
+    fn manifest_retry_helpers_read_persisted_manifest_and_a509_flag() {
         let state = serde_json::json!({
             "installedAgents": [
                 {
@@ -6142,7 +4194,7 @@ mod tests {
                         "manifest": {
                             "stateVersion": 7
                         },
-                        "manifestRepublishOnA409": true
+                        "manifestRepublishOnA509": true
                     }
                 }
             ]
@@ -6152,7 +4204,7 @@ mod tests {
             &state,
             "0x1111111111111111111111111111111111111111"
         ));
-        assert!(manifest_republish_on_a409_requested(
+        assert!(manifest_republish_on_a509_requested(
             &state,
             "0x1111111111111111111111111111111111111111"
         ));
@@ -6192,13 +4244,13 @@ mod tests {
         };
 
         let signed = sign_mesh_manifest(&local_key, &manifest).expect("sign manifest");
-        verify_mesh_manifest_signature(&signed).expect("signature should verify");
+        crate::manifest::verify_mesh_manifest_signature(&signed).expect("signature should verify");
 
         let mut tampered = signed.clone();
         tampered.name = "Beta".to_string();
-        let error =
-            verify_mesh_manifest_signature(&tampered).expect_err("tampered manifest should fail");
-        assert!(error.starts_with("a409:"));
+        let error = crate::manifest::verify_mesh_manifest_signature(&tampered)
+            .expect_err("tampered manifest should fail");
+        assert!(error.starts_with("a509:"));
     }
 
     #[test]
@@ -6234,44 +4286,6 @@ mod tests {
             .expect_err("replayed nonce should fail");
         assert_eq!(error, "replay envelope nonce");
     }
-}
-
-pub(crate) async fn publish_mesh_manifest_from_command(
-    app: &tauri::AppHandle,
-    mesh_state: &MeshRuntimeState,
-    manifest: MeshManifest,
-) -> Result<MeshManifest, String> {
-    let live_status = mesh_state
-        .status
-        .lock()
-        .map_err(|_| "failed to read mesh runtime status".to_string())?
-        .clone();
-    if !live_status.running {
-        return Err("mesh runtime is not running".to_string());
-    }
-
-    let local_key = load_or_create_mesh_identity(app)?;
-    let validated = validate_mesh_manifest(manifest, &live_status)?;
-    let signed = sign_mesh_manifest(&local_key, &validated)?;
-
-    let command_tx = mesh_state
-        .command_tx
-        .lock()
-        .map_err(|_| "failed to read mesh command channel".to_string())?
-        .clone()
-        .ok_or_else(|| "mesh runtime command channel is unavailable".to_string())?;
-
-    let (reply_tx, reply_rx) = oneshot::channel();
-    command_tx
-        .send(MeshLoopCommand::PublishManifest {
-            manifest: signed.clone(),
-            reply: reply_tx,
-        })
-        .map_err(|_| "mesh runtime is no longer accepting commands".to_string())?;
-
-    reply_rx
-        .await
-        .map_err(|_| "mesh runtime dropped the manifest publish response".to_string())?
 }
 
 pub(crate) fn write_mesh_publication_result(
@@ -6373,18 +4387,20 @@ pub(crate) async fn process_mesh_learning_request(
     let runtime_status = ensure_local_runtime_host(app, runtime_host)?;
     let hai_state =
         ensure_local_hai_state(app, &requested_wallet, &ctx.user_wallet, &ctx.device_id)?;
+    let learning_state =
+        ensure_local_learning_hai_state(app, &requested_wallet, &ctx.user_wallet, &ctx.device_id)?;
 
     let payload_json = build_learning_payload_json(request, &ctx.user_wallet)?;
     let artifact_kind = MeshSharedArtifactKind::Learning;
-    let artifact_number = hai_state.next_learning_number;
-    let path = learning_hai_path(&hai_state.hai_id, learning_title, artifact_number);
+    let artifact_number = learning_state.next_learning_number;
+    let path = learning_hai_path(&learning_state.hai_id, learning_title, artifact_number);
     let signed_request_json = build_signed_mesh_request_json(
         &load_or_create_mesh_identity(app)?,
         live_status,
         &requested_wallet,
         &ctx.user_wallet,
         &ctx.device_id,
-        &hai_state.hai_id,
+        &learning_state.hai_id,
         "learning.pin",
         "learnings",
         &path,
@@ -6403,7 +4419,7 @@ pub(crate) async fn process_mesh_learning_request(
             "chainId": ctx.chain_id,
             "targetSessionExpiry": ctx.target_synapse_expiry,
             "signedRequestJson": signed_request_json,
-            "haiId": hai_state.hai_id,
+            "haiId": learning_state.hai_id,
             "artifactKind": artifact_kind,
             "artifactNumber": artifact_number,
             "path": path,
@@ -6412,7 +4428,7 @@ pub(crate) async fn process_mesh_learning_request(
         }),
     )
     .await?;
-    let _ = record_local_hai_learning(app, &hai_state, &response)?;
+    let _ = record_local_hai_learning(app, &learning_state, &response)?;
     let _ = append_daemon_log(
         app,
         &requested_wallet,
@@ -6463,95 +4479,18 @@ pub(crate) async fn process_mesh_publication_request(
 
         match request.kind.clone() {
             MeshPublicationQueueKind::ManifestPublish => {
-                let requested_wallet = normalize_wallet(&request.agent_wallet)
-                    .ok_or_else(|| "mesh publication request agentWallet is invalid".to_string())?;
-                if !status_has_published_agent(&live_status, requested_wallet.as_str()) {
-                    return Err("mesh publication request agentWallet does not match the running mesh agent".to_string());
-                }
-
-                let reason = request
-                    .reason
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or("unspecified");
-                let _ = append_daemon_log(
-                    app,
-                    &requested_wallet,
-                    &format!("manifest publish started: {reason}"),
-                );
-
-                let (mut manifest, anchor_request) =
-                    build_current_mesh_publication(app, &requested_wallet, &live_status).await?;
-                let anchor = anchor_mesh_state_from_command(
+                process_mesh_manifest_publication_request(
                     app,
                     mesh_state.inner(),
-                    runtime_host.inner(),
-                    anchor_request,
-                )
-                .await?;
-
-                manifest.state_root_hash =
-                    Some(anchor.state_root_hash.clone().trim_start_matches("0x").to_string());
-                manifest.pdp_piece_cid = Some(anchor.pdp_piece_cid.clone());
-                manifest.pdp_anchored_at = Some(anchor.pdp_anchored_at);
-                let _ = append_daemon_log(
-                    app,
-                    &requested_wallet,
-                    &format!(
-                        "manifest anchored: path={} pdpPieceCid={} providerId={} dataSetId={} pieceId={}",
-                        anchor.path,
-                        anchor.pdp_piece_cid,
-                        anchor.provider_id,
-                        anchor.data_set_id.as_deref().unwrap_or("-"),
-                        anchor.piece_id.as_deref().unwrap_or("-"),
-                    ),
-                );
-
-                let published =
-                    publish_mesh_manifest_from_command(app, mesh_state.inner(), manifest).await?;
-                persist_manifest_update(app, &published)?;
-                let _ = app.emit("mesh-manifest-updated", &published);
-                let _ = append_daemon_log(
-                    app,
-                    &requested_wallet,
-                    &format!(
-                        "manifest published: path={} stateVersion={} pdpPieceCid={}",
-                        anchor.path,
-                        published.state_version,
-                        anchor.pdp_piece_cid,
-                    ),
-                );
-
-                Ok(MeshPublicationQueueResult {
-                    request_id: request.request_id.clone(),
-                    agent_wallet: Some(request.agent_wallet.clone()),
-                    kind: Some(MeshPublicationQueueKind::ManifestPublish),
-                    success: true,
-                    error: None,
-                    hai_id: Some(anchor.hai_id),
-                    update_number: Some(anchor.update_number),
-                    artifact_kind: None,
-                    artifact_number: None,
-                    path: Some(anchor.path),
-                    latest_alias: Some(anchor.latest_alias),
-                    root_cid: None,
-                    piece_cid: None,
-                    collection: None,
-                    state_root_hash: Some(anchor.state_root_hash),
-                    pdp_piece_cid: Some(anchor.pdp_piece_cid),
-                    pdp_anchored_at: Some(anchor.pdp_anchored_at),
-                    manifest: Some(published),
-                })
-            }
-            MeshPublicationQueueKind::LearningPin => {
-                process_mesh_learning_request(
-                    app,
                     runtime_host.inner(),
                     &live_status,
                     &request,
                 )
                 .await
+            }
+            MeshPublicationQueueKind::LearningPin => {
+                process_mesh_learning_request(app, runtime_host.inner(), &live_status, &request)
+                    .await
             }
         }
     }
@@ -6563,8 +4502,8 @@ pub(crate) async fn process_mesh_publication_request(
             if matches!(request.kind, MeshPublicationQueueKind::ManifestPublish) {
                 let normalized_wallet = normalize_wallet(&request.agent_wallet)
                     .unwrap_or_else(|| request.agent_wallet.to_lowercase());
-                let should_republish = error.to_lowercase().starts_with("a409:");
-                let _ = set_manifest_republish_on_a409(app, &normalized_wallet, should_republish);
+                let should_republish = error.to_lowercase().starts_with("a509:");
+                let _ = set_manifest_republish_on_a509(app, &normalized_wallet, should_republish);
                 let _ = append_daemon_log(
                     app,
                     &request.agent_wallet,
