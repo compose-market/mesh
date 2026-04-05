@@ -158,7 +158,10 @@ mod tests {
     #[test]
     fn normalize_runtime_base_url_rejects_non_http_values() {
         assert_eq!(normalize_runtime_base_url(""), None);
-        assert_eq!(normalize_runtime_base_url("ws://runtime.compose.market"), None);
+        assert_eq!(
+            normalize_runtime_base_url("ws://runtime.compose.market"),
+            None
+        );
         assert_eq!(
             normalize_runtime_base_url("https://runtime.compose.market/"),
             Some("https://runtime.compose.market".to_string())
@@ -167,11 +170,17 @@ mod tests {
 
     #[test]
     fn extract_port_from_base_url_handles_explicit_and_default_ports() {
-        assert_eq!(extract_port_from_base_url("https://runtime.compose.market"), None);
+        assert_eq!(
+            extract_port_from_base_url("https://runtime.compose.market"),
+            None
+        );
         assert_eq!(
             extract_port_from_base_url("https://runtime.compose.market:8443"),
             Some(8443)
         );
-        assert_eq!(extract_port_from_base_url("http://127.0.0.1:4310"), Some(4310));
+        assert_eq!(
+            extract_port_from_base_url("http://127.0.0.1:4310"),
+            Some(4310)
+        );
     }
 }

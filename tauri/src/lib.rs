@@ -1,3 +1,4 @@
+mod manifest;
 mod mesh;
 #[path = "runtime_host.rs"]
 mod runtime_host;
@@ -30,8 +31,8 @@ use tauri_plugin_updater::UpdaterExt;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::{mpsc, oneshot};
 
-use self::mesh::*;
 use self::runtime_host::{ensure_local_runtime_host, LocalRuntimeHostState};
+use self::{manifest::*, mesh::*};
 
 const LOCAL_AGENT_HEARTBEAT_POLL_MS: u64 = 3_000;
 const LOCAL_AGENT_HEARTBEAT_OK_TOKEN: &str = "HEARTBEAT_OK";
@@ -1130,50 +1131,6 @@ fn read_document_if_present(file_path: &Path, label: String) -> Option<(String, 
     Some((label, trimmed))
 }
 
-#[derive(Debug, Clone)]
-struct ManifestWorkspaceState {
-    dna_hash: String,
-    identity_hash: String,
-    mcp_tools_hash: String,
-}
-
-fn workspace_document_hash(file_path: &Path) -> Option<String> {
-    let raw = fs::read_to_string(file_path).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(format!("0x{}", sha256_hex_string(trimmed)))
-}
-
-fn load_manifest_workspace_state(
-    app: &tauri::AppHandle,
-    agent: &PersistedInstalledAgent,
-) -> Result<ManifestWorkspaceState, String> {
-    let workspace = daemon_agent_workspace_path(app, &agent.agent_wallet)?;
-
-    Ok(ManifestWorkspaceState {
-        dna_hash: workspace_document_hash(&workspace.join("DNA.md"))
-            .unwrap_or_else(|| agent.lock.dna_hash.clone()),
-        identity_hash: workspace_document_hash(&workspace.join("IDENTITY.md")).unwrap_or_else(
-            || {
-                format!(
-                    "0x{}",
-                    sha256_hex_string(&format!(
-                        "agentWallet:{}\nagentCardCid:{}\nmodelId:{}\nchainId:{}",
-                        agent.agent_wallet,
-                        agent.lock.agent_card_cid,
-                        agent.lock.model_id,
-                        agent.lock.chain_id,
-                    ))
-                )
-            },
-        ),
-        mcp_tools_hash: workspace_document_hash(&workspace.join("TOOLS.md"))
-            .unwrap_or_else(|| agent.lock.mcp_tools_hash.clone()),
-    })
-}
-
 fn local_agent_documents(
     app: &tauri::AppHandle,
     agent: &PersistedInstalledAgent,
@@ -1964,9 +1921,9 @@ async fn execute_local_runtime_tool_request(
     if result
         .as_ref()
         .err()
-        .is_some_and(|error| is_a409_error(error))
+        .is_some_and(|error| is_a509_error(error))
     {
-        let _ = queue_manifest_reconcile_after_a409(app, &agent.agent_wallet);
+        let _ = queue_manifest_reconcile_after_a509(app, &agent.agent_wallet);
     }
     result
 }
