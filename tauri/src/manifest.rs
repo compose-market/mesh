@@ -2,7 +2,7 @@ use super::*;
 use crate::mesh::*;
 
 pub(crate) const COMPOSE_SYNAPSE_COLLECTION: &str = "compose";
-pub(crate) const A409_INCONSISTENT_AGENT_IDENTITY: &str = "a409: inconsistent agent identity";
+pub(crate) const A509_INCONSISTENT_AGENT_IDENTITY: &str = "a509: inconsistent agent identity";
 pub(crate) const MESH_MANIFEST_VERIFY_PROTOCOL: &str = concat!(
     "/",
     env!("COMPOSE_MESH_PROTOCOL_NAMESPACE"),
@@ -186,22 +186,13 @@ pub(crate) struct LocalHaiState {
     pub(crate) hai_id: String,
     pub(crate) synapse_session_private_key: String,
     pub(crate) next_update_number: u64,
-    #[serde(default = "default_learning_number")]
-    pub(crate) next_learning_number: u64,
     pub(crate) last_update_number: Option<u64>,
-    pub(crate) last_learning_number: Option<u64>,
     pub(crate) last_anchor_path: Option<String>,
-    pub(crate) last_learning_path: Option<String>,
     pub(crate) last_state_root_hash: Option<String>,
     pub(crate) last_anchor_piece_cid: Option<String>,
-    pub(crate) last_learning_piece_cid: Option<String>,
     pub(crate) last_retrieval_url: Option<String>,
     pub(crate) last_anchored_at: Option<u64>,
     pub(crate) updated_at: u64,
-}
-
-pub(crate) fn default_learning_number() -> u64 {
-    1
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -502,15 +493,9 @@ pub(crate) fn normalize_local_hai_state(
         )
         .unwrap_or_else(generate_synapse_session_private_key),
         next_update_number: value.next_update_number.max(1),
-        next_learning_number: value.next_learning_number.max(1),
         last_update_number: value.last_update_number.filter(|value| *value > 0),
-        last_learning_number: value.last_learning_number.filter(|value| *value > 0),
         last_anchor_path: value
             .last_anchor_path
-            .map(|path| path.trim().to_string())
-            .filter(|path| !path.is_empty()),
-        last_learning_path: value
-            .last_learning_path
             .map(|path| path.trim().to_string())
             .filter(|path| !path.is_empty()),
         last_state_root_hash: value
@@ -519,10 +504,6 @@ pub(crate) fn normalize_local_hai_state(
             .filter(|value| !value.is_empty()),
         last_anchor_piece_cid: value
             .last_anchor_piece_cid
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-        last_learning_piece_cid: value
-            .last_learning_piece_cid
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
         last_retrieval_url: value
@@ -631,7 +612,7 @@ pub(crate) fn persist_manifest_update(
             .map_err(|err| format!("failed to encode published manifest: {err}"))?;
         agent["network"]["manifestSyncHash"] = serde_json::Value::String(current_hash.clone());
         agent["network"]["lastPublishedManifestSyncHash"] = serde_json::Value::String(current_hash);
-        agent["network"]["manifestRepublishOnA409"] = serde_json::Value::Bool(false);
+        agent["network"]["manifestRepublishOnA509"] = serde_json::Value::Bool(false);
         break;
     }
 
@@ -796,18 +777,18 @@ fn manifest_publication_required(state_value: &serde_json::Value, agent_wallet: 
         != manifest_sync_hash(state_value, agent_wallet, "lastPublishedManifestSyncHash")
 }
 
-pub(crate) fn manifest_republish_on_a409_requested(
+pub(crate) fn manifest_republish_on_a509_requested(
     state_value: &serde_json::Value,
     agent_wallet: &str,
 ) -> bool {
     installed_agent_object(state_value, agent_wallet)
         .and_then(|agent| agent.get("network"))
-        .and_then(|network| network.get("manifestRepublishOnA409"))
+        .and_then(|network| network.get("manifestRepublishOnA509"))
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
 }
 
-pub(crate) fn set_manifest_republish_on_a409(
+pub(crate) fn set_manifest_republish_on_a509(
     app: &tauri::AppHandle,
     agent_wallet: &str,
     enabled: bool,
@@ -832,7 +813,7 @@ pub(crate) fn set_manifest_republish_on_a409(
         if !agent.get("network").is_some_and(|entry| entry.is_object()) {
             agent["network"] = serde_json::json!({});
         }
-        agent["network"]["manifestRepublishOnA409"] = serde_json::Value::Bool(enabled);
+        agent["network"]["manifestRepublishOnA509"] = serde_json::Value::Bool(enabled);
         break;
     }
 
@@ -849,9 +830,9 @@ pub(crate) fn should_queue_manifest_publication(
             manifest_publication_required(state_value, agent_wallet)
                 || !installed_agent_manifest_has_anchorable_transport(state_value, agent_wallet)
         }
-        "mesh-a409-reconcile" => {
+        "mesh-a509-reconcile" => {
             manifest_publication_required(state_value, agent_wallet)
-                || manifest_republish_on_a409_requested(state_value, agent_wallet)
+                || manifest_republish_on_a509_requested(state_value, agent_wallet)
         }
         _ => false,
     }
@@ -903,7 +884,7 @@ pub(crate) fn preserve_internal_manifest_network_state(
         for key in [
             "manifestSyncHash",
             "lastPublishedManifestSyncHash",
-            "manifestRepublishOnA409",
+            "manifestRepublishOnA509",
         ] {
             if next_network.get(key).is_none() {
                 if let Some(previous_value) = previous_network.get(key) {
@@ -1609,12 +1590,17 @@ pub(crate) fn sign_mesh_manifest(
         ..manifest.clone()
     })
 }
-pub(crate) fn a409_with_reason(_reason: &str) -> String {
-    A409_INCONSISTENT_AGENT_IDENTITY.to_string()
+pub(crate) fn a509_with_reason(_reason: &str) -> String {
+    let trimmed = _reason.trim();
+    if trimmed.is_empty() {
+        A509_INCONSISTENT_AGENT_IDENTITY.to_string()
+    } else {
+        format!("a509: {trimmed}")
+    }
 }
 
-pub(crate) fn is_a409_error(error: &str) -> bool {
-    error.trim().to_lowercase().starts_with("a409:")
+pub(crate) fn is_a509_error(error: &str) -> bool {
+    error.trim().to_lowercase().starts_with("a509:")
 }
 
 pub(crate) fn verify_mesh_manifest_signature(manifest: &MeshManifest) -> Result<(), String> {
@@ -1622,7 +1608,7 @@ pub(crate) fn verify_mesh_manifest_signature(manifest: &MeshManifest) -> Result<
         .map_err(|err| format!("invalid manifest peerId: {err}"))?;
     let multihash = peer_id.as_ref();
     if multihash.code() != 0 {
-        return Err(a409_with_reason(
+        return Err(a509_with_reason(
             "manifest peerId must contain inline public key material",
         ));
     }
@@ -1660,7 +1646,7 @@ pub(crate) fn verify_mesh_manifest_signature(manifest: &MeshManifest) -> Result<
     };
     let sign_bytes = unsigned_manifest_bytes(&unsigned)?;
     if !public_key.verify(&sign_bytes, &signature) {
-        return Err(a409_with_reason("manifest signature verification failed"));
+        return Err(a509_with_reason("manifest signature verification failed"));
     }
     Ok(())
 }
@@ -1689,6 +1675,99 @@ pub(crate) async fn fetch_authoritative_mesh_state(
         .map_err(|err| format!("failed to decode latest anchored mesh state JSON: {err}"))
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisteredAgentAuthority {
+    wallet_address: Option<String>,
+    name: Option<String>,
+    description: Option<String>,
+    model: Option<String>,
+    framework: Option<String>,
+}
+
+fn normalize_agent_card_uri_for_compare(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_string()
+
+fn extract_agent_card_cid(agent_card_uri: &str) -> Result<String, String> {
+    let trimmed = agent_card_uri.trim();
+    let cid = trimmed
+        .strip_prefix("ipfs://")
+        .unwrap_or(trimmed)
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .trim();
+    if cid.is_empty() {
+        return Err("agentCardUri is invalid".to_string());
+    }
+    Ok(cid.to_string())
+}
+
+fn agent_card_gateway_urls() -> Vec<String> {
+    let mut urls = Vec::new();
+    for raw in [
+        std::env::var("PINATA_GATEWAY_URL").ok(),
+        std::env::var("VITE_PINATA_GATEWAY").ok(),
+        option_env!("PINATA_GATEWAY_URL").map(str::to_string),
+        option_env!("VITE_PINATA_GATEWAY").map(str::to_string),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let host = raw
+            .trim()
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/');
+        if !host.is_empty() {
+            urls.push(format!("https://{host}/ipfs"));
+        }
+    }
+    urls.push("https://compose.mypinata.cloud/ipfs".to_string());
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+async fn fetch_registered_agent_card_authority(
+    agent_card_uri: &str,
+) -> Result<RegisteredAgentCardAuthority, String> {
+    let cid = extract_agent_card_cid(agent_card_uri)?;
+    let client = HttpClient::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|err| format!("failed to build agent card client: {err}"))?;
+
+    let mut last_error: Option<String> = None;
+    for gateway in agent_card_gateway_urls() {
+        let response = match client
+            .get(format!("{}/{}", gateway.trim_end_matches('/'), cid))
+            .send()
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                last_error = Some(format!("failed to fetch agent card from {gateway}: {err}"));
+                continue;
+            }
+        };
+        if !response.status().is_success() {
+            last_error = Some(format!(
+                "agent card fetch failed from {gateway}: HTTP {}",
+                response.status()
+            ));
+            continue;
+        }
+        return response
+            .json::<RegisteredAgentCardAuthority>()
+            .await
+            .map_err(|err| format!("failed to decode agent card JSON from {gateway}: {err}"));
+    }
+
+    Err(last_error.unwrap_or_else(|| "failed to fetch registered agent card".to_string()))
+}
+
 pub(crate) async fn verify_mesh_manifest_identity(
     request: &MeshManifestVerificationRequest,
 ) -> Result<(), String> {
@@ -1700,7 +1779,7 @@ pub(crate) async fn verify_mesh_manifest_identity(
         &request.manifest.device_id,
     );
     if derived_hai != request.hai_id {
-        return Err(a409_with_reason(
+        return Err(a509_with_reason(
             "haiId does not match the manifest triplet",
         ));
     }
@@ -1711,7 +1790,7 @@ pub(crate) async fn verify_mesh_manifest_identity(
         .as_deref()
         .and_then(normalize_state_root_hash_for_compare)
     else {
-        return Err(a409_with_reason(
+        return Err(a509_with_reason(
             "stateRootHash is missing from the current manifest",
         ));
     };
@@ -1721,36 +1800,100 @@ pub(crate) async fn verify_mesh_manifest_identity(
         .as_deref()
         .and_then(normalize_persisted_url)
     else {
+        let authority = fetch_registered_agent_card_authority(&request.manifest.agent_card_uri)
+            .await
+            .map_err(|err| a509_with_reason(err.as_str()))?;
+
+        let authority_wallet = authority
+            .wallet_address
+            .as_deref()
+            .and_then(normalize_wallet)
+            .ok_or_else(|| a509_with_reason("registered agent card walletAddress is invalid"))?;
+        if authority_wallet != request.manifest.agent_wallet {
+            return Err(a509_with_reason(
+                "agentWallet does not match the registered agent card",
+            ));
+        }
+
+        let authority_chain = authority
+            .chain
+            .filter(|value| *value > 0)
+            .ok_or_else(|| a509_with_reason("registered agent card chain is invalid"))?;
+        if authority_chain != request.manifest.chain_id {
+            return Err(a509_with_reason(
+                "chainId does not match the registered agent card",
+            ));
+        }
+
+        let authority_name = authority
+            .name
+            .map(|value| truncate_string(value, 80))
+            .unwrap_or_default();
+        if authority_name != request.manifest.name {
+            return Err(a509_with_reason(
+                "name does not match the registered agent card",
+            ));
+        }
+
+        let authority_description = authority
+            .description
+            .map(|value| truncate_string(value, 240))
+            .unwrap_or_default();
+        if authority_description != request.manifest.description {
+            return Err(a509_with_reason(
+                "description does not match the registered agent card",
+            ));
+        }
+
+        let authority_model = authority
+            .model
+            .map(|value| truncate_string(value, 120))
+            .unwrap_or_default();
+        if authority_model != request.manifest.model {
+            return Err(a509_with_reason(
+                "model does not match the registered agent card",
+            ));
+        }
+
+        let authority_framework = authority
+            .framework
+            .map(|value| truncate_string(value, 80))
+            .unwrap_or_default();
+        if authority_framework != request.manifest.framework {
+            return Err(a509_with_reason(
+                "framework does not match the registered agent card",
+            ));
+        }
+
         return Ok(());
     };
 
-    let authority = match fetch_authoritative_mesh_state(retrieval_url.as_str()).await {
-        Ok(value) => value,
-        Err(_) => return Ok(()),
-    };
+    let authority = fetch_authoritative_mesh_state(retrieval_url.as_str())
+        .await
+        .map_err(|err| a509_with_reason(err.as_str()))?;
 
     if authority.hai_id != derived_hai {
-        return Err(a409_with_reason(
+        return Err(a509_with_reason(
             "haiId does not match the latest anchored state",
         ));
     }
     if authority.agent_wallet != request.manifest.agent_wallet {
-        return Err(a409_with_reason(
+        return Err(a509_with_reason(
             "agentWallet does not match the latest anchored state",
         ));
     }
     if authority.user_wallet != request.manifest.user_wallet {
-        return Err(a409_with_reason(
+        return Err(a509_with_reason(
             "userAddress does not match the latest anchored state",
         ));
     }
     if authority.device_id != request.manifest.device_id {
-        return Err(a409_with_reason(
+        return Err(a509_with_reason(
             "deviceId does not match the latest anchored state",
         ));
     }
     if authority.chain_id != request.manifest.chain_id {
-        return Err(a409_with_reason(
+        return Err(a509_with_reason(
             "chainId does not match the latest anchored state",
         ));
     }
@@ -1758,7 +1901,7 @@ pub(crate) async fn verify_mesh_manifest_identity(
         Some(authority.state_root_hash.as_str()),
         current_state_root_hash.as_str(),
     ) {
-        return Err(a409_with_reason(
+        return Err(a509_with_reason(
             "stateRootHash does not match the latest anchored state",
         ));
     }
@@ -1897,7 +2040,7 @@ pub(crate) fn queue_runtime_manifest_publications_if_ready(
     }
 }
 
-pub(crate) fn queue_manifest_reconcile_after_a409(
+pub(crate) fn queue_manifest_reconcile_after_a509(
     app: &tauri::AppHandle,
     agent_wallet: &str,
 ) -> Result<(), String> {
@@ -1905,7 +2048,7 @@ pub(crate) fn queue_manifest_reconcile_after_a409(
         normalize_wallet(agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
     let state_value = load_local_state_value(app)?;
     let already_requested =
-        manifest_republish_on_a409_requested(&state_value, normalized_wallet.as_str());
+        manifest_republish_on_a509_requested(&state_value, normalized_wallet.as_str());
     if !manifest_publication_required(&state_value, normalized_wallet.as_str())
         && !already_requested
     {
@@ -1916,11 +2059,11 @@ pub(crate) fn queue_manifest_reconcile_after_a409(
         let _ = append_daemon_log(
             app,
             normalized_wallet.as_str(),
-            A409_INCONSISTENT_AGENT_IDENTITY,
+            A509_INCONSISTENT_AGENT_IDENTITY,
         );
     }
-    set_manifest_republish_on_a409(app, normalized_wallet.as_str(), true)?;
-    queue_manifest_publication_request(app, normalized_wallet.as_str(), "mesh-a409-reconcile")
+    set_manifest_republish_on_a509(app, normalized_wallet.as_str(), true)?;
+    queue_manifest_publication_request(app, normalized_wallet.as_str(), "mesh-a509-reconcile")
 }
 
 pub(crate) fn build_signed_state_envelope(
@@ -1974,7 +2117,7 @@ pub(crate) async fn runtime_error(route: &str, response: reqwest::Response) -> S
         if !trimmed.is_empty() {
             return trimmed.to_string();
         }
-        return A409_INCONSISTENT_AGENT_IDENTITY.to_string();
+        return A509_INCONSISTENT_AGENT_IDENTITY.to_string();
     }
     if body.trim().is_empty() {
         format!("{route} failed: HTTP {status}")
@@ -2236,4 +2379,41 @@ pub(crate) async fn process_mesh_manifest_publication_request(
         pdp_anchored_at: Some(anchor.pdp_anchored_at),
         manifest: Some(published),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a509_with_reason_preserves_detail() {
+        assert_eq!(
+            a509_with_reason("stateRootHash does not match the latest anchored state"),
+            "a509: stateRootHash does not match the latest anchored state"
+        );
+        assert_eq!(
+            a509_with_reason("   "),
+            A509_INCONSISTENT_AGENT_IDENTITY.to_string()
+        );
+    }
+
+    #[test]
+    fn extract_agent_card_cid_accepts_ipfs_uri_and_plain_cid() {
+        assert_eq!(
+            extract_agent_card_cid("ipfs://bafybeigdyrzt/card.json").expect("cid"),
+            "bafybeigdyrzt"
+        );
+        assert_eq!(
+            extract_agent_card_cid("bafybeigdyrzt").expect("cid"),
+            "bafybeigdyrzt"
+        );
+        assert!(extract_agent_card_cid("ipfs://").is_err());
+    }
+
+    #[test]
+    fn agent_card_gateway_urls_always_include_default_pinata_gateway() {
+        assert!(agent_card_gateway_urls()
+            .iter()
+            .any(|value| value == "https://compose.mypinata.cloud/ipfs"));
+    }
 }
