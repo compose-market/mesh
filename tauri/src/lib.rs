@@ -1,7 +1,9 @@
+#[path = "host.rs"]
+mod host;
+mod learnings;
 mod manifest;
 mod mesh;
-#[path = "runtime_host.rs"]
-mod runtime_host;
+mod publication;
 
 use futures::StreamExt;
 use libp2p::{
@@ -31,8 +33,8 @@ use tauri_plugin_updater::UpdaterExt;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::{mpsc, oneshot};
 
-use self::runtime_host::{ensure_local_runtime_host, LocalRuntimeHostState};
-use self::{manifest::*, mesh::*};
+use self::host::{ensure_local_host, LocalHostState};
+use self::{learnings::*, manifest::*, mesh::*, publication::*};
 
 const LOCAL_AGENT_HEARTBEAT_POLL_MS: u64 = 3_000;
 const LOCAL_AGENT_HEARTBEAT_OK_TOKEN: &str = "HEARTBEAT_OK";
@@ -340,46 +342,6 @@ fn load_local_state_value_from_path(file: &Path) -> Result<(serde_json::Value, b
         save_local_state_value_to_path(file, &value)?;
     }
     Ok((value, repaired))
-}
-
-fn mesh_publication_requests_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = resolve_base_dir(app)?
-        .join("mesh")
-        .join("publications")
-        .join("requests");
-    fs::create_dir_all(&dir)
-        .map_err(|err| format!("failed to create mesh publication requests dir: {err}"))?;
-    Ok(dir)
-}
-
-fn mesh_publication_agent_requests_dir(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-) -> Result<PathBuf, String> {
-    let dir = mesh_publication_requests_dir(app)?.join(agent_wallet.to_lowercase());
-    fs::create_dir_all(&dir)
-        .map_err(|err| format!("failed to create mesh publication agent requests dir: {err}"))?;
-    Ok(dir)
-}
-
-fn mesh_publication_results_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = resolve_base_dir(app)?
-        .join("mesh")
-        .join("publications")
-        .join("results");
-    fs::create_dir_all(&dir)
-        .map_err(|err| format!("failed to create mesh publication results dir: {err}"))?;
-    Ok(dir)
-}
-
-fn mesh_publication_agent_results_dir(
-    app: &tauri::AppHandle,
-    agent_wallet: &str,
-) -> Result<PathBuf, String> {
-    let dir = mesh_publication_results_dir(app)?.join(agent_wallet.to_lowercase());
-    fs::create_dir_all(&dir)
-        .map_err(|err| format!("failed to create mesh publication agent results dir: {err}"))?;
-    Ok(dir)
 }
 
 fn load_persisted_local_state(app: &tauri::AppHandle) -> Result<PersistedLocalState, String> {
@@ -1858,7 +1820,7 @@ fn local_agent_hai_id(
     )
 }
 
-fn build_local_runtime_request_body(
+fn build_local_request_body(
     raw_body: Option<serde_json::Value>,
     agent: &PersistedInstalledAgent,
     identity: &PersistedLocalIdentity,
@@ -1898,16 +1860,12 @@ async fn execute_local_runtime_tool_request(
         verify_manifest_with_mesh(app, &agent.agent_wallet).await?;
     }
 
-    let runtime_host_state = app.state::<LocalRuntimeHostState>();
-    let runtime_status = ensure_local_runtime_host(app, runtime_host_state.inner())?;
+    let host_state = app.state::<LocalHostState>();
+    let status = ensure_local_host(app, host_state.inner())?;
     let response = client
-        .post(format!(
-            "{}{}",
-            runtime_status.base_url.trim_end_matches('/'),
-            path
-        ))
+        .post(format!("{}{}", status.base_url.trim_end_matches('/'), path))
         .header("Content-Type", "application/json")
-        .json(&build_local_runtime_request_body(
+        .json(&build_local_request_body(
             Some(body),
             agent,
             identity,
@@ -3795,7 +3753,7 @@ pub fn run() {
         .manage(mesh::MeshRuntimeState::default())
         .manage(SessionBudgetTracker::default())
         .manage(LocalDaemonState::default())
-        .manage(LocalRuntimeHostState::default())
+        .manage(LocalHostState::default())
         .invoke_handler(tauri::generate_handler![
             get_local_paths,
             set_local_base_dir,
@@ -3841,7 +3799,7 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     loop {
                         if let Err(error) =
-                            mesh::process_pending_mesh_publication_requests(&handle).await
+                            publication::process_pending_mesh_publication_requests(&handle).await
                         {
                             eprintln!(
                                 "[mesh] failed to process local mesh publication queue: {}",
@@ -3903,10 +3861,7 @@ pub fn run() {
         .expect("failed to build Compose Mesh")
         .run(|app, event| {
             if matches!(event, RunEvent::Exit) {
-                let _ = runtime_host::stop_local_runtime_host(
-                    app,
-                    app.state::<LocalRuntimeHostState>().inner(),
-                );
+                let _ = host::stop_local_host(app, app.state::<LocalHostState>().inner());
             }
         });
 }

@@ -9,7 +9,7 @@ pub const DEFAULT_RUNTIME_PORT: u16 = 443;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LocalRuntimeHostStatus {
+pub struct LocalHostStatus {
     pub running: bool,
     pub status: String,
     pub port: u16,
@@ -20,7 +20,7 @@ pub struct LocalRuntimeHostStatus {
     pub updated_at: u64,
 }
 
-impl Default for LocalRuntimeHostStatus {
+impl Default for LocalHostStatus {
     fn default() -> Self {
         let base_url = configured_runtime_base_url();
         Self {
@@ -37,24 +37,22 @@ impl Default for LocalRuntimeHostStatus {
 }
 
 #[derive(Default)]
-pub struct LocalRuntimeHostState {
-    status: Mutex<LocalRuntimeHostStatus>,
+pub struct LocalHostState {
+    status: Mutex<LocalHostStatus>,
 }
 
-pub fn current_runtime_host_status(
-    state: &LocalRuntimeHostState,
-) -> Result<LocalRuntimeHostStatus, String> {
+pub fn current_host_status(state: &LocalHostState) -> Result<LocalHostStatus, String> {
     state
         .status
         .lock()
         .map(|status| status.clone())
-        .map_err(|_| "failed to read runtime host status".to_string())
+        .map_err(|_| "failed to read host status".to_string())
 }
 
-pub fn ensure_local_runtime_host(
+pub fn ensure_local_host(
     _app: &AppHandle,
-    state: &LocalRuntimeHostState,
-) -> Result<LocalRuntimeHostStatus, String> {
+    state: &LocalHostState,
+) -> Result<LocalHostStatus, String> {
     let base_url = configured_runtime_base_url();
     let port = extract_port_from_base_url(&base_url).unwrap_or(DEFAULT_RUNTIME_PORT);
     let started_at = now_ms();
@@ -72,13 +70,13 @@ pub fn ensure_local_runtime_host(
         status.updated_at = now_ms();
     })?;
 
-    current_runtime_host_status(state)
+    current_host_status(state)
 }
 
-pub fn stop_local_runtime_host(
+pub fn stop_local_host(
     _app: &AppHandle,
-    state: &LocalRuntimeHostState,
-) -> Result<LocalRuntimeHostStatus, String> {
+    state: &LocalHostState,
+) -> Result<LocalHostStatus, String> {
     let base_url = configured_runtime_base_url();
     let port = extract_port_from_base_url(&base_url).unwrap_or(DEFAULT_RUNTIME_PORT);
 
@@ -93,7 +91,7 @@ pub fn stop_local_runtime_host(
         status.updated_at = now_ms();
     })?;
 
-    current_runtime_host_status(state)
+    current_host_status(state)
 }
 
 fn configured_runtime_base_url() -> String {
@@ -140,8 +138,8 @@ fn extract_port_from_base_url(base_url: &str) -> Option<u16> {
 }
 
 fn update_status(
-    state: &LocalRuntimeHostState,
-    updater: impl FnOnce(&mut LocalRuntimeHostStatus),
+    state: &LocalHostState,
+    updater: impl FnOnce(&mut LocalHostStatus),
 ) -> Result<(), String> {
     let mut status = state
         .status

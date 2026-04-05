@@ -522,7 +522,10 @@ mod tests {
     #[test]
     fn learning_path_slug_rewrites_skill_placeholder() {
         assert_eq!(learning_path_slug("Skill"), "untitled");
-        assert_eq!(learning_path_slug("Useful Market Insight"), "useful-market-insight");
+        assert_eq!(
+            learning_path_slug("Useful Market Insight"),
+            "useful-market-insight"
+        );
     }
 
     #[test]
@@ -552,10 +555,7 @@ mod tests {
         assert_eq!(state.next_learning_number, 1);
         assert_eq!(state.last_learning_number, None);
         assert_eq!(state.last_learning_path, None);
-        assert_eq!(
-            state.last_learning_piece_cid.as_deref(),
-            Some("bafy-piece")
-        );
+        assert_eq!(state.last_learning_piece_cid.as_deref(), Some("bafy-piece"));
         assert_eq!(state.hai_id.len(), 6);
     }
 
@@ -573,8 +573,9 @@ mod tests {
             access_price_usdc: Some("1000".to_string()),
         };
 
-        let error = build_learning_payload_json(&request, "0x2222222222222222222222222222222222222222")
-            .expect_err("payload should reject missing title");
+        let error =
+            build_learning_payload_json(&request, "0x2222222222222222222222222222222222222222")
+                .expect_err("payload should reject missing title");
         assert_eq!(error, "mesh learning title is required");
     }
 }

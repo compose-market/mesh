@@ -1590,325 +1590,6 @@ pub(crate) fn sign_mesh_manifest(
         ..manifest.clone()
     })
 }
-pub(crate) fn a509_with_reason(_reason: &str) -> String {
-    let trimmed = _reason.trim();
-    if trimmed.is_empty() {
-        A509_INCONSISTENT_AGENT_IDENTITY.to_string()
-    } else {
-        format!("a509: {trimmed}")
-    }
-}
-
-pub(crate) fn is_a509_error(error: &str) -> bool {
-    error.trim().to_lowercase().starts_with("a509:")
-}
-
-pub(crate) fn verify_mesh_manifest_signature(manifest: &MeshManifest) -> Result<(), String> {
-    let peer_id = PeerId::from_str(&manifest.peer_id)
-        .map_err(|err| format!("invalid manifest peerId: {err}"))?;
-    let multihash = peer_id.as_ref();
-    if multihash.code() != 0 {
-        return Err(a509_with_reason(
-            "manifest peerId must contain inline public key material",
-        ));
-    }
-    let public_key = identity::PublicKey::try_decode_protobuf(multihash.digest())
-        .map_err(|err| format!("failed to decode manifest public key: {err}"))?;
-    let signature = decode_hex_string(&manifest.signature)
-        .map_err(|err| format!("invalid manifest signature encoding: {err}"))?;
-    let unsigned = MeshManifestUnsigned {
-        agent_wallet: manifest.agent_wallet.clone(),
-        user_wallet: manifest.user_wallet.clone(),
-        device_id: manifest.device_id.clone(),
-        peer_id: manifest.peer_id.clone(),
-        chain_id: manifest.chain_id,
-        state_version: manifest.state_version,
-        state_root_hash: manifest.state_root_hash.clone(),
-        pdp_piece_cid: manifest.pdp_piece_cid.clone(),
-        pdp_anchored_at: manifest.pdp_anchored_at,
-        name: manifest.name.clone(),
-        description: manifest.description.clone(),
-        model: manifest.model.clone(),
-        framework: manifest.framework.clone(),
-        headline: manifest.headline.clone(),
-        status_line: manifest.status_line.clone(),
-        skills: manifest.skills.clone(),
-        mcp_servers: manifest.mcp_servers.clone(),
-        a2a_endpoints: manifest.a2a_endpoints.clone(),
-        capabilities: manifest.capabilities.clone(),
-        agent_card_uri: manifest.agent_card_uri.clone(),
-        listen_multiaddrs: manifest.listen_multiaddrs.clone(),
-        relay_peer_id: manifest.relay_peer_id.clone(),
-        reputation_score: manifest.reputation_score,
-        total_conclaves: manifest.total_conclaves,
-        successful_conclaves: manifest.successful_conclaves,
-        signed_at: manifest.signed_at,
-    };
-    let sign_bytes = unsigned_manifest_bytes(&unsigned)?;
-    if !public_key.verify(&sign_bytes, &signature) {
-        return Err(a509_with_reason("manifest signature verification failed"));
-    }
-    Ok(())
-}
-
-pub(crate) async fn fetch_authoritative_mesh_state(
-    retrieval_url: &str,
-) -> Result<SignedMeshStateEnvelope, String> {
-    let client = HttpClient::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|err| format!("failed to build manifest verification client: {err}"))?;
-    let response = client
-        .get(retrieval_url)
-        .send()
-        .await
-        .map_err(|err| format!("failed to fetch latest anchored mesh state: {err}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "latest anchored mesh state fetch failed: HTTP {}",
-            response.status()
-        ));
-    }
-    response
-        .json::<SignedMeshStateEnvelope>()
-        .await
-        .map_err(|err| format!("failed to decode latest anchored mesh state JSON: {err}"))
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RegisteredAgentAuthority {
-    wallet_address: Option<String>,
-    name: Option<String>,
-    description: Option<String>,
-    model: Option<String>,
-    framework: Option<String>,
-}
-
-fn normalize_agent_card_uri_for_compare(value: &str) -> String {
-    value.trim().trim_end_matches('/').to_string()
-
-fn extract_agent_card_cid(agent_card_uri: &str) -> Result<String, String> {
-    let trimmed = agent_card_uri.trim();
-    let cid = trimmed
-        .strip_prefix("ipfs://")
-        .unwrap_or(trimmed)
-        .trim_start_matches('/')
-        .split('/')
-        .next()
-        .unwrap_or("")
-        .trim();
-    if cid.is_empty() {
-        return Err("agentCardUri is invalid".to_string());
-    }
-    Ok(cid.to_string())
-}
-
-fn agent_card_gateway_urls() -> Vec<String> {
-    let mut urls = Vec::new();
-    for raw in [
-        std::env::var("PINATA_GATEWAY_URL").ok(),
-        std::env::var("VITE_PINATA_GATEWAY").ok(),
-        option_env!("PINATA_GATEWAY_URL").map(str::to_string),
-        option_env!("VITE_PINATA_GATEWAY").map(str::to_string),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let host = raw
-            .trim()
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .trim_end_matches('/');
-        if !host.is_empty() {
-            urls.push(format!("https://{host}/ipfs"));
-        }
-    }
-    urls.push("https://compose.mypinata.cloud/ipfs".to_string());
-    urls.sort();
-    urls.dedup();
-    urls
-}
-
-async fn fetch_registered_agent_card_authority(
-    agent_card_uri: &str,
-) -> Result<RegisteredAgentCardAuthority, String> {
-    let cid = extract_agent_card_cid(agent_card_uri)?;
-    let client = HttpClient::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|err| format!("failed to build agent card client: {err}"))?;
-
-    let mut last_error: Option<String> = None;
-    for gateway in agent_card_gateway_urls() {
-        let response = match client
-            .get(format!("{}/{}", gateway.trim_end_matches('/'), cid))
-            .send()
-            .await
-        {
-            Ok(value) => value,
-            Err(err) => {
-                last_error = Some(format!("failed to fetch agent card from {gateway}: {err}"));
-                continue;
-            }
-        };
-        if !response.status().is_success() {
-            last_error = Some(format!(
-                "agent card fetch failed from {gateway}: HTTP {}",
-                response.status()
-            ));
-            continue;
-        }
-        return response
-            .json::<RegisteredAgentCardAuthority>()
-            .await
-            .map_err(|err| format!("failed to decode agent card JSON from {gateway}: {err}"));
-    }
-
-    Err(last_error.unwrap_or_else(|| "failed to fetch registered agent card".to_string()))
-}
-
-pub(crate) async fn verify_mesh_manifest_identity(
-    request: &MeshManifestVerificationRequest,
-) -> Result<(), String> {
-    verify_mesh_manifest_signature(&request.manifest)?;
-
-    let derived_hai = derive_hai_id(
-        &request.manifest.agent_wallet,
-        &request.manifest.user_wallet,
-        &request.manifest.device_id,
-    );
-    if derived_hai != request.hai_id {
-        return Err(a509_with_reason(
-            "haiId does not match the manifest triplet",
-        ));
-    }
-
-    let Some(current_state_root_hash) = request
-        .manifest
-        .state_root_hash
-        .as_deref()
-        .and_then(normalize_state_root_hash_for_compare)
-    else {
-        return Err(a509_with_reason(
-            "stateRootHash is missing from the current manifest",
-        ));
-    };
-
-    let Some(retrieval_url) = request
-        .latest_retrieval_url
-        .as_deref()
-        .and_then(normalize_persisted_url)
-    else {
-        let authority = fetch_registered_agent_card_authority(&request.manifest.agent_card_uri)
-            .await
-            .map_err(|err| a509_with_reason(err.as_str()))?;
-
-        let authority_wallet = authority
-            .wallet_address
-            .as_deref()
-            .and_then(normalize_wallet)
-            .ok_or_else(|| a509_with_reason("registered agent card walletAddress is invalid"))?;
-        if authority_wallet != request.manifest.agent_wallet {
-            return Err(a509_with_reason(
-                "agentWallet does not match the registered agent card",
-            ));
-        }
-
-        let authority_chain = authority
-            .chain
-            .filter(|value| *value > 0)
-            .ok_or_else(|| a509_with_reason("registered agent card chain is invalid"))?;
-        if authority_chain != request.manifest.chain_id {
-            return Err(a509_with_reason(
-                "chainId does not match the registered agent card",
-            ));
-        }
-
-        let authority_name = authority
-            .name
-            .map(|value| truncate_string(value, 80))
-            .unwrap_or_default();
-        if authority_name != request.manifest.name {
-            return Err(a509_with_reason(
-                "name does not match the registered agent card",
-            ));
-        }
-
-        let authority_description = authority
-            .description
-            .map(|value| truncate_string(value, 240))
-            .unwrap_or_default();
-        if authority_description != request.manifest.description {
-            return Err(a509_with_reason(
-                "description does not match the registered agent card",
-            ));
-        }
-
-        let authority_model = authority
-            .model
-            .map(|value| truncate_string(value, 120))
-            .unwrap_or_default();
-        if authority_model != request.manifest.model {
-            return Err(a509_with_reason(
-                "model does not match the registered agent card",
-            ));
-        }
-
-        let authority_framework = authority
-            .framework
-            .map(|value| truncate_string(value, 80))
-            .unwrap_or_default();
-        if authority_framework != request.manifest.framework {
-            return Err(a509_with_reason(
-                "framework does not match the registered agent card",
-            ));
-        }
-
-        return Ok(());
-    };
-
-    let authority = fetch_authoritative_mesh_state(retrieval_url.as_str())
-        .await
-        .map_err(|err| a509_with_reason(err.as_str()))?;
-
-    if authority.hai_id != derived_hai {
-        return Err(a509_with_reason(
-            "haiId does not match the latest anchored state",
-        ));
-    }
-    if authority.agent_wallet != request.manifest.agent_wallet {
-        return Err(a509_with_reason(
-            "agentWallet does not match the latest anchored state",
-        ));
-    }
-    if authority.user_wallet != request.manifest.user_wallet {
-        return Err(a509_with_reason(
-            "userAddress does not match the latest anchored state",
-        ));
-    }
-    if authority.device_id != request.manifest.device_id {
-        return Err(a509_with_reason(
-            "deviceId does not match the latest anchored state",
-        ));
-    }
-    if authority.chain_id != request.manifest.chain_id {
-        return Err(a509_with_reason(
-            "chainId does not match the latest anchored state",
-        ));
-    }
-    if !same_state_root_hash(
-        Some(authority.state_root_hash.as_str()),
-        current_state_root_hash.as_str(),
-    ) {
-        return Err(a509_with_reason(
-            "stateRootHash does not match the latest anchored state",
-        ));
-    }
-
-    Ok(())
-}
-
 pub(crate) fn validate_mesh_manifest(
     manifest: MeshManifest,
     status: &MeshRuntimeStatus,
@@ -2154,7 +1835,7 @@ pub(crate) async fn anchor_mesh_state_via_local_runtime(
 pub(crate) async fn anchor_mesh_state_from_command(
     app: &tauri::AppHandle,
     mesh_state: &MeshRuntimeState,
-    runtime_host: &LocalRuntimeHostState,
+    host: &LocalHostState,
     request: MeshStateAnchorCommandRequest,
 ) -> Result<MeshStateAnchorRuntimeResponse, String> {
     let live_status = mesh_state
@@ -2167,7 +1848,7 @@ pub(crate) async fn anchor_mesh_state_from_command(
     }
 
     let snapshot = normalize_mesh_state_snapshot_request(&request, &live_status)?;
-    let runtime_status = ensure_local_runtime_host(app, runtime_host)?;
+    let status = ensure_local_host(app, host)?;
     let hai_state = ensure_local_hai_state(
         app,
         &snapshot.agent_wallet,
@@ -2230,7 +1911,7 @@ pub(crate) async fn anchor_mesh_state_from_command(
     }
 
     let response = anchor_mesh_state_via_local_runtime(
-        &runtime_status.base_url,
+        &status.base_url,
         serde_json::json!({
             "apiUrl": request.api_url,
             "composeKeyToken": request.compose_key_token,
@@ -2295,7 +1976,7 @@ pub(crate) async fn publish_mesh_manifest_from_command(
 pub(crate) async fn process_mesh_manifest_publication_request(
     app: &tauri::AppHandle,
     mesh_state: &MeshRuntimeState,
-    runtime_host: &LocalRuntimeHostState,
+    host: &LocalHostState,
     live_status: &MeshRuntimeStatus,
     request: &MeshPublicationQueueRequest,
 ) -> Result<MeshPublicationQueueResult, String> {
@@ -2322,8 +2003,7 @@ pub(crate) async fn process_mesh_manifest_publication_request(
 
     let (mut manifest, anchor_request) =
         build_current_mesh_publication(app, &requested_wallet, live_status).await?;
-    let anchor =
-        anchor_mesh_state_from_command(app, mesh_state, runtime_host, anchor_request).await?;
+    let anchor = anchor_mesh_state_from_command(app, mesh_state, host, anchor_request).await?;
 
     manifest.state_root_hash = Some(
         anchor
@@ -2379,41 +2059,4 @@ pub(crate) async fn process_mesh_manifest_publication_request(
         pdp_anchored_at: Some(anchor.pdp_anchored_at),
         manifest: Some(published),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a509_with_reason_preserves_detail() {
-        assert_eq!(
-            a509_with_reason("stateRootHash does not match the latest anchored state"),
-            "a509: stateRootHash does not match the latest anchored state"
-        );
-        assert_eq!(
-            a509_with_reason("   "),
-            A509_INCONSISTENT_AGENT_IDENTITY.to_string()
-        );
-    }
-
-    #[test]
-    fn extract_agent_card_cid_accepts_ipfs_uri_and_plain_cid() {
-        assert_eq!(
-            extract_agent_card_cid("ipfs://bafybeigdyrzt/card.json").expect("cid"),
-            "bafybeigdyrzt"
-        );
-        assert_eq!(
-            extract_agent_card_cid("bafybeigdyrzt").expect("cid"),
-            "bafybeigdyrzt"
-        );
-        assert!(extract_agent_card_cid("ipfs://").is_err());
-    }
-
-    #[test]
-    fn agent_card_gateway_urls_always_include_default_pinata_gateway() {
-        assert!(agent_card_gateway_urls()
-            .iter()
-            .any(|value| value == "https://compose.mypinata.cloud/ipfs"));
-    }
 }
