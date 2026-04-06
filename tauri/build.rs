@@ -1,4 +1,58 @@
+fn protocol_namespace_from_app_name(app_name: &str) -> String {
+    let mut namespace = String::new();
+    let mut last_was_separator = false;
+
+    for ch in app_name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            namespace.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+            continue;
+        }
+
+        if !namespace.is_empty() && !last_was_separator {
+            namespace.push('.');
+            last_was_separator = true;
+        }
+    }
+
+    while namespace.ends_with('.') {
+        namespace.pop();
+    }
+
+    assert!(
+        !namespace.is_empty(),
+        "mesh/package.json name must resolve to a non-empty libp2p namespace"
+    );
+    namespace
+}
+
+fn emit_mesh_protocol_namespace() {
+    let manifest_dir =
+        std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let package_json_path = manifest_dir
+        .parent()
+        .expect("mesh/tauri has a parent directory")
+        .join("package.json");
+    println!("cargo:rerun-if-changed={}", package_json_path.display());
+
+    let package_json = std::fs::read_to_string(&package_json_path)
+        .expect("failed to read mesh/package.json for protocol namespace");
+    let package: serde_json::Value =
+        serde_json::from_str(&package_json).expect("mesh/package.json must be valid JSON");
+    let app_name = package
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .expect("mesh/package.json must define a non-empty name");
+    let namespace = protocol_namespace_from_app_name(app_name);
+
+    println!("cargo:rustc-env=COMPOSE_MESH_PROTOCOL_NAMESPACE={namespace}");
+}
+
 fn main() {
+    emit_mesh_protocol_namespace();
+
     #[cfg(target_os = "macos")]
     {
         let out_dir =
@@ -14,6 +68,7 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=AppKit");
         println!("cargo:rustc-link-lib=framework=AVFoundation");
         println!("cargo:rustc-link-lib=framework=ApplicationServices");
+        println!("cargo:rustc-link-lib=framework=CoreLocation");
         println!("cargo:rustc-link-lib=framework=CoreGraphics");
         println!("cargo:rustc-link-lib=framework=Foundation");
     }
@@ -26,9 +81,18 @@ const MACOS_PERMISSIONS_BRIDGE: &str = r#"
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <CoreLocation/CoreLocation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <dispatch/dispatch.h>
 #include <stdbool.h>
+
+static void compose_mesh_run_on_main(void (^block)(void)) {
+  if ([NSThread isMainThread]) {
+    block();
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), block);
+  }
+}
 
 int compose_mesh_camera_authorization_status(void) {
   return (int)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
@@ -85,6 +149,80 @@ bool compose_mesh_prompt_accessibility_access(void) {
   Boolean trusted = AXIsProcessTrustedWithOptions(options);
   CFRelease(options);
   return trusted;
+}
+
+static bool compose_mesh_location_is_authorized(CLAuthorizationStatus status) {
+  return status == kCLAuthorizationStatusAuthorizedAlways;
+}
+
+static CLAuthorizationStatus compose_mesh_current_location_authorization_status(CLLocationManager *manager) {
+  if (![CLLocationManager locationServicesEnabled]) {
+    return kCLAuthorizationStatusDenied;
+  }
+
+  if (@available(macOS 11.0, *)) {
+    return manager.authorizationStatus;
+  }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  return [CLLocationManager authorizationStatus];
+#pragma clang diagnostic pop
+}
+
+int compose_mesh_location_authorization_status(void) {
+  CLLocationManager *manager = [CLLocationManager new];
+  return (int)compose_mesh_current_location_authorization_status(manager);
+}
+
+@interface ComposeMeshLocationPermissionDelegate : NSObject<CLLocationManagerDelegate>
+@property(nonatomic, strong) dispatch_semaphore_t semaphore;
+@end
+
+@implementation ComposeMeshLocationPermissionDelegate
+- (void)signalAuthorizationChange {
+  if (self.semaphore != nil) {
+    dispatch_semaphore_signal(self.semaphore);
+  }
+}
+
+- (void)locationManagerDidChangeAuthorization:(CLLocationManager *)manager {
+  (void)manager;
+  [self signalAuthorizationChange];
+}
+
+- (void)locationManager:(CLLocationManager *)manager didChangeAuthorizationStatus:(CLAuthorizationStatus)status {
+  (void)manager;
+  (void)status;
+  [self signalAuthorizationChange];
+}
+@end
+
+bool compose_mesh_request_location_access(void) {
+  if (![CLLocationManager locationServicesEnabled]) {
+    return false;
+  }
+
+  __block BOOL granted = NO;
+  compose_mesh_run_on_main(^{
+    CLLocationManager *manager = [CLLocationManager new];
+    CLAuthorizationStatus current = compose_mesh_current_location_authorization_status(manager);
+    if (compose_mesh_location_is_authorized(current)) {
+      granted = YES;
+      return;
+    }
+
+    ComposeMeshLocationPermissionDelegate *delegate = [ComposeMeshLocationPermissionDelegate new];
+    delegate.semaphore = dispatch_semaphore_create(0);
+    manager.delegate = delegate;
+    [manager requestWhenInUseAuthorization];
+
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC);
+    dispatch_semaphore_wait(delegate.semaphore, timeout);
+    granted = compose_mesh_location_is_authorized(compose_mesh_current_location_authorization_status(manager));
+  });
+
+  return granted;
 }
 
 bool compose_mesh_open_url(const char *urlCString) {
