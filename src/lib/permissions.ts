@@ -8,6 +8,7 @@ import type {
 } from "./types";
 
 interface RawOsPermissionSnapshot {
+  location: string;
   camera: string;
   microphone: string;
   screen: string;
@@ -33,6 +34,7 @@ function normalizeOsPermissionStatus(value: string): OsPermissionStatus {
 
 export function createDefaultOsPermissionSnapshot(status: OsPermissionStatus = "denied"): OsPermissionSnapshot {
   return {
+    location: status,
     camera: status,
     microphone: status,
     screen: status,
@@ -47,6 +49,7 @@ function normalizeOsPermissionSnapshot(snapshot: Partial<RawOsPermissionSnapshot
   }
 
   return {
+    location: normalizeOsPermissionStatus(snapshot.location || "denied"),
     camera: normalizeOsPermissionStatus(snapshot.camera || "denied"),
     microphone: normalizeOsPermissionStatus(snapshot.microphone || "denied"),
     screen: normalizeOsPermissionStatus(snapshot.screen || "denied"),

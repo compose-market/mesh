@@ -46,6 +46,7 @@ const defaultPermissions: AgentPermissionPolicy = {
 };
 
 const defaultOsPermissions: OsPermissionSnapshot = {
+  location: "denied",
   camera: "denied",
   microphone: "denied",
   screen: "denied",
@@ -59,6 +60,7 @@ const defaultAgentNetworkState: AgentNetworkState = {
   haiId: null,
   peerId: null,
   listenMultiaddrs: [],
+  relayPeerId: null,
   peersDiscovered: 0,
   lastHeartbeatAt: null,
   lastError: null,
@@ -156,6 +158,10 @@ function normalizeMeshManifest(value: Partial<MeshManifest> | null | undefined):
       ? [...new Set(items.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()))].sort()
       : []
   );
+  const listenMultiaddrs = dedupe(value.listenMultiaddrs);
+  const relayPeerId = typeof value.relayPeerId === "string" && value.relayPeerId.trim().length > 0
+    ? value.relayPeerId.trim()
+    : null;
 
   return {
     agentWallet,
@@ -178,8 +184,8 @@ function normalizeMeshManifest(value: Partial<MeshManifest> | null | undefined):
     a2aEndpoints: dedupe(value.a2aEndpoints),
     capabilities: dedupe(value.capabilities),
     agentCardUri: typeof value.agentCardUri === "string" ? value.agentCardUri.trim() : "",
-    listenMultiaddrs: dedupe(value.listenMultiaddrs),
-    relayPeerId: typeof value.relayPeerId === "string" && value.relayPeerId.trim().length > 0 ? value.relayPeerId.trim() : null,
+    listenMultiaddrs,
+    relayPeerId: listenMultiaddrs.some((item) => item.includes("/p2p-circuit")) ? relayPeerId : null,
     reputationScore: Number.isFinite(value.reputationScore) ? Math.max(0, Math.min(1, Number(value.reputationScore))) : 0,
     totalConclaves: Number.isFinite(value.totalConclaves) ? Math.max(0, Number(value.totalConclaves)) : 0,
     successfulConclaves: Number.isFinite(value.successfulConclaves) ? Math.max(0, Number(value.successfulConclaves)) : 0,
@@ -295,6 +301,9 @@ function normalizeNetworkState(value: Partial<AgentNetworkState> | null | undefi
     listenMultiaddrs: Array.isArray(value?.listenMultiaddrs)
       ? value.listenMultiaddrs.filter((addr): addr is string => typeof addr === "string" && addr.trim().length > 0)
       : [],
+    relayPeerId: typeof value?.relayPeerId === "string" && value.relayPeerId.trim().length > 0
+      ? value.relayPeerId.trim()
+      : null,
     peersDiscovered: Number.isFinite(value?.peersDiscovered) ? Math.max(0, Number(value?.peersDiscovered)) : 0,
     lastHeartbeatAt: Number.isFinite(value?.lastHeartbeatAt) ? Number(value?.lastHeartbeatAt) : null,
     lastError: typeof value?.lastError === "string" && value.lastError.trim().length > 0 ? value.lastError : null,
@@ -629,6 +638,7 @@ function normalizeState(state: Partial<LocalRuntimeState> | null | undefined): L
     linkedDeployment: normalizeLinkedDeploymentIntent(state.linkedDeployment),
     permissionDefaults: migratedPermissions,
     osPermissions: {
+      location: state.osPermissions?.location || base.osPermissions.location,
       camera: state.osPermissions?.camera || base.osPermissions.camera,
       microphone: state.osPermissions?.microphone || base.osPermissions.microphone,
       screen: state.osPermissions?.screen || base.osPermissions.screen,

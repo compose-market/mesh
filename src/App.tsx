@@ -33,6 +33,7 @@ import {
   resolveLocalMeshBootstrap,
   resolveMeshBootstrap,
   type MeshBootstrapResolution,
+  type MeshRuntimeStatus,
 } from "./features/mesh";
 import { fetchAgentMetadata, getActiveSessionStatus } from "./lib/api";
 import { daemonGetAgentStatus, mergeDaemonStatusIntoInstalledAgent } from "./lib/daemon";
@@ -74,6 +75,7 @@ import type {
   InstalledAgent,
   LocalIdentityContext,
   LocalRuntimeState,
+  OsPermissionSnapshot,
   MeshPeerSignal,
   RedeemedLocalContext,
   SessionState,
@@ -83,6 +85,14 @@ import "./styles.css";
 const WEB_APP_URL = "https://compose.market";
 const CONNECT_LOCAL_PATH = "/connect-local";
 type BasePage = "agents" | "network" | "settings";
+const OS_PERMISSION_LABELS: Record<OsPermissionKey, string> = {
+  location: "Location",
+  fullDiskAccess: "Full Disk Access",
+  camera: "Camera",
+  microphone: "Microphone",
+  screen: "Screen Recording",
+  accessibility: "Accessibility",
+};
 
 type PersistedDaemonAgent = {
   agentWallet: string;
@@ -359,6 +369,7 @@ export default function App() {
   const [selectedAgentWallet, setSelectedAgentWallet] = useState<string | null>(null);
   const [meshPeers, setMeshPeers] = useState<MeshPeerSignal[]>([]);
   const [meshBootstrap, setMeshBootstrap] = useState<MeshBootstrapResolution>(() => resolveLocalMeshBootstrap());
+  const [meshRuntimeStatus, setMeshRuntimeStatus] = useState<MeshRuntimeStatus>(() => localMeshService.getLastStatus());
   const [paths, setPaths] = useState<Awaited<ReturnType<typeof getLocalPaths>>>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [fallbackDeviceId] = useState(getOrCreateDeviceId);
@@ -549,6 +560,7 @@ export default function App() {
 
   useEffect(() => {
     localMeshService.configure((status) => {
+      setMeshRuntimeStatus(status);
       setState((current) => {
         if (!current) {
           return current;
@@ -580,6 +592,71 @@ export default function App() {
       void localMeshService.configurePeerIndex(null);
     };
   }, [deviceId, persistState]);
+
+  const refreshSystemPermissions = useCallback(async (): Promise<OsPermissionSnapshot | null> => {
+    const current = stateRef.current;
+    if (!current) {
+      return null;
+    }
+    const snapshot = await queryOsPermissions();
+    await persistState(reconcileStateWithOsPermissions(current, snapshot), { syncAgentFiles: false });
+    return snapshot;
+  }, [persistState]);
+
+  const requestSystemPermission = useCallback(async (
+    key: OsPermissionKey,
+    options?: { openSettingsAlways?: boolean },
+  ): Promise<OsPermissionSnapshot | null> => {
+    const current = stateRef.current;
+    if (!current) {
+      return null;
+    }
+    const snapshot = await requestOsPermission(key);
+    await persistState(reconcileStateWithOsPermissions(current, snapshot), { syncAgentFiles: false });
+    if (options?.openSettingsAlways || snapshot[key] !== "granted") {
+      await openSystemPermissionSettings(key);
+    }
+    return snapshot;
+  }, [persistState]);
+
+  const openLocationPermissionFromMesh = useCallback(async () => {
+    try {
+      const snapshot = await requestSystemPermission("location", { openSettingsAlways: true });
+      if (!snapshot) {
+        return;
+      }
+      if (snapshot.location === "granted") {
+        showNotification("success", "Location: Granted");
+      } else {
+        showNotification("success", "Opened macOS Privacy → Location");
+      }
+    } catch (error) {
+      showNotification("error", error instanceof Error ? error.message : "Failed to open Location settings");
+      throw error;
+    }
+  }, [requestSystemPermission, showNotification]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleRefresh = () => {
+      void refreshSystemPermissions().catch(() => { });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        handleRefresh();
+      }
+    };
+
+    window.addEventListener("focus", handleRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", handleRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [refreshSystemPermissions]);
 
   useEffect(() => {
     localMeshService.configureManifest((manifest) => {
@@ -992,6 +1069,9 @@ export default function App() {
                   agents={publishedNetworkAgents}
                   peers={visibleMeshPeers}
                   bootstrapResolution={meshBootstrap}
+                  runtimeStatus={meshRuntimeStatus}
+                  locationPermission={state.osPermissions.location}
+                  onEnableLocation={openLocationPermissionFromMesh}
                 />
               </div>
             ) : null}
@@ -1013,6 +1093,8 @@ export default function App() {
                 onNotify={showNotification}
                 onBack={() => setActivePage("agents")}
                 onPathsChange={setPaths}
+                onRequestSystemPermission={requestSystemPermission}
+                onRefreshSystemPermissions={refreshSystemPermissions}
               />
             ) : null}
           </main>
@@ -1039,6 +1121,8 @@ function SettingsPage({
   onNotify,
   onBack,
   onPathsChange,
+  onRequestSystemPermission,
+  onRefreshSystemPermissions,
 }: {
   state: LocalRuntimeState;
   paths: Awaited<ReturnType<typeof getLocalPaths>>;
@@ -1050,28 +1134,34 @@ function SettingsPage({
   onNotify: (type: "success" | "error", message: string) => void;
   onBack: () => void;
   onPathsChange: (paths: Awaited<ReturnType<typeof getLocalPaths>>) => void;
+  onRequestSystemPermission: (
+    key: OsPermissionKey,
+    options?: { openSettingsAlways?: boolean },
+  ) => Promise<OsPermissionSnapshot | null>;
+  onRefreshSystemPermissions: () => Promise<OsPermissionSnapshot | null>;
 }) {
   const [busyPermission, setBusyPermission] = useState<string | null>(null);
   const [editingBaseDir, setEditingBaseDir] = useState(paths?.base_dir || "");
 
   const togglePermission = async (key: OsPermissionKey) => {
     const current = state.osPermissions[key];
+    const label = OS_PERMISSION_LABELS[key];
     if (current === "granted") {
-      // Already granted — just open Settings so user can revoke if they want
       await openSystemPermissionSettings(key);
-      onNotify("success", `Opened macOS Privacy → ${key}`);
+      onNotify("success", `Opened macOS Privacy → ${label}`);
       return;
     }
     setBusyPermission(key);
     try {
-      const snapshot = await requestOsPermission(key);
-      await onStateChange(reconcileStateWithOsPermissions({ ...state, osPermissions: snapshot }, snapshot));
-      if (snapshot[key] !== "granted") {
-        await openSystemPermissionSettings(key);
+      const snapshot = await onRequestSystemPermission(key, {
+        openSettingsAlways: key === "location",
+      });
+      if (!snapshot) {
+        return;
       }
-      onNotify("success", `${key}: ${snapshot[key]}`);
+      onNotify("success", `${label}: ${formatOsPermissionStatus(snapshot[key])}`);
     } catch (error) {
-      onNotify("error", error instanceof Error ? error.message : `Failed to request ${key}`);
+      onNotify("error", error instanceof Error ? error.message : `Failed to request ${label}`);
     } finally {
       setBusyPermission(null);
     }
@@ -1080,8 +1170,7 @@ function SettingsPage({
   const refreshPermissions = async () => {
     setBusyPermission("__all__");
     try {
-      const osStatus = await queryOsPermissions();
-      await onStateChange(reconcileStateWithOsPermissions(state, osStatus));
+      await onRefreshSystemPermissions();
       onNotify("success", "Permissions refreshed");
     } catch (error) {
       onNotify("error", error instanceof Error ? error.message : "Refresh failed");
@@ -1116,6 +1205,7 @@ function SettingsPage({
   type PermRow = { key: OsPermissionKey; label: string };
   const PERM_ROWS: PermRow[] = [
     { key: "fullDiskAccess", label: "Full Disk Access" },
+    { key: "location", label: "Location" },
     { key: "camera", label: "Camera" },
     { key: "microphone", label: "Microphone" },
     { key: "accessibility", label: "Accessibility" },

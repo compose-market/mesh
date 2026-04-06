@@ -203,6 +203,7 @@ export interface AgentNetworkState {
   haiId: string | null;
   peerId: string | null;
   listenMultiaddrs: string[];
+  relayPeerId?: string | null;
   peersDiscovered: number;
   lastHeartbeatAt: number | null;
   lastError: string | null;
@@ -225,6 +226,7 @@ export interface AgentWorkerState {
 export type OsPermissionStatus = "granted" | "denied";
 
 export interface OsPermissionSnapshot {
+  location: OsPermissionStatus;
   camera: OsPermissionStatus;
   microphone: OsPermissionStatus;
   screen: OsPermissionStatus;

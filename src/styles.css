@@ -2510,6 +2510,32 @@ button.primary:hover {
   pointer-events: none;
 }
 
+.mesh-stage__location-notice {
+  position: absolute;
+  inset: 108px 18px auto auto;
+  z-index: 6;
+  width: min(520px, calc(100% - 36px));
+  pointer-events: auto;
+}
+
+.mesh-stage__location-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mesh-stage__location-copy strong {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.mesh-stage__location-copy span {
+  font-size: 12px;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+
 .mesh-stage__titleblock,
 .mesh-stage__legend,
 .mesh-stage__status,
@@ -2916,6 +2942,11 @@ button.primary:hover {
     max-width: none;
   }
 
+  .mesh-stage__location-notice {
+    inset: 132px 18px auto;
+    width: auto;
+  }
+
   .mesh-stage__status {
     max-width: min(420px, calc(100% - 36px));
   }
@@ -2945,6 +2976,10 @@ button.primary:hover {
   .mesh-stage__hud {
     inset: 12px 12px auto;
     gap: 12px;
+  }
+
+  .mesh-stage__location-notice {
+    inset: 128px 12px auto;
   }
 
   .mesh-stage__legend {

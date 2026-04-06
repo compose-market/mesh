@@ -1,29 +1,16 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vitest/config";
+import { loadMeshFleetState } from "./config/mesh-fleet-state.mjs";
 
-function loadMeshFleetNodes(): Array<{ peerId: string; provider: string; region: string }> {
-  const fleetStatePath = resolve(process.cwd(), "state", "fleet-state.json");
-  if (!existsSync(fleetStatePath)) {
-    return [];
-  }
-
-  const parsed = JSON.parse(readFileSync(fleetStatePath, "utf-8")) as { nodes?: unknown[] };
-  return Array.isArray(parsed.nodes)
-    ? parsed.nodes.map((node) => ({
-      peerId: typeof (node as { peerId?: unknown }).peerId === "string" ? (node as { peerId: string }).peerId : "",
-      provider: typeof (node as { provider?: unknown }).provider === "string" ? (node as { provider: string }).provider : "",
-      region: typeof (node as { region?: unknown }).region === "string" ? (node as { region: string }).region : "",
-    })).filter((node) => node.peerId.length > 0 && node.provider.length > 0 && node.region.length > 0)
-    : [];
-}
-
-const meshFleetNodes = loadMeshFleetNodes();
+const pkg = JSON.parse(readFileSync("./package.json", "utf-8"));
+const meshFleetState = loadMeshFleetState();
 
 export default defineConfig({
   define: {
-    __APP_VERSION__: JSON.stringify("test"),
-    __MESH_FLEET_NODES__: JSON.stringify(meshFleetNodes),
+    __APP_NAME__: JSON.stringify(pkg.name),
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    __MESH_FLEET_NODES__: JSON.stringify(meshFleetState.nodes),
+    __MESH_FLEET_MULTIADDRS__: JSON.stringify(meshFleetState.multiaddrs),
   },
   test: {
     environment: "node",
