@@ -61,6 +61,7 @@ export interface MeshRuntimeStatus {
   deviceId: string | null;
   peerId: string | null;
   listenMultiaddrs: string[];
+  relayPeerId: string | null;
   peersDiscovered: number;
   lastHeartbeatAt: number | null;
   lastError: string | null;
@@ -72,6 +73,7 @@ export interface MeshDesiredState {
   identity: LocalIdentityContext;
   deviceId: string;
   publishedAgents: MeshPublishedAgent[];
+  knownPeerMultiaddrs: string[];
 }
 
 export interface MeshPeerIndexPayload {
@@ -92,11 +94,24 @@ function createDormantStatus(): MeshRuntimeStatus {
     deviceId: null,
     peerId: null,
     listenMultiaddrs: [],
+    relayPeerId: null,
     peersDiscovered: 0,
     lastHeartbeatAt: null,
     lastError: null,
     updatedAt: Date.now(),
   };
+}
+
+function uniqueMultiaddrs(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+
+function collectKnownPeerMultiaddrs(agents: InstalledAgent[]): string[] {
+  return uniqueMultiaddrs(
+    agents.flatMap((agent) =>
+      agent.network.recentPings.flatMap((signal) => signal.listenMultiaddrs || []),
+    ),
+  );
 }
 
 function normalizeBootstrap(resolution: MeshBootstrapResolution): MeshBootstrapConfig {
@@ -146,12 +161,45 @@ function resetAgentMeshState(agent: InstalledAgent, updatedAt: number): Installe
       haiId: null,
       peerId: null,
       listenMultiaddrs: [],
+      relayPeerId: null,
       peersDiscovered: 0,
       lastHeartbeatAt: null,
       lastError: null,
       updatedAt,
     },
   };
+}
+
+function applyRuntimeStatusToAgentNetwork(
+  agent: InstalledAgent,
+  status: MeshRuntimeStatus,
+  updatedAt: number,
+  haiId: string | null,
+  enabled: boolean,
+): InstalledAgent {
+  return {
+    ...agent,
+    network: {
+      ...agent.network,
+      enabled,
+      status: status.status,
+      haiId: haiId ?? agent.network.haiId,
+      peerId: status.peerId,
+      listenMultiaddrs: [...status.listenMultiaddrs],
+      relayPeerId: status.relayPeerId ?? agent.network.relayPeerId ?? null,
+      peersDiscovered: status.peersDiscovered,
+      lastHeartbeatAt: status.lastHeartbeatAt,
+      lastError: status.lastError,
+      updatedAt,
+    },
+  };
+}
+
+function runtimeStatusShowsLiveLocalMesh(status: MeshRuntimeStatus): boolean {
+  return status.status === "online"
+    || Boolean(status.peerId)
+    || status.listenMultiaddrs.length > 0
+    || status.peersDiscovered > 0;
 }
 
 async function getMeshStatusFromRuntime(): Promise<MeshRuntimeStatus> {
@@ -207,6 +255,7 @@ export function buildMeshDesiredState(
     identity,
     deviceId,
     publishedAgents,
+    knownPeerMultiaddrs: collectKnownPeerMultiaddrs(agents),
   };
 }
 
@@ -228,25 +277,17 @@ export function mergeMeshStatusIntoState(
       }
 
       const haiId = publishedAgents.get(agent.agentWallet.toLowerCase());
-      if (!haiId || status.deviceId !== deviceId) {
+      if (status.deviceId !== deviceId || !status.running) {
         return resetAgentMeshState(agent, updatedAt);
       }
 
-      return {
-        ...agent,
-        network: {
-          ...agent.network,
-          enabled: true,
-          status: status.status,
-          haiId,
-          peerId: status.peerId,
-          listenMultiaddrs: [...status.listenMultiaddrs],
-          peersDiscovered: status.peersDiscovered,
-          lastHeartbeatAt: status.lastHeartbeatAt,
-          lastError: status.lastError,
-          updatedAt,
-        },
-      };
+      if (!haiId) {
+        return runtimeStatusShowsLiveLocalMesh(status) || agent.network.enabled
+          ? applyRuntimeStatusToAgentNetwork(agent, status, updatedAt, null, true)
+          : resetAgentMeshState(agent, updatedAt);
+      }
+
+      return applyRuntimeStatusToAgentNetwork(agent, status, updatedAt, haiId, true);
     }),
   };
 }
@@ -305,9 +346,10 @@ export function mergeManifestIntoState(
   manifest: MeshManifest,
 ): LocalRuntimeState {
   let changed = false;
+  const manifestWallet = manifest.agentWallet.toLowerCase();
 
   const installedAgents = current.installedAgents.map((agent) => {
-    if (agent.agentWallet !== manifest.agentWallet.toLowerCase()) {
+    if (agent.agentWallet.toLowerCase() !== manifestWallet) {
       return agent;
     }
 
@@ -470,7 +512,10 @@ class LocalMeshService {
           conclaveTopic: this.bootstrap.conclaveTopic,
           kadProtocol: this.bootstrap.kadProtocol,
           heartbeatMs: this.bootstrap.heartbeatMs,
-          bootstrapMultiaddrs: this.bootstrap.bootstrapMultiaddrs,
+          bootstrapMultiaddrs: uniqueMultiaddrs([
+            ...this.desired.knownPeerMultiaddrs,
+            ...this.bootstrap.bootstrapMultiaddrs,
+          ]),
           relayMultiaddrs: this.bootstrap.relayMultiaddrs,
           publishedAgents: this.desired.publishedAgents,
         })
@@ -547,11 +592,6 @@ class LocalMeshService {
 
   public async setDesiredState(state: MeshDesiredState | null): Promise<void> {
     const nextDesired = state?.enabled ? state : null;
-    const desiredChanged = this.desiredKey(this.desired) !== this.desiredKey(nextDesired);
-
-    if (desiredChanged && this.desired) {
-      await this.stopAndCleanup();
-    }
 
     this.desired = nextDesired;
     if (!this.desired) {

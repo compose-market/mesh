@@ -2,20 +2,28 @@ import { startTransition, useCallback, useEffect, useMemo, useRef, useState } fr
 import type { DeckProps, PickingInfo } from "@deck.gl/core";
 import { ArcLayer, GeoJsonLayer, PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { Activity, Minus, Radio, ScanSearch, Wallet, Waypoints, X } from "lucide-react";
+import { Activity, MapPin, Minus, Radio, ScanSearch, Wallet, Waypoints, X } from "lucide-react";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 import MapView, { useControl, type MapRef } from "react-map-gl/maplibre";
 import { feature } from "topojson-client";
 import worldAtlas from "world-atlas/countries-110m.json";
-import { ShellPanel, ShellPill } from "@compose-market/theme/shell";
-import type { InstalledAgent, MeshPeerSignal } from "../../lib/types";
-import { buildMeshScene, type MeshBootstrapResolution } from "./model";
-import { buildMeshStageModel } from "./stage-model";
+import { ShellButton, ShellNotice, ShellPanel, ShellPill } from "@compose-market/theme/shell";
+import type { InstalledAgent, MeshPeerSignal, OsPermissionStatus } from "../../lib/types";
+import {
+  buildMeshScene,
+  extractPublicDirectMeshEndpoint,
+  type MeshBootstrapResolution,
+} from "./model";
+import { buildMeshStageModel, type MeshLocalDeviceLocation } from "./stage-model";
+import type { MeshRuntimeStatus } from "./runtime";
 
 interface MeshPageProps {
   agents: InstalledAgent[];
   peers: MeshPeerSignal[];
   bootstrapResolution: MeshBootstrapResolution;
+  runtimeStatus: MeshRuntimeStatus;
+  locationPermission: OsPermissionStatus;
+  onEnableLocation: () => Promise<void>;
 }
 
 interface RegionPoint {
@@ -86,6 +94,9 @@ interface RegionLabelDatum {
   selected: boolean;
   side: "east" | "west" | "north" | "south";
 }
+
+const DEVICE_LOCATION_CACHE_KEY = "compose_mesh_local_device_location_v1";
+const DEVICE_LOCATION_CACHE_TTL_MS = 30 * 60 * 1_000;
 
 /* ── Brand-exact color palette ───────────────────────────────────── */
 /* Primary  hsl(188 95% 43%)  → rgb(5, 175, 214)  */
@@ -217,18 +228,229 @@ function labelOffset(side: "east" | "west" | "north" | "south"): [number, number
   return [0, 18];
 }
 
-export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) {
+function readCachedDeviceLocation(): MeshLocalDeviceLocation | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const raw = window.localStorage.getItem(DEVICE_LOCATION_CACHE_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as MeshLocalDeviceLocation & { updatedAt?: number };
+    const updatedAt = Number.isFinite(parsed.updatedAt) ? Number(parsed.updatedAt) : 0;
+    if (Date.now() - updatedAt > DEVICE_LOCATION_CACHE_TTL_MS) {
+      return null;
+    }
+    if (!Number.isFinite(parsed.lat) || !Number.isFinite(parsed.lon)) {
+      return null;
+    }
+    return {
+      lat: Number(parsed.lat),
+      lon: Number(parsed.lon),
+      city: typeof parsed.city === "string" ? parsed.city : null,
+      country: typeof parsed.country === "string" ? parsed.country : null,
+      label: typeof parsed.label === "string" && parsed.label.trim().length > 0 ? parsed.label : "Current device",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistDeviceLocation(location: MeshLocalDeviceLocation): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(DEVICE_LOCATION_CACHE_KEY, JSON.stringify({
+    ...location,
+    updatedAt: Date.now(),
+  }));
+}
+
+function readFiniteNumber(value: unknown): number | null {
+  return Number.isFinite(value) ? Number(value) : null;
+}
+
+async function resolveBrowserDeviceLocation(): Promise<MeshLocalDeviceLocation | null> {
+  if (typeof navigator === "undefined" || !("geolocation" in navigator)) {
+    return null;
+  }
+
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          lat: position.coords.latitude,
+          lon: position.coords.longitude,
+          city: null,
+          country: null,
+          label: "Current device",
+        });
+      },
+      () => resolve(null),
+      {
+        enableHighAccuracy: true,
+        timeout: 8_000,
+        maximumAge: 5 * 60 * 1_000,
+      },
+    );
+  });
+}
+
+async function resolveIpDeviceLocation(): Promise<MeshLocalDeviceLocation | null> {
+  return resolveIpDeviceLocationFor(null);
+}
+
+async function resolveIpDeviceLocationFor(ipAddress: string | null): Promise<MeshLocalDeviceLocation | null> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 4_000);
+  try {
+    const lookupTarget = ipAddress ? `${encodeURIComponent(ipAddress)}/` : "";
+    const response = await fetch(`https://ipapi.co/${lookupTarget}json/`, {
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await response.json() as {
+      latitude?: number;
+      longitude?: number;
+      city?: string;
+      country_name?: string;
+      country?: string;
+    };
+    const lat = readFiniteNumber(payload.latitude);
+    const lon = readFiniteNumber(payload.longitude);
+    if (lat === null || lon === null) {
+      return null;
+    }
+    const city = typeof payload.city === "string" && payload.city.trim().length > 0 ? payload.city.trim() : null;
+    const country = typeof payload.country_name === "string" && payload.country_name.trim().length > 0
+      ? payload.country_name.trim()
+      : typeof payload.country === "string" && payload.country.trim().length > 0
+        ? payload.country.trim()
+        : null;
+    const label = city
+      ? country ? `${city}, ${country}` : city
+      : country || "Current device";
+    return { lat, lon, city, country, label };
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+export function MeshPage({
+  agents,
+  peers,
+  bootstrapResolution,
+  runtimeStatus,
+  locationPermission,
+  onEnableLocation,
+}: MeshPageProps) {
   const mapRef = useRef<MapRef | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [cardCollapsed, setCardCollapsed] = useState(false);
   const [hoverTarget, setHoverTarget] = useState<HoverTarget | null>(null);
+  const [localDeviceLocation, setLocalDeviceLocation] = useState<MeshLocalDeviceLocation | null>(() => readCachedDeviceLocation());
+  const [requestingLocation, setRequestingLocation] = useState(false);
+  const directMeshEndpoint = useMemo(() => {
+    for (const agent of agents) {
+      if (!agent.network.enabled) {
+        continue;
+      }
+      const endpoint = extractPublicDirectMeshEndpoint([
+        ...agent.network.listenMultiaddrs,
+        ...(agent.network.manifest?.listenMultiaddrs || []),
+      ]);
+      if (endpoint) {
+        return endpoint;
+      }
+    }
+    return null;
+  }, [agents]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const resolved = await resolveBrowserDeviceLocation();
+      if (!resolved || cancelled) {
+        if (localDeviceLocation) {
+          return;
+        }
+        const fallback = await resolveIpDeviceLocation();
+        if (!fallback || cancelled) {
+          return;
+        }
+        persistDeviceLocation(fallback);
+        setLocalDeviceLocation((current) => current || fallback);
+        return;
+      }
+      persistDeviceLocation(resolved);
+      setLocalDeviceLocation((current) => {
+        if (
+          current
+          && current.lat === resolved.lat
+          && current.lon === resolved.lon
+          && current.city === resolved.city
+          && current.country === resolved.country
+          && current.label === resolved.label
+        ) {
+          return current;
+        }
+        return resolved;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [locationPermission]);
+
+  useEffect(() => {
+    if (!directMeshEndpoint) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const resolved = await resolveIpDeviceLocationFor(directMeshEndpoint.value);
+      if (!resolved || cancelled) {
+        return;
+      }
+      persistDeviceLocation(resolved);
+      setLocalDeviceLocation((current) => {
+        if (
+          current
+          && current.lat === resolved.lat
+          && current.lon === resolved.lon
+          && current.city === resolved.city
+          && current.country === resolved.country
+          && current.label === resolved.label
+        ) {
+          return current;
+        }
+        return resolved;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [directMeshEndpoint]);
 
   const scene = useMemo(() => buildMeshScene({ peers, resolution: bootstrapResolution }), [bootstrapResolution, peers]);
   const stage = useMemo(
-    () => buildMeshStageModel({ agents, peers, scene, selectedNodeId, selectedRegionId }),
-    [agents, peers, scene, selectedNodeId, selectedRegionId],
+    () => buildMeshStageModel({
+      agents,
+      peers,
+      scene,
+      selectedNodeId,
+      selectedRegionId,
+      localDeviceLocation,
+      runtimeRelayPeerId: runtimeStatus.relayPeerId,
+    }),
+    [agents, localDeviceLocation, peers, runtimeStatus.relayPeerId, scene, selectedNodeId, selectedRegionId],
   );
 
   const nodesById = useMemo(() => new Map(stage.nodes.map((node) => [node.id, node])), [stage.nodes]);
@@ -244,6 +466,19 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
   const focusedRegionId = focusedRegion?.id || null;
   const activeRegions = stage.regions.filter((region) => region.peerCount > 0 || region.localNodeIds.length > 0).length;
   const viewerDormant = localNodes.length === 0 || localNodes.every((node) => node.lon === null || node.lat === null);
+  const hasExactLocalPlacement = localNodes.some((node) => node.regionId === "__local_device__");
+  const showLocationPrompt = agents.some((agent) => agent.network.enabled)
+    && locationPermission !== "granted"
+    && !hasExactLocalPlacement;
+
+  const handleEnableLocation = useCallback(() => {
+    setRequestingLocation(true);
+    void onEnableLocation()
+      .catch(() => {})
+      .finally(() => {
+        setRequestingLocation(false);
+      });
+  }, [onEnableLocation]);
 
   useEffect(() => {
     if (selectedNodeId && !nodesById.has(selectedNodeId)) {
@@ -782,6 +1017,28 @@ export function MeshPage({ agents, peers, bootstrapResolution }: MeshPageProps) 
               </ShellPill>
             </div>
           </div>
+
+          {showLocationPrompt ? (
+            <div className="mesh-stage__location-notice">
+              <ShellNotice tone="info">
+                <MapPin size={14} />
+                <div className="mesh-stage__location-copy">
+                  <strong>Enable Location for exact local-agent placement</strong>
+                  <span>
+                    Turn on macOS Location Services so Compose Mesh can place this device&apos;s local agents at their real position instead of waiting on temporary mesh fallback routing.
+                  </span>
+                </div>
+                <ShellButton
+                  tone="primary"
+                  size="sm"
+                  disabled={requestingLocation}
+                  onClick={handleEnableLocation}
+                >
+                  {requestingLocation ? "Opening…" : "Open System Settings"}
+                </ShellButton>
+              </ShellNotice>
+            </div>
+          ) : null}
 
           {viewerDormant ? (
             <div className="mesh-viewer-node" aria-hidden="true">

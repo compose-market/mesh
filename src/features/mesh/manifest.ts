@@ -22,6 +22,10 @@ function dedupeSorted(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
 }
 
+function hasRelayReservationListenMultiaddrs(listenMultiaddrs: string[]): boolean {
+  return listenMultiaddrs.some((value) => value.includes("/p2p-circuit"));
+}
+
 function manifestComparablePayload(manifest: MeshManifest): string {
   return JSON.stringify({
     agentWallet: manifest.agentWallet,
@@ -94,11 +98,14 @@ export function hydrateManifestNetworkFields(
   manifest: MeshManifest,
   runtime: MeshManifestRuntimeFields,
 ): MeshManifest {
+  const listenMultiaddrs = dedupeSorted(runtime.listenMultiaddrs);
   return {
     ...manifest,
     peerId: runtime.peerId.trim(),
-    listenMultiaddrs: dedupeSorted(runtime.listenMultiaddrs),
-    relayPeerId: runtime.relayPeerId?.trim() || null,
+    listenMultiaddrs,
+    relayPeerId: hasRelayReservationListenMultiaddrs(listenMultiaddrs)
+      ? runtime.relayPeerId?.trim() || null
+      : null,
   };
 }
 
@@ -148,7 +155,7 @@ export function buildManifestPayload(input: BuildManifestInput): MeshManifest {
     capabilities,
     agentCardUri: agent.metadata.agentCardUri,
     listenMultiaddrs: [],
-    relayPeerId: previousManifest?.relayPeerId ?? null,
+    relayPeerId: null,
     reputationScore,
     totalConclaves,
     successfulConclaves,

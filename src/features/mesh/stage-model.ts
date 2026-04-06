@@ -1,6 +1,8 @@
 import type { InstalledAgent, MeshAgentCard, MeshManifest, MeshPeerSignal } from "../../lib/types";
 import {
   derivePeerAnchor,
+  hasPublicDirectMeshPath,
+  projectMeshCoordinate,
   resolveMeshRegionProfile,
   type MeshAnchorNode,
   type MeshBootstrapAnchor,
@@ -78,16 +80,41 @@ export interface MeshStageModel {
   selectedManifest: MeshSelectedManifest | null;
 }
 
+export interface MeshLocalDeviceLocation {
+  lat: number;
+  lon: number;
+  city: string | null;
+  country: string | null;
+  label: string;
+}
+
 interface BuildMeshStageModelInput {
   agents: InstalledAgent[];
   peers: MeshPeerSignal[];
   scene: MeshScene;
   selectedNodeId: string | null;
   selectedRegionId: string | null;
+  localDeviceLocation?: MeshLocalDeviceLocation | null;
+  runtimeRelayPeerId?: string | null;
 }
+
+const LOCAL_DEVICE_REGION_ID = "__local_device__";
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function offsetLatLonMeters(
+  origin: MeshLocalDeviceLocation,
+  eastMeters: number,
+  northMeters: number,
+): { lon: number; lat: number } {
+  const metersPerDegreeLat = 111_320;
+  const metersPerDegreeLon = metersPerDegreeLat * Math.max(0.1, Math.cos((origin.lat * Math.PI) / 180));
+  return {
+    lon: origin.lon + (eastMeters / metersPerDegreeLon),
+    lat: origin.lat + (northMeters / metersPerDegreeLat),
+  };
 }
 
 function offsetCoordinates(anchor: MeshAnchorNode | null, x: number, y: number): { lon: number | null; lat: number | null } {
@@ -228,6 +255,8 @@ function buildLocalNode(
   anchorsByPeerId: Record<string, MeshBootstrapAnchor>,
   localIndex: number,
   localCount: number,
+  localDeviceLocation: MeshLocalDeviceLocation | null,
+  runtimeRelayPeerId: string | null,
 ): {
   node: MeshStageNode;
   manifest: MeshSelectedManifest;
@@ -240,24 +269,30 @@ function buildLocalNode(
   const manifestAnchorMatch = agent.network.manifest
     ? derivePeerAnchor(agent.network.manifest.listenMultiaddrs, anchorsByPeerId)
     : null;
+  const runtimeRelayAnchor = runtimeRelayPeerId ? anchorsByPeerId[runtimeRelayPeerId] || null : null;
   const relayAnchor = (
     runtimeAnchorMatch.relayPeerId
     ? anchorsByPeerId[runtimeAnchorMatch.relayPeerId]
     : null
   ) || (
+    agent.network.relayPeerId
+      ? anchorsByPeerId[agent.network.relayPeerId]
+      : null
+  ) || (
     manifestAnchorMatch?.relayPeerId
       ? anchorsByPeerId[manifestAnchorMatch.relayPeerId]
       : null
-  ) || (
-    agent.network.manifest?.relayPeerId
-      ? anchorsByPeerId[agent.network.manifest.relayPeerId]
+  ) || runtimeRelayAnchor || (
+    runtimeRelayPeerId
+      ? anchorsByPeerId[runtimeRelayPeerId]
       : null
   ) || null;
 
   const localAnchorMatch = {
     relayPeerId: runtimeAnchorMatch.relayPeerId
+      || agent.network.relayPeerId
       || manifestAnchorMatch?.relayPeerId
-      || agent.network.manifest?.relayPeerId
+      || runtimeRelayPeerId
       || null,
     anchorHost: runtimeAnchorMatch.anchorHost
       || manifestAnchorMatch?.anchorHost
@@ -282,25 +317,51 @@ function buildLocalNode(
         })
         : null
     );
-  const localRegionProfile = resolveMeshRegionProfile(localAnchor?.region || localAnchorMatch.anchorRegion || null);
-  const localRegionLabel = localAnchor
-    ? formatRegion(localAnchor)
-    : localRegionProfile
-      ? `${localRegionProfile.city}, ${localRegionProfile.country}`
-      : "Unassigned region";
+  const hasDirectMeshPath = hasPublicDirectMeshPath([
+    ...agent.network.listenMultiaddrs,
+    ...(agent.network.manifest?.listenMultiaddrs || []),
+  ]);
+  const useLocalDeviceLocation = Boolean(localDeviceLocation) && (hasDirectMeshPath || !localAnchor);
+  const localRegionProfile = useLocalDeviceLocation
+    ? null
+    : resolveMeshRegionProfile(localAnchor?.region || localAnchorMatch.anchorRegion || null);
+  const localRegionLabel = useLocalDeviceLocation && localDeviceLocation
+    ? (
+      localDeviceLocation.city
+        ? localDeviceLocation.country
+          ? `${localDeviceLocation.city}, ${localDeviceLocation.country}`
+          : localDeviceLocation.city
+        : localDeviceLocation.label
+    )
+    : localAnchor
+      ? formatRegion(localAnchor)
+      : localRegionProfile
+        ? `${localRegionProfile.city}, ${localRegionProfile.country}`
+        : "Unassigned region";
 
   const angle = localCount > 1 ? ((Math.PI * 2 * localIndex) / localCount) - (Math.PI / 2) : -Math.PI / 4;
   const radius = localCount > 1 ? 3.4 : 2.8;
-  const x = clamp((localAnchor?.x ?? 50) + (Math.cos(angle) * radius), 6, 94);
-  const y = clamp((localAnchor?.y ?? 50) + (Math.sin(angle) * radius * 0.72), 10, 90);
-  const geographicPosition = localAnchor
-    ? offsetCoordinates(localAnchor, x, y)
-    : localRegionProfile
-      ? {
-        lon: localRegionProfile.lon + (Math.cos(angle) * 1.35),
-        lat: localRegionProfile.lat + (Math.sin(angle) * 0.95),
-      }
-      : { lon: null, lat: null };
+  const baseProjection = useLocalDeviceLocation && localDeviceLocation
+    ? projectMeshCoordinate(localDeviceLocation.lat, localDeviceLocation.lon)
+    : null;
+  const x = clamp((baseProjection?.x ?? localAnchor?.x ?? 50) + (Math.cos(angle) * radius), 6, 94);
+  const y = clamp((baseProjection?.y ?? localAnchor?.y ?? 50) + (Math.sin(angle) * radius * 0.72), 10, 90);
+  const geographicPosition = useLocalDeviceLocation && localDeviceLocation
+    ? (localCount <= 1
+      ? { lon: localDeviceLocation.lon, lat: localDeviceLocation.lat }
+      : offsetLatLonMeters(
+        localDeviceLocation,
+        Math.cos(angle) * 18,
+        Math.sin(angle) * 14,
+      ))
+    : localAnchor
+      ? offsetCoordinates(localAnchor, x, y)
+      : localRegionProfile
+        ? {
+          lon: localRegionProfile.lon + (Math.cos(angle) * 1.35),
+          lat: localRegionProfile.lat + (Math.sin(angle) * 0.95),
+        }
+        : { lon: null, lat: null };
   const nodeId = `local:${agent.agentWallet}`;
   const node: MeshStageNode = {
     ...geographicPosition,
@@ -308,7 +369,7 @@ function buildLocalNode(
     kind: "local",
     x,
     y,
-    regionId: localAnchor?.id || null,
+    regionId: useLocalDeviceLocation ? LOCAL_DEVICE_REGION_ID : localAnchor?.id || null,
     peerId: agent.network.peerId,
     wallet: agent.agentWallet,
     title: agent.network.publicCard?.name || agent.metadata.name,
@@ -345,6 +406,8 @@ export function buildMeshStageModel({
   scene,
   selectedNodeId,
   selectedRegionId,
+  localDeviceLocation = null,
+  runtimeRelayPeerId = null,
 }: BuildMeshStageModelInput): MeshStageModel {
   const anchorsByPeerId = buildAnchorsByPeerId(scene);
   const peerNodes: MeshStageNode[] = peers.flatMap((peer) => {
@@ -376,7 +439,15 @@ export function buildMeshStageModel({
 
   const enabledAgents = agents.filter((agent) => agent.network.enabled);
   const localNodes = enabledAgents
-    .map((agent, index) => buildLocalNode(agent, scene, anchorsByPeerId, index, enabledAgents.length))
+    .map((agent, index) => buildLocalNode(
+      agent,
+      scene,
+      anchorsByPeerId,
+      index,
+      enabledAgents.length,
+      localDeviceLocation,
+      runtimeRelayPeerId,
+    ))
     .filter((entry): entry is { node: MeshStageNode; manifest: MeshSelectedManifest } => entry !== null);
   const localManifestById = new Map(localNodes.map((entry) => [entry.node.id, entry.manifest]));
   const nodes = [...localNodes.map((entry) => entry.node), ...peerNodes];
@@ -398,6 +469,25 @@ export function buildMeshStageModel({
       localNodeIds,
     };
   });
+  const localDeviceNodeIds = localNodes
+    .filter((entry) => entry.node.regionId === LOCAL_DEVICE_REGION_ID)
+    .map((entry) => entry.node.id);
+  if (localDeviceLocation && localDeviceNodeIds.length > 0) {
+    const projection = projectMeshCoordinate(localDeviceLocation.lat, localDeviceLocation.lon);
+    regions.push({
+      id: LOCAL_DEVICE_REGION_ID,
+      code: null,
+      city: localDeviceLocation.city || localDeviceLocation.label,
+      country: localDeviceLocation.country,
+      x: projection.x,
+      y: projection.y,
+      lon: localDeviceLocation.lon,
+      lat: localDeviceLocation.lat,
+      peerCount: 0,
+      peerNodeIds: [],
+      localNodeIds: localDeviceNodeIds,
+    });
+  }
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) || null;
   const selectedPeer = selectedNode?.kind === "peer"

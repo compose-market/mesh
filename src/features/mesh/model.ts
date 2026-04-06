@@ -4,37 +4,47 @@ const DEFAULT_GOSSIP_TOPIC = "compose/global/v1";
 const DEFAULT_ANNOUNCE_TOPIC = "compose/announce/v1";
 const DEFAULT_MANIFEST_TOPIC = "compose/manifest/v1";
 const DEFAULT_CONCLAVE_TOPIC = "compose/conclave/v1";
-const DEFAULT_KAD_PROTOCOL = "/compose-market/mesh/kad/1.0.0";
 const DEFAULT_HEARTBEAT_MS = 30_000;
 const DEFAULT_BOOTSTRAP_DNS_ROOTS = ["_dnsaddr.compose.market"];
-const DEFAULT_FALLBACK_MULTIADDRS = [
-  "/ip4/206.189.203.231/tcp/4001/p2p/12D3KooWPRcHjairRTQuXQdtUux5326pbuWyxsBrrDEzgLdbRKyh",
-  "/ip4/206.189.203.231/tcp/4002/ws/p2p/12D3KooWPRcHjairRTQuXQdtUux5326pbuWyxsBrrDEzgLdbRKyh",
-  "/ip4/134.122.34.135/tcp/4001/p2p/12D3KooW9qchwdUL4iZ8KyTT1CjN37pc49eFRFAkHTu8TYU1yVCz",
-  "/ip4/134.122.34.135/tcp/4002/ws/p2p/12D3KooW9qchwdUL4iZ8KyTT1CjN37pc49eFRFAkHTu8TYU1yVCz",
-  "/ip4/64.225.35.57/tcp/4001/p2p/12D3KooWDdWJP82TKNbMemW5JtXR4qGrhE2tc455T9yZewEZ4rdD",
-  "/ip4/64.225.35.57/tcp/4002/ws/p2p/12D3KooWDdWJP82TKNbMemW5JtXR4qGrhE2tc455T9yZewEZ4rdD",
-  "/ip4/188.166.59.149/tcp/4001/p2p/12D3KooWQzwPXPUEMPU1Upbo6trSiEo82rhtRpTJGr7SzP2gD7jb",
-  "/ip4/188.166.59.149/tcp/4002/ws/p2p/12D3KooWQzwPXPUEMPU1Upbo6trSiEo82rhtRpTJGr7SzP2gD7jb",
-  "/ip4/164.90.230.221/tcp/4001/p2p/12D3KooWGoiuj2h5jqFK75tN14EnqSvXhAxT7V8JrfddwxgQZUka",
-  "/ip4/164.90.230.221/tcp/4002/ws/p2p/12D3KooWGoiuj2h5jqFK75tN14EnqSvXhAxT7V8JrfddwxgQZUka",
-  "/ip4/161.35.33.12/tcp/4001/p2p/12D3KooWG22npb9WPpoehLSfo7xeEeEGDk7oH2Vw7dpy6pn77Cxr",
-  "/ip4/161.35.33.12/tcp/4002/ws/p2p/12D3KooWG22npb9WPpoehLSfo7xeEeEGDk7oH2Vw7dpy6pn77Cxr",
-  "/ip4/206.189.84.32/tcp/4001/p2p/12D3KooWSLexJ4Ni84zYepiNArUDZuunGiwoUxZ5xhHoGABHNDUx",
-  "/ip4/206.189.84.32/tcp/4002/ws/p2p/12D3KooWSLexJ4Ni84zYepiNArUDZuunGiwoUxZ5xhHoGABHNDUx",
-  "/ip4/139.59.2.252/tcp/4001/p2p/12D3KooWLvw8Qdp5Bc5ryPv2ZYkJn1CsmLoaxVEhzsH8x9cunnoW",
-  "/ip4/139.59.2.252/tcp/4002/ws/p2p/12D3KooWLvw8Qdp5Bc5ryPv2ZYkJn1CsmLoaxVEhzsH8x9cunnoW",
-  "/ip4/134.199.145.253/tcp/4001/p2p/12D3KooWNTpWNjwgc4EBGor1d4BgrGmmuUxVaeEGdNmFMCnws6dG",
-  "/ip4/134.199.145.253/tcp/4002/ws/p2p/12D3KooWNTpWNjwgc4EBGor1d4BgrGmmuUxVaeEGdNmFMCnws6dG",
-];
-const FLEET_ANCHORS_BY_PEER_ID = new Map(
-  __MESH_FLEET_NODES__.map((node) => [
-    node.peerId,
-    {
-      provider: parseProvider(node.provider),
-      region: node.region.toLowerCase(),
-    },
-  ]),
+const BUILTIN_FALLBACK_RELAYS = [
+  { providerCode: "do", region: "ams3", peerId: "12D3KooWQzwPXPUEMPU1Upbo6trSiEo82rhtRpTJGr7SzP2gD7jb" },
+  { providerCode: "do", region: "blr1", peerId: "12D3KooWLvw8Qdp5Bc5ryPv2ZYkJn1CsmLoaxVEhzsH8x9cunnoW" },
+  { providerCode: "do", region: "fra1", peerId: "12D3KooWGoiuj2h5jqFK75tN14EnqSvXhAxT7V8JrfddwxgQZUka" },
+  { providerCode: "do", region: "lon1", peerId: "12D3KooWG22npb9WPpoehLSfo7xeEeEGDk7oH2Vw7dpy6pn77Cxr" },
+  { providerCode: "do", region: "nyc1", peerId: "12D3KooWPRcHjairRTQuXQdtUux5326pbuWyxsBrrDEzgLdbRKyh" },
+  { providerCode: "do", region: "sfo2", peerId: "12D3KooWDdWJP82TKNbMemW5JtXR4qGrhE2tc455T9yZewEZ4rdD" },
+  { providerCode: "do", region: "sgp1", peerId: "12D3KooWSLexJ4Ni84zYepiNArUDZuunGiwoUxZ5xhHoGABHNDUx" },
+  { providerCode: "do", region: "syd1", peerId: "12D3KooWNTpWNjwgc4EBGor1d4BgrGmmuUxVaeEGdNmFMCnws6dG" },
+  { providerCode: "do", region: "tor1", peerId: "12D3KooW9qchwdUL4iZ8KyTT1CjN37pc49eFRFAkHTu8TYU1yVCz" },
+] as const;
+const DEFAULT_KAD_PROTOCOL = `/${meshProtocolNamespace()}/kad`;
+const DEFAULT_FALLBACK_MULTIADDRS = unique([
+  ...BUILTIN_FALLBACK_RELAYS.flatMap((relay) => relayDnsMultiaddrs(relay.providerCode, relay.region, relay.peerId)),
+  ...__MESH_FLEET_MULTIADDRS__,
+]);
+const FLEET_ANCHORS_BY_PEER_ID = new Map<string, Pick<MeshBootstrapAnchor, "host" | "region" | "provider">>(
+  [
+    ...BUILTIN_FALLBACK_RELAYS.map((relay) => [
+      relay.peerId,
+      {
+        host: builtinRelayHost(relay.providerCode, relay.region),
+        provider: parseProvider(relay.providerCode),
+        region: relay.region,
+      },
+    ] as const),
+    ...__MESH_FLEET_NODES__.map((node) => {
+      const region = node.region.toLowerCase();
+      const providerCode = providerCodeFromValue(node.provider);
+      return [
+        node.peerId,
+        {
+          host: providerCode ? builtinRelayHost(providerCode, region) : null,
+          provider: parseProvider(node.provider),
+          region,
+        },
+      ] as const;
+    }),
+  ],
 );
 
 export interface MeshBootstrapResolution {
@@ -81,6 +91,11 @@ export interface MeshProjectedPoint {
   depth: number;
 }
 
+export interface MeshDirectEndpoint {
+  kind: "ip4" | "ip6";
+  value: string;
+}
+
 export interface MeshAnchorNode extends MeshBootstrapRegion {
   x: number;
   y: number;
@@ -103,6 +118,14 @@ export interface MeshScenePeerNode {
 export interface MeshScene {
   anchors: MeshAnchorNode[];
   peers: MeshScenePeerNode[];
+}
+
+export function meshProtocolNamespace(): string {
+  return __APP_NAME__
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/^\.+|\.+$/g, "");
 }
 
 const REGION_PROFILES: Record<string, MeshRegionProfile> = {
@@ -143,7 +166,7 @@ function parsePositiveInt(value: string | undefined, fallback: number, min: numb
 }
 
 function parseProvider(code: string | null): string | null {
-  switch (code) {
+  switch (providerCodeFromValue(code)) {
     case "do":
       return "digitalocean";
     case "az":
@@ -153,6 +176,35 @@ function parseProvider(code: string | null): string | null {
     default:
       return code;
   }
+}
+
+function providerCodeFromValue(value: string | null): string | null {
+  switch ((value || "").trim().toLowerCase()) {
+    case "digitalocean":
+    case "do":
+      return "do";
+    case "azure":
+    case "az":
+      return "az";
+    case "google":
+    case "googlecloud":
+    case "gcp":
+      return "gcp";
+    default:
+      return value ? value.trim().toLowerCase() : null;
+  }
+}
+
+function builtinRelayHost(providerCode: string, region: string): string {
+  return `mesh.${providerCode}.${region}.compose.market`;
+}
+
+function relayDnsMultiaddrs(providerCode: string, region: string, peerId: string): string[] {
+  const host = builtinRelayHost(providerCode, region);
+  return [
+    `/dns4/${host}/tcp/4001/p2p/${peerId}`,
+    `/dns4/${host}/tcp/4002/ws/p2p/${peerId}`,
+  ];
 }
 
 function stripTxtQuotes(value: string): string {
@@ -203,6 +255,123 @@ function parseMultiaddrParts(input: string): { host: string | null; peerIds: str
   return { host, peerIds, hasCircuit };
 }
 
+function parseIpv4Address(value: string): number[] | null {
+  const parts = value.trim().split(".");
+  if (parts.length !== 4) {
+    return null;
+  }
+  const octets = parts.map((part) => Number.parseInt(part, 10));
+  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+    return null;
+  }
+  return octets;
+}
+
+function isPublicIpv4Address(value: string): boolean {
+  const octets = parseIpv4Address(value);
+  if (!octets) {
+    return false;
+  }
+  const [left, right] = octets;
+  if (left === 0 || left === 10 || left === 127 || left >= 224) {
+    return false;
+  }
+  if (left === 169 && right === 254) {
+    return false;
+  }
+  if (left === 172 && right >= 16 && right <= 31) {
+    return false;
+  }
+  if (left === 192 && right === 168) {
+    return false;
+  }
+  if (left === 100 && right >= 64 && right <= 127) {
+    return false;
+  }
+  if (left === 198 && (right === 18 || right === 19)) {
+    return false;
+  }
+  return true;
+}
+
+function isPublicIpv6Address(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === "::" || normalized === "::1") {
+    return false;
+  }
+  return !(
+    normalized.startsWith("fc")
+    || normalized.startsWith("fd")
+    || normalized.startsWith("fe8")
+    || normalized.startsWith("fe9")
+    || normalized.startsWith("fea")
+    || normalized.startsWith("feb")
+  );
+}
+
+export function hasPublicDirectMeshPath(listenMultiaddrs: string[]): boolean {
+  return listenMultiaddrs.some((multiaddr) => {
+    const parts = multiaddr.split("/").filter(Boolean);
+    let hasCircuit = false;
+    let hasDirectEndpoint = false;
+
+    for (let index = 0; index < parts.length; index += 1) {
+      const protocol = parts[index];
+      const value = parts[index + 1];
+      if (protocol === "p2p-circuit") {
+        hasCircuit = true;
+        continue;
+      }
+      if (!value) {
+        continue;
+      }
+      if (protocol === "ip4" && isPublicIpv4Address(value)) {
+        hasDirectEndpoint = true;
+        index += 1;
+        continue;
+      }
+      if (protocol === "ip6" && isPublicIpv6Address(value)) {
+        hasDirectEndpoint = true;
+        index += 1;
+        continue;
+      }
+      if (protocol === "dns" || protocol === "dns4" || protocol === "dns6" || protocol === "dnsaddr") {
+        hasDirectEndpoint = true;
+        index += 1;
+      }
+    }
+
+    return hasDirectEndpoint && !hasCircuit;
+  });
+}
+
+export function extractPublicDirectMeshEndpoint(listenMultiaddrs: string[]): MeshDirectEndpoint | null {
+  for (const multiaddr of listenMultiaddrs) {
+    const parts = multiaddr.split("/").filter(Boolean);
+    let hasCircuit = false;
+
+    for (let index = 0; index < parts.length; index += 1) {
+      const protocol = parts[index];
+      const value = parts[index + 1];
+      if (protocol === "p2p-circuit") {
+        hasCircuit = true;
+        continue;
+      }
+      if (!value || hasCircuit) {
+        continue;
+      }
+      if (protocol === "ip4" && isPublicIpv4Address(value)) {
+        return { kind: "ip4", value };
+      }
+      if (protocol === "ip6" && isPublicIpv6Address(value)) {
+        return { kind: "ip6", value };
+      }
+    }
+  }
+
+  return null;
+}
+
 function anchorFromHost(host: string | null): Pick<MeshBootstrapAnchor, "host" | "region" | "provider"> {
   if (!host) {
     return { host: null, region: null, provider: null };
@@ -224,9 +393,7 @@ function anchorFromPeerId(peerId: string | null): Pick<MeshBootstrapAnchor, "hos
   }
 
   const anchor = FLEET_ANCHORS_BY_PEER_ID.get(peerId);
-  return anchor
-    ? { host: null, region: anchor.region, provider: anchor.provider }
-    : { host: null, region: null, provider: null };
+  return anchor ?? { host: null, region: null, provider: null };
 }
 
 function compareNullable(left: string | null, right: string | null): number {
