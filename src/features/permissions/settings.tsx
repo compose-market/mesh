@@ -29,6 +29,7 @@ export function GlobalPermissionsSection({ osPermissions, refreshing, onOpenSyst
         Per-agent permissions are managed on each agent's detail page.
       </p>
       <div className="detail-stat-stack">
+        <MachineStatusCard label="Location" value={formatOsPermissionStatus(osPermissions.location)} />
         <MachineStatusCard label="Camera" value={formatOsPermissionStatus(osPermissions.camera)} />
         <MachineStatusCard label="Microphone" value={formatOsPermissionStatus(osPermissions.microphone)} />
         <MachineStatusCard label="Full Disk Access" value={formatOsPermissionStatus(osPermissions.fullDiskAccess)} />
