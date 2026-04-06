@@ -1,6 +1,6 @@
 [package]
 name = "compose-mesh"
-version = "0.9.7-patched"
+version = "0.9.7-patch"
 description = "Compose Mesh local runtime for autonomous agents"
 authors = ["Compose"]
 license = "MIT"

@@ -249,9 +249,6 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: gradle
-          cache-dependency-path: |
-            tauri/gen/android/**/*.gradle*
-            tauri/gen/android/**/gradle-wrapper.properties
 
       - name: Configure Android SDK
         run: |

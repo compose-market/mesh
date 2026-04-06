@@ -559,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "compose-mesh"
-version = "0.9.7-patched"
+version = "0.9.7-patch"
 dependencies = [
  "base64 0.22.1",
  "cc",
