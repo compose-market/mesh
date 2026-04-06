@@ -5,6 +5,7 @@ mod manifest;
 mod mesh;
 mod permissions;
 mod publication;
+mod release;
 
 use futures::StreamExt;
 use libp2p::{
@@ -30,23 +31,14 @@ use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, RunEvent};
-use tauri_plugin_updater::UpdaterExt;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::{mpsc, oneshot};
 
 use self::host::{ensure_local_host, LocalHostState};
-use self::{learnings::*, manifest::*, mesh::*, permissions::*, publication::*};
+use self::{learnings::*, manifest::*, mesh::*, permissions::*, publication::*, release::*};
 
 const LOCAL_AGENT_HEARTBEAT_POLL_MS: u64 = 3_000;
 const LOCAL_AGENT_HEARTBEAT_OK_TOKEN: &str = "HEARTBEAT_OK";
-
-#[derive(Debug, serde::Serialize)]
-struct LocalPaths {
-    base_dir: String,
-    state_file: String,
-    agents_dir: String,
-    skills_dir: String,
-}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -415,72 +407,6 @@ fn binary_exists(binary: &str) -> bool {
     }
 
     false
-}
-
-#[tauri::command]
-fn get_local_paths(app: tauri::AppHandle) -> Result<LocalPaths, String> {
-    let base_dir = resolve_base_dir(&app)?;
-    let state_file = base_dir.join("state.json");
-    let agents_dir = base_dir.join("agents");
-    let skills_dir = base_dir.join("skills");
-
-    fs::create_dir_all(&agents_dir)
-        .map_err(|err| format!("failed to create agents directory: {err}"))?;
-    fs::create_dir_all(&skills_dir)
-        .map_err(|err| format!("failed to create skills directory: {err}"))?;
-
-    Ok(LocalPaths {
-        base_dir: base_dir.to_string_lossy().to_string(),
-        state_file: state_file.to_string_lossy().to_string(),
-        agents_dir: agents_dir.to_string_lossy().to_string(),
-        skills_dir: skills_dir.to_string_lossy().to_string(),
-    })
-}
-
-#[tauri::command]
-fn set_local_base_dir(app: tauri::AppHandle, new_base_dir: String) -> Result<LocalPaths, String> {
-    let trimmed = new_base_dir.trim();
-    if trimmed.is_empty() {
-        return Err("base directory path cannot be empty".to_string());
-    }
-
-    let new_path = PathBuf::from(trimmed);
-
-    // Must be an absolute path
-    if !new_path.is_absolute() {
-        return Err("base directory must be an absolute path".to_string());
-    }
-
-    // Create the new directory tree
-    fs::create_dir_all(&new_path)
-        .map_err(|err| format!("failed to create new base directory: {err}"))?;
-    fs::create_dir_all(new_path.join("agents"))
-        .map_err(|err| format!("failed to create agents directory: {err}"))?;
-    fs::create_dir_all(new_path.join("skills"))
-        .map_err(|err| format!("failed to create skills directory: {err}"))?;
-
-    // Copy existing state files from the old base to the new base (if they exist)
-    let old_base = resolve_base_dir(&app)?;
-    if old_base != new_path {
-        for name in ["state.json", "daemon_state.json"] {
-            let src = old_base.join(name);
-            let dst = new_path.join(name);
-            if src.exists() && !dst.exists() {
-                let _ = fs::copy(&src, &dst);
-            }
-        }
-    }
-
-    // Persist the override
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("failed to resolve app data directory: {err}"))?;
-    fs::write(app_data.join("base_dir_override.txt"), trimmed)
-        .map_err(|err| format!("failed to persist base dir override: {err}"))?;
-
-    // Return refreshed paths
-    get_local_paths(app)
 }
 
 #[tauri::command]
@@ -3158,116 +3084,22 @@ async fn daemon_run_local_agent_conversation(
     Ok(result)
 }
 
-fn normalize_api_base(api_url: &str) -> Result<String, String> {
-    let trimmed = api_url.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return Err("Local updater apiUrl is required".to_string());
-    }
-    if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
-        return Err("Local updater apiUrl must start with http:// or https://".to_string());
-    }
-    Ok(trimmed.to_string())
-}
-
-fn normalize_updater_pubkey(pubkey: &str) -> Result<String, String> {
-    let normalized = pubkey.trim();
-    if normalized.is_empty() {
-        return Err("Local updater public key is required".to_string());
-    }
-    Ok(normalized.to_string())
-}
-
-fn build_local_update_endpoint(api_url: &str) -> Result<String, String> {
-    let api_base = normalize_api_base(api_url)?;
-    Ok(format!(
-        "{api_base}/api/local/updates/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}"
-    ))
-}
-
-fn build_local_updater(
-    app: &tauri::AppHandle,
-    api_url: &str,
-    pubkey: &str,
-) -> Result<tauri_plugin_updater::Updater, String> {
-    let endpoint = build_local_update_endpoint(api_url)?;
-    let pubkey = normalize_updater_pubkey(pubkey)?;
-    let endpoint = endpoint
-        .parse()
-        .map_err(|error| format!("Invalid local updater endpoint: {error}"))?;
-
-    app.updater_builder()
-        .pubkey(pubkey)
-        .endpoints(vec![endpoint])
-        .map_err(|error| format!("Failed to configure local updater endpoints: {error}"))?
-        .build()
-        .map_err(|error| format!("Failed to initialize local updater: {error}"))
-}
-
-#[tauri::command]
-async fn local_check_for_updates(
-    app: tauri::AppHandle,
-    api_url: String,
-    pubkey: String,
-) -> Result<LocalUpdateCheckResult, String> {
-    let updater = build_local_updater(&app, &api_url, &pubkey)?;
-    let current_version = app.package_info().version.to_string();
-    let update = updater
-        .check()
-        .await
-        .map_err(|error| format!("Failed to check for local updates: {error}"))?;
-
-    Ok(match update {
-        Some(update) => LocalUpdateCheckResult {
-            enabled: true,
-            available: true,
-            current_version: Some(update.current_version),
-            version: Some(update.version),
-            body: update.body,
-            date: update.date.map(|value| value.to_string()),
-        },
-        None => LocalUpdateCheckResult {
-            enabled: true,
-            available: false,
-            current_version: Some(current_version),
-            version: None,
-            body: None,
-            date: None,
-        },
-    })
-}
-
-#[tauri::command]
-async fn local_install_update(
-    app: tauri::AppHandle,
-    api_url: String,
-    pubkey: String,
-) -> Result<(), String> {
-    let updater = build_local_updater(&app, &api_url, &pubkey)?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|error| format!("Failed to check for local updates: {error}"))?;
-    let Some(update) = update else {
-        return Err("Compose Local is already on the latest version".to_string());
-    };
-
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|error| format!("Failed to install local update: {error}"))?;
-
-    app.restart();
-}
-
 #[cfg(desktop)]
 use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_process::init());
+    #[cfg(not(desktop))]
+    let builder = builder;
+
+    builder
         .manage(PendingDeepLinks::default())
         .manage(mesh::MeshRuntimeState::default())
         .manage(SessionBudgetTracker::default())
@@ -3296,9 +3128,7 @@ pub fn run() {
             daemon_run_local_agent_conversation,
             permissions::daemon_query_os_permissions,
             permissions::daemon_open_system_settings,
-            permissions::daemon_request_os_permission,
-            local_check_for_updates,
-            local_install_update
+            permissions::daemon_request_os_permission
         ])
         .setup(|app| {
             let mut daemon_disk_state =

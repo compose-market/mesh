@@ -238,17 +238,6 @@ pub(crate) struct MeshRuntimeStatus {
     pub(crate) updated_at: u64,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LocalUpdateCheckResult {
-    pub(crate) enabled: bool,
-    pub(crate) available: bool,
-    pub(crate) current_version: Option<String>,
-    pub(crate) version: Option<String>,
-    pub(crate) body: Option<String>,
-    pub(crate) date: Option<String>,
-}
-
 impl Default for MeshRuntimeStatus {
     fn default() -> Self {
         Self {
@@ -719,22 +708,6 @@ pub(crate) fn sync_mesh_request_capabilities(
     }
 }
 
-pub(crate) fn resolve_base_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("failed to resolve app data directory: {err}"))?;
-    let override_file = app_data.join("base_dir_override.txt");
-    if override_file.exists() {
-        let raw = fs::read_to_string(&override_file)
-            .map_err(|err| format!("failed to read base dir override: {err}"))?;
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
-    }
-    Ok(app_data)
-}
 pub(crate) fn with_mesh_status<T>(
     app: &tauri::AppHandle,
     updater: impl FnOnce(&mut MeshRuntimeStatus) -> T,
