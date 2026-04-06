@@ -14,6 +14,7 @@ import {
   ShellTab,
   ShellTabStrip,
 } from "@compose-market/theme/shell";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { DeepLinkHandler } from "./components/deep-link";
 import { SessionIndicator } from "./components/session";
@@ -1083,13 +1084,6 @@ export default function App() {
                 onStateChange={persistState}
                 onCheckForUpdates={() => refreshLocalUpdate({ showChecking: true, showErrors: true })}
                 onInstallUpdate={handleInstallUpdate}
-                onOpenPath={async (path) => {
-                  try {
-                    await openUrl(path);
-                  } catch (error) {
-                    showNotification("error", error instanceof Error ? error.message : "Failed to open local path");
-                  }
-                }}
                 onNotify={showNotification}
                 onBack={() => setActivePage("agents")}
                 onPathsChange={setPaths}
@@ -1117,7 +1111,6 @@ function SettingsPage({
   onStateChange,
   onCheckForUpdates,
   onInstallUpdate,
-  onOpenPath,
   onNotify,
   onBack,
   onPathsChange,
@@ -1130,7 +1123,6 @@ function SettingsPage({
   onStateChange: (next: LocalRuntimeState) => Promise<void>;
   onCheckForUpdates: () => Promise<void>;
   onInstallUpdate: () => Promise<void>;
-  onOpenPath: (path: string) => Promise<void>;
   onNotify: (type: "success" | "error", message: string) => void;
   onBack: () => void;
   onPathsChange: (paths: Awaited<ReturnType<typeof getLocalPaths>>) => void;
@@ -1179,16 +1171,39 @@ function SettingsPage({
     }
   };
 
+  const applyBaseDir = async (nextBaseDir: string) => {
+    const newPaths = await setLocalBaseDir(nextBaseDir);
+    onPathsChange(newPaths);
+    setEditingBaseDir(newPaths.base_dir);
+    onNotify("success", `Runtime root relocated to: ${newPaths.base_dir}`);
+  };
+
   const commitBaseDir = async () => {
     const trimmed = editingBaseDir.trim();
     if (!trimmed || trimmed === paths?.base_dir) return;
     try {
-      const newPaths = await setLocalBaseDir(trimmed);
-      onPathsChange(newPaths);
-      setEditingBaseDir(newPaths.base_dir);
-      onNotify("success", `Runtime root relocated to: ${newPaths.base_dir}`);
+      await applyBaseDir(trimmed);
     } catch (error) {
       onNotify("error", error instanceof Error ? error.message : "Failed to update runtime root");
+      setEditingBaseDir(paths?.base_dir || "");
+    }
+  };
+
+  const chooseBaseDir = async () => {
+    try {
+      const selection = await openDialog({
+        directory: true,
+        multiple: false,
+        defaultPath: paths?.base_dir || undefined,
+        title: "Choose Compose Mesh runtime folder",
+      });
+      const nextBaseDir = Array.isArray(selection) ? selection[0] : selection;
+      if (!nextBaseDir || nextBaseDir === paths?.base_dir) {
+        return;
+      }
+      await applyBaseDir(nextBaseDir);
+    } catch (error) {
+      onNotify("error", error instanceof Error ? error.message : "Failed to choose runtime root");
       setEditingBaseDir(paths?.base_dir || "");
     }
   };
@@ -1305,10 +1320,7 @@ function SettingsPage({
             </div>
             <div className="sp-path-actions">
               {paths?.base_dir ? (
-                <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.base_dir)}>Open Root</ShellButton>
-              ) : null}
-              {paths?.skills_dir ? (
-                <ShellButton tone="secondary" onClick={() => void onOpenPath(paths.skills_dir)}>Open Skills</ShellButton>
+                <ShellButton tone="secondary" onClick={() => void chooseBaseDir()}>Save to</ShellButton>
               ) : null}
             </div>
           </div>
