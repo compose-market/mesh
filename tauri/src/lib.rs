@@ -3,6 +3,7 @@ mod host;
 mod learnings;
 mod manifest;
 mod mesh;
+mod permissions;
 mod publication;
 
 use futures::StreamExt;
@@ -34,7 +35,7 @@ use tokio::process::Command as TokioCommand;
 use tokio::sync::{mpsc, oneshot};
 
 use self::host::{ensure_local_host, LocalHostState};
-use self::{learnings::*, manifest::*, mesh::*, publication::*};
+use self::{learnings::*, manifest::*, mesh::*, permissions::*, publication::*};
 
 const LOCAL_AGENT_HEARTBEAT_POLL_MS: u64 = 3_000;
 const LOCAL_AGENT_HEARTBEAT_OK_TOKEN: &str = "HEARTBEAT_OK";
@@ -45,34 +46,6 @@ struct LocalPaths {
     state_file: String,
     agents_dir: String,
     skills_dir: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DaemonPermissionPolicy {
-    shell: String,
-    filesystem_read: String,
-    filesystem_write: String,
-    filesystem_edit: String,
-    filesystem_delete: String,
-    camera: String,
-    microphone: String,
-    network: String,
-}
-
-impl Default for DaemonPermissionPolicy {
-    fn default() -> Self {
-        Self {
-            shell: "deny".to_string(),
-            filesystem_read: "deny".to_string(),
-            filesystem_write: "deny".to_string(),
-            filesystem_edit: "deny".to_string(),
-            filesystem_delete: "deny".to_string(),
-            camera: "deny".to_string(),
-            microphone: "deny".to_string(),
-            network: "deny".to_string(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -359,39 +332,6 @@ fn load_local_state_value(app: &tauri::AppHandle) -> Result<serde_json::Value, S
 fn save_local_state_value(app: &tauri::AppHandle, state: &serde_json::Value) -> Result<(), String> {
     let file = local_state_path(app)?;
     save_local_state_value_to_path(&file, state)
-}
-
-fn normalize_daemon_decision(value: &str) -> String {
-    match value.trim().to_lowercase().as_str() {
-        "allow" => "allow".to_string(),
-        _ => "deny".to_string(),
-    }
-}
-
-fn normalize_daemon_permission_policy(policy: DaemonPermissionPolicy) -> DaemonPermissionPolicy {
-    DaemonPermissionPolicy {
-        shell: normalize_daemon_decision(&policy.shell),
-        filesystem_read: normalize_daemon_decision(&policy.filesystem_read),
-        filesystem_write: normalize_daemon_decision(&policy.filesystem_write),
-        filesystem_edit: normalize_daemon_decision(&policy.filesystem_edit),
-        filesystem_delete: normalize_daemon_decision(&policy.filesystem_delete),
-        camera: normalize_daemon_decision(&policy.camera),
-        microphone: normalize_daemon_decision(&policy.microphone),
-        network: normalize_daemon_decision(&policy.network),
-    }
-}
-
-fn select_desired_permission_policy(
-    normalized_permissions: &DaemonPermissionPolicy,
-    normalized_desired_permissions: &DaemonPermissionPolicy,
-) -> DaemonPermissionPolicy {
-    if *normalized_desired_permissions == DaemonPermissionPolicy::default()
-        && *normalized_permissions != DaemonPermissionPolicy::default()
-    {
-        normalized_permissions.clone()
-    } else {
-        normalized_desired_permissions.clone()
-    }
 }
 
 fn mesh_key_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1119,46 +1059,6 @@ fn local_agent_documents(
     Ok(output)
 }
 
-fn permission_allowed(value: &str) -> bool {
-    value.trim().eq_ignore_ascii_case("allow")
-}
-
-fn desired_local_agent_permissions(agent: &PersistedInstalledAgent) -> DaemonPermissionPolicy {
-    let normalized_permissions = normalize_daemon_permission_policy(agent.permissions.clone());
-    let normalized_desired_permissions =
-        normalize_daemon_permission_policy(agent.desired_permissions.clone());
-
-    select_desired_permission_policy(&normalized_permissions, &normalized_desired_permissions)
-}
-
-fn resolve_local_agent_permissions(
-    app: &tauri::AppHandle,
-    agent: &PersistedInstalledAgent,
-) -> DaemonPermissionPolicy {
-    let desired_permissions = {
-        let daemon_state = app.state::<LocalDaemonState>();
-        daemon_state
-            .state
-            .lock()
-            .ok()
-            .and_then(|guard| guard.agents.get(&agent.agent_wallet).cloned())
-            .map(|state| {
-                let normalized_permissions =
-                    normalize_daemon_permission_policy(state.permissions.clone());
-                let normalized_desired_permissions =
-                    normalize_daemon_permission_policy(state.desired_permissions.clone());
-                select_desired_permission_policy(
-                    &normalized_permissions,
-                    &normalized_desired_permissions,
-                )
-            })
-            .unwrap_or_else(|| desired_local_agent_permissions(agent))
-    };
-
-    // Per-agent permissions are pure app-level toggles — just normalize.
-    normalize_daemon_permission_policy(desired_permissions)
-}
-
 fn normalize_api_base_for_local_agent(state: &PersistedLocalState) -> String {
     let trimmed = state.settings.api_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -1400,49 +1300,7 @@ fn build_local_agent_prompt(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let permission_lines = [
-        format!(
-            "- shell: {}",
-            if permission_allowed(&permissions.shell) {
-                "allow"
-            } else {
-                "deny"
-            }
-        ),
-        format!(
-            "- network: {}",
-            if permission_allowed(&permissions.network) {
-                "allow"
-            } else {
-                "deny"
-            }
-        ),
-        format!(
-            "- filesystemRead: {}",
-            if permission_allowed(&permissions.filesystem_read) {
-                "allow"
-            } else {
-                "deny"
-            }
-        ),
-        format!(
-            "- filesystemWrite: {}",
-            if permission_allowed(&permissions.filesystem_write) {
-                "allow"
-            } else {
-                "deny"
-            }
-        ),
-        format!(
-            "- filesystemEdit: {}",
-            if permission_allowed(&permissions.filesystem_edit) {
-                "allow"
-            } else {
-                "deny"
-            }
-        ),
-    ]
-    .join("\n");
+    let permission_lines = format_local_agent_permissions_for_prompt(permissions);
 
     let mode_instruction = if heartbeat_mode {
         format!(
@@ -2089,9 +1947,7 @@ async fn execute_local_agent_action(
     let kind = action.kind.trim().to_lowercase();
     match kind.as_str() {
         "files.list" => {
-            if !permission_allowed(&permissions.filesystem_read) {
-                return Err("filesystemRead permission denied".to_string());
-            }
+            ensure_filesystem_read_permission(permissions)?;
             let (workspace, target) =
                 resolve_agent_read_target(app, &agent.agent_wallet, action.path.as_deref())?;
             let mut entries = Vec::new();
@@ -2111,9 +1967,7 @@ async fn execute_local_agent_action(
             Ok(serde_json::json!({ "entries": entries }))
         }
         "files.read" => {
-            if !permission_allowed(&permissions.filesystem_read) {
-                return Err("filesystemRead permission denied".to_string());
-            }
+            ensure_filesystem_read_permission(permissions)?;
             let (_workspace, target) =
                 resolve_agent_read_target(app, &agent.agent_wallet, action.path.as_deref())?;
             let content = fs::read_to_string(&target)
@@ -2124,11 +1978,7 @@ async fn execute_local_agent_action(
             }))
         }
         "files.write" | "files.append" => {
-            if !(permission_allowed(&permissions.filesystem_write)
-                || permission_allowed(&permissions.filesystem_edit))
-            {
-                return Err("filesystemWrite/filesystemEdit permission denied".to_string());
-            }
+            ensure_filesystem_write_or_edit_permission(permissions)?;
             let (_workspace, target) =
                 resolve_agent_workspace_target(app, &agent.agent_wallet, action.path.as_deref())?;
             let content = action
@@ -2159,9 +2009,7 @@ async fn execute_local_agent_action(
             }))
         }
         "shell.exec" => {
-            if !permission_allowed(&permissions.shell) {
-                return Err("shell permission denied".to_string());
-            }
+            ensure_shell_permission(permissions)?;
 
             let command = normalize_shell_command(action.command.as_deref())?;
             let args = normalize_shell_args(action.args.as_deref());
@@ -2187,9 +2035,7 @@ async fn execute_local_agent_action(
             }))
         }
         "remote.request" => {
-            if !permission_allowed(&permissions.network) {
-                return Err("network permission denied".to_string());
-            }
+            ensure_network_permission(permissions)?;
             let service = normalize_remote_action_service(action.service.as_deref())?;
             let method = normalize_remote_action_method(action.method.as_deref())?;
             let path = normalize_remote_action_path(action.path.as_deref())?;
@@ -2239,9 +2085,7 @@ async fn execute_local_agent_action(
             decode_remote_json(response, "remote.request").await
         }
         "mesh.publish_learning" => {
-            if !permission_allowed(&permissions.network) {
-                return Err("network permission denied".to_string());
-            }
+            ensure_network_permission(permissions)?;
             publish_learning_from_local_agent_action(
                 app,
                 &agent.agent_wallet,
@@ -3088,32 +2932,6 @@ fn with_daemon_state<T>(
     Ok(output)
 }
 
-fn normalize_daemon_state_for_local_mode(daemon: &mut DaemonStateFile) {
-    for agent in daemon.agents.values_mut() {
-        let normalized_permissions = normalize_daemon_permission_policy(agent.permissions.clone());
-        let normalized_desired_permissions =
-            normalize_daemon_permission_policy(agent.desired_permissions.clone());
-
-        agent.permissions = normalized_permissions.clone();
-        agent.desired_permissions = select_desired_permission_policy(
-            &normalized_permissions,
-            &normalized_desired_permissions,
-        );
-
-        agent.desired_running = true;
-        if agent.status.trim().is_empty() {
-            agent.status = if agent.desired_running {
-                "starting".to_string()
-            } else {
-                "stopped".to_string()
-            };
-        }
-        if agent.updated_at == 0 {
-            agent.updated_at = now_ms();
-        }
-    }
-}
-
 #[tauri::command]
 fn daemon_install_agent(
     app: tauri::AppHandle,
@@ -3170,9 +2988,7 @@ fn daemon_install_agent(
         entry.mcp_tools_hash = normalized_payload.mcp_tools_hash.clone();
         entry.agent_card_cid = normalized_payload.agent_card_cid.clone();
         entry.dna_hash = normalized_payload.dna_hash.clone();
-        entry.desired_permissions =
-            normalize_daemon_permission_policy(entry.desired_permissions.clone());
-        entry.permissions = normalize_daemon_permission_policy(entry.permissions.clone());
+        normalize_daemon_agent_permissions_entry(entry);
         entry.desired_running = true;
         entry.running = false;
         entry.status = "stopped".to_string();
@@ -3221,56 +3037,6 @@ fn daemon_remove_agent(
     save_local_state_value(&app, &state_value)?;
 
     Ok(())
-}
-
-#[tauri::command]
-fn daemon_update_permissions(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, LocalDaemonState>,
-    agent_wallet: String,
-    policy: DaemonPermissionPolicy,
-) -> Result<DaemonAgentState, String> {
-    let wallet =
-        normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
-    let normalized_policy = normalize_daemon_permission_policy(policy);
-
-    let updated = with_daemon_state(&app, &state, |daemon| {
-        let entry = daemon
-            .agents
-            .get_mut(&wallet)
-            .ok_or_else(|| format!("agent not installed: {wallet}"))?;
-        entry.desired_permissions = normalized_policy.clone();
-        entry.permissions = normalized_policy.clone();
-        entry.updated_at = now_ms();
-        Ok(entry.clone())
-    })?;
-    Ok(updated)
-}
-
-#[tauri::command]
-fn daemon_get_agent_status(
-    _app: tauri::AppHandle,
-    state: tauri::State<'_, LocalDaemonState>,
-    agent_wallet: String,
-) -> Result<Option<DaemonAgentState>, String> {
-    let wallet =
-        normalize_wallet(&agent_wallet).ok_or_else(|| "invalid agentWallet".to_string())?;
-    let guard = state
-        .state
-        .lock()
-        .map_err(|_| "failed to lock daemon state".to_string())?;
-    Ok(guard.agents.get(&wallet).cloned().map(|mut agent| {
-        let normalized_permissions = normalize_daemon_permission_policy(agent.permissions.clone());
-        let normalized_desired_permissions =
-            normalize_daemon_permission_policy(agent.desired_permissions.clone());
-        let desired_permissions = select_desired_permission_policy(
-            &normalized_permissions,
-            &normalized_desired_permissions,
-        );
-        agent.desired_permissions = desired_permissions.clone();
-        agent.permissions = normalize_daemon_permission_policy(desired_permissions);
-        agent
-    }))
 }
 
 #[tauri::command]
@@ -3390,253 +3156,6 @@ async fn daemon_run_local_agent_conversation(
     let _ = append_daemon_log(&app, &wallet, &log_message);
 
     Ok(result)
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OsPermissionSnapshot {
-    location: String,
-    camera: String,
-    microphone: String,
-    screen: String,
-    full_disk_access: String,
-    accessibility: String,
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" {
-    fn compose_mesh_location_authorization_status() -> i32;
-    fn compose_mesh_request_location_access() -> bool;
-    fn compose_mesh_camera_authorization_status() -> i32;
-    fn compose_mesh_request_camera_access() -> bool;
-    fn compose_mesh_microphone_authorization_status() -> i32;
-    fn compose_mesh_request_microphone_access() -> bool;
-    fn compose_mesh_preflight_screen_capture_access() -> bool;
-    fn compose_mesh_request_screen_capture_access() -> bool;
-    fn compose_mesh_accessibility_is_trusted() -> bool;
-    fn compose_mesh_prompt_accessibility_access() -> bool;
-}
-
-fn query_tcc_status(service: &str) -> String {
-    #[cfg(target_os = "macos")]
-    {
-        let db_path = format!(
-            "{}/Library/Application Support/com.apple.TCC/TCC.db",
-            std::env::var("HOME").unwrap_or_default()
-        );
-        let query = format!(
-            "SELECT auth_value FROM access WHERE service='{}' AND client='compose.market.mesh' LIMIT 1",
-            service
-        );
-        if let Ok(output) = std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg(&query)
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            return match stdout.as_str() {
-                "2" => "granted".to_string(),
-                "0" => "denied".to_string(),
-                _ => "denied".to_string(),
-            };
-        }
-        "denied".to_string()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = service;
-        "denied".to_string()
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn location_authorization_status(value: i32) -> String {
-    match value {
-        3 | 4 => "granted".to_string(),
-        _ => "denied".to_string(),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn query_location_permission() -> String {
-    unsafe { location_authorization_status(compose_mesh_location_authorization_status()) }
-}
-
-#[cfg(target_os = "macos")]
-fn av_authorization_status(value: i32) -> String {
-    match value {
-        3 => "granted".to_string(),
-        _ => "denied".to_string(),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn query_camera_permission() -> String {
-    unsafe { av_authorization_status(compose_mesh_camera_authorization_status()) }
-}
-
-#[cfg(target_os = "macos")]
-fn query_microphone_permission() -> String {
-    unsafe { av_authorization_status(compose_mesh_microphone_authorization_status()) }
-}
-
-#[cfg(target_os = "macos")]
-fn query_screen_permission() -> String {
-    if unsafe { compose_mesh_preflight_screen_capture_access() } {
-        "granted".to_string()
-    } else {
-        query_tcc_status("kTCCServiceScreenCapture")
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn query_accessibility_permission() -> String {
-    if unsafe { compose_mesh_accessibility_is_trusted() } {
-        "granted".to_string()
-    } else {
-        query_tcc_status("kTCCServiceAccessibility")
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn resolve_home_dir(app: Option<&tauri::AppHandle>) -> Option<PathBuf> {
-    app.and_then(|handle| handle.path().home_dir().ok())
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-}
-
-#[cfg(target_os = "macos")]
-fn query_full_disk_access_permission(app: Option<&tauri::AppHandle>) -> String {
-    let Some(home_dir) = resolve_home_dir(app) else {
-        return "denied".to_string();
-    };
-
-    let tcc_db = home_dir
-        .join("Library")
-        .join("Application Support")
-        .join("com.apple.TCC")
-        .join("TCC.db");
-
-    match fs::File::open(&tcc_db) {
-        Ok(_) => "granted".to_string(),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => "denied".to_string(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "denied".to_string(),
-        Err(_) => query_tcc_status("kTCCServiceSystemPolicyAllFiles"),
-    }
-}
-
-fn query_os_permissions_snapshot(app: Option<&tauri::AppHandle>) -> OsPermissionSnapshot {
-    #[cfg(target_os = "macos")]
-    {
-        OsPermissionSnapshot {
-            location: query_location_permission(),
-            camera: query_camera_permission(),
-            microphone: query_microphone_permission(),
-            screen: query_screen_permission(),
-            full_disk_access: query_full_disk_access_permission(app),
-            accessibility: query_accessibility_permission(),
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        OsPermissionSnapshot {
-            location: "denied".to_string(),
-            camera: "denied".to_string(),
-            microphone: "denied".to_string(),
-            screen: "denied".to_string(),
-            full_disk_access: "denied".to_string(),
-            accessibility: "denied".to_string(),
-        }
-    }
-}
-
-#[tauri::command]
-fn daemon_query_os_permissions(app: tauri::AppHandle) -> Result<OsPermissionSnapshot, String> {
-    Ok(query_os_permissions_snapshot(Some(&app)))
-}
-
-/// Map a frontend permission key to the macOS System Preferences deep-link anchor.
-fn permission_key_to_system_prefs_anchor(key: &str) -> &str {
-    match key {
-        "location" => "Privacy_LocationServices",
-        "fullDiskAccess" => "Privacy_AllFiles",
-        "camera" => "Privacy_Camera",
-        "microphone" => "Privacy_Microphone",
-        "screen" => "Privacy_ScreenCapture",
-        "accessibility" => "Privacy_Accessibility",
-        _ => "Privacy",
-    }
-}
-
-#[tauri::command]
-fn daemon_open_system_settings(permission_key: Option<String>) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let anchor = permission_key
-            .as_deref()
-            .map(permission_key_to_system_prefs_anchor)
-            .unwrap_or("Privacy");
-
-        // macOS 13+ uses the new System Settings URL scheme
-        let url = format!(
-            "x-apple.systempreferences:com.apple.preference.security?{}",
-            anchor
-        );
-
-        std::process::Command::new("open")
-            .arg(&url)
-            .spawn()
-            .map_err(|e| format!("failed to open System Settings: {e}"))?;
-
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = permission_key;
-        Err("System Settings is only available on macOS".to_string())
-    }
-}
-
-#[tauri::command]
-fn daemon_request_os_permission(
-    app: tauri::AppHandle,
-    permission_key: String,
-) -> Result<OsPermissionSnapshot, String> {
-    #[cfg(target_os = "macos")]
-    {
-        match permission_key.as_str() {
-            "location" => {
-                let _ = unsafe { compose_mesh_request_location_access() };
-            }
-            "camera" => {
-                let _ = unsafe { compose_mesh_request_camera_access() };
-            }
-            "microphone" => {
-                let _ = unsafe { compose_mesh_request_microphone_access() };
-            }
-            "screen" => {
-                let _ = unsafe { compose_mesh_request_screen_capture_access() };
-                let _ = daemon_open_system_settings(Some(permission_key.clone()));
-            }
-            "accessibility" => {
-                let _ = unsafe { compose_mesh_prompt_accessibility_access() };
-                let _ = daemon_open_system_settings(Some(permission_key.clone()));
-            }
-            "fullDiskAccess" => {
-                let _ = daemon_open_system_settings(Some(permission_key.clone()));
-            }
-            _ => {
-                let _ = daemon_open_system_settings(Some(permission_key.clone()));
-            }
-        }
-
-        Ok(query_os_permissions_snapshot(Some(&app)))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = permission_key;
-        Ok(query_os_permissions_snapshot(Some(&app)))
-    }
 }
 
 fn normalize_api_base(api_url: &str) -> Result<String, String> {
@@ -3771,13 +3290,13 @@ pub fn run() {
             mesh::local_network_leave,
             daemon_install_agent,
             daemon_remove_agent,
-            daemon_update_permissions,
-            daemon_get_agent_status,
+            permissions::daemon_update_permissions,
+            permissions::daemon_get_agent_status,
             daemon_tail_logs,
             daemon_run_local_agent_conversation,
-            daemon_query_os_permissions,
-            daemon_open_system_settings,
-            daemon_request_os_permission,
+            permissions::daemon_query_os_permissions,
+            permissions::daemon_open_system_settings,
+            permissions::daemon_request_os_permission,
             local_check_for_updates,
             local_install_update
         ])
