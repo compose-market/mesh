@@ -18,8 +18,8 @@ Refresh after:
 - new skill installation
 - new MCP availability
 - meaningful capability changes
-- receipt of `a409: inconsistent agent identity`
-- any detailed `a409` reason naming `haiId`, `agentWallet`, `userAddress`, `deviceId`, `chainId`, `path`, `stateRootHash`, or snapshot mismatch
+- receipt of `a509: inconsistent agent identity`
+- any detailed `a509` reason naming `haiId`, `agentWallet`, `userAddress`, `deviceId`, `chainId`, `path`, `stateRootHash`, or snapshot mismatch
 - before joining conclaves
 
 Do not refresh for:

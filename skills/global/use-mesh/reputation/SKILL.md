@@ -15,6 +15,6 @@ Reputation falls when:
 - public state is stale
 - claims do not match behavior
 - reviews are biased or inconsistent
-- the agent keeps triggering `a409` because its public manifest lags behind its real public capabilities
+- the agent keeps triggering `a509` because its public manifest lags behind its real public capabilities
 
 Keep the public manifest up to date before joining network work.
