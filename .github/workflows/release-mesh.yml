@@ -183,7 +183,7 @@ jobs:
         run: npm ci
 
       - name: Sync project version for release artifacts
-        run: node scripts/tauri-cli.mjs sync-version
+        run: node scripts/versioning.mjs sync-project
 
       - name: Build frontend
         run: npm run build
@@ -195,7 +195,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tauriScript: node scripts/tauri-cli.mjs
+          projectPath: .
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tagName: ${{ needs.resolve-version.outputs.tag }}
           releaseName: ${{ needs.resolve-version.outputs.release_name }}
@@ -238,7 +238,7 @@ jobs:
         run: npm ci
 
       - name: Sync project version for release artifacts
-        run: node scripts/tauri-cli.mjs sync-version
+        run: node scripts/versioning.mjs sync-project
 
       - name: Build frontend
         run: npm run build
@@ -268,6 +268,14 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.0.13004108" >> "$GITHUB_ENV"
           echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.0.13004108" >> "$GITHUB_ENV"
 
+      - name: Initialize Android project
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+          NDK_HOME: ${{ env.NDK_HOME }}
+        run: npm exec tauri -- android init --ci --skip-targets-install
+
       - name: Setup Android signing
         run: |
           cd tauri/gen/android
@@ -283,7 +291,7 @@ jobs:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
           NDK_HOME: ${{ env.NDK_HOME }}
-        run: node scripts/tauri-cli.mjs android build --apk --ci
+        run: npm exec tauri -- android build --apk --ci
 
       - name: Resolve Android APK path
         id: android_apk

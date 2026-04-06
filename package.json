@@ -1,6 +1,6 @@
 {
   "name": "compose-mesh",
-  "version": "0.9.7",
+  "version": "0.9.7-patched",
   "private": false,
   "type": "module",
   "packageManager": "npm@11.12.1",
@@ -14,11 +14,12 @@
     "check": "tsc --noEmit",
     "test": "vitest run --coverage",
     "preview": "vite preview --port 1421",
-    "tauri:dev": "node scripts/tauri-cli.mjs dev",
-    "tauri:build": "node scripts/tauri-cli.mjs build",
-    "tauri:android:init": "node scripts/tauri-cli.mjs android init --ci --skip-targets-install",
-    "tauri:android:dev": "node scripts/tauri-cli.mjs android dev",
-    "tauri:android:build": "node scripts/tauri-cli.mjs android build -- --apk"
+    "version:sync": "node scripts/versioning.mjs sync-project",
+    "tauri:dev": "npm run version:sync && tauri dev",
+    "tauri:build": "npm run version:sync && npm run build && tauri build",
+    "tauri:android:init": "npm run version:sync && tauri android init --ci --skip-targets-install",
+    "tauri:android:dev": "npm run version:sync && tauri android dev",
+    "tauri:android:build": "npm run version:sync && npm run build && tauri android build --apk"
   },
   "dependencies": {
     "@compose-market/theme": "^0.0.90",
@@ -54,7 +55,7 @@
     "@vitest/coverage-v8": "^4.1.2",
     "jsdom": "^29.0.1",
     "typescript": "^6.0.2",
-    "vite": "^8.0.3",
+    "vite": "^8.0.5",
     "vitest": "^4.1.2"
   }
 }

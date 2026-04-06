@@ -1,5 +1,5 @@
 {
-  "$schema": "../gen/schemas/mesh-schema.json",
+  "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability set for Compose Mesh runtime.",
   "windows": [
@@ -18,6 +18,8 @@
     "core:event:allow-emit",
     "core:event:allow-listen",
     "deep-link:default",
+    "dialog:default",
+    "process:default",
     "shell:allow-open",
     "updater:default"
   ]

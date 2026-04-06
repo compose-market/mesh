@@ -3,21 +3,23 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
-const RELEASE_VERSION_PATTERN = /^v?(\d+)\.(\d+)(?:\.(\d+))?$/;
+const RELEASE_VERSION_PATTERN = /^v?(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/;
 const GITHUB_API_VERSION = "2022-11-28";
 
 function parseVersionParts(input) {
   const raw = typeof input === "string" ? input.trim() : "";
   const match = RELEASE_VERSION_PATTERN.exec(raw);
   if (!match) {
-    throw new Error(`Invalid release version "${input}". Expected x.y or x.y.z.`);
+    throw new Error(`Invalid release version "${input}". Expected semver like x.y, x.y.z, or x.y.z-prerelease.`);
   }
 
-  const [, major, minor, patch = "0"] = match;
+  const [, major, minor, patch = "0", prerelease = "", build = ""] = match;
   return {
     major: Number.parseInt(major, 10),
     minor: Number.parseInt(minor, 10),
     patch: Number.parseInt(patch, 10),
+    prerelease,
+    build,
   };
 }
 
@@ -34,8 +36,10 @@ function ensureVersionString(input) {
 }
 
 export function normalizeReleaseVersion(input) {
-  const { major, minor, patch } = parseVersionParts(input);
-  return `${major}.${minor}.${patch}`;
+  const { major, minor, patch, prerelease, build } = parseVersionParts(input);
+  const prereleaseSuffix = prerelease ? `-${prerelease}` : "";
+  const buildSuffix = build ? `+${build}` : "";
+  return `${major}.${minor}.${patch}${prereleaseSuffix}${buildSuffix}`;
 }
 
 export function compareVersions(left, right) {
@@ -44,7 +48,10 @@ export function compareVersions(left, right) {
 
   if (a.major !== b.major) return Math.sign(a.major - b.major);
   if (a.minor !== b.minor) return Math.sign(a.minor - b.minor);
-  return Math.sign(a.patch - b.patch);
+  if (a.patch !== b.patch) return Math.sign(a.patch - b.patch);
+  if (!a.prerelease && b.prerelease) return 1;
+  if (a.prerelease && !b.prerelease) return -1;
+  return a.prerelease.localeCompare(b.prerelease);
 }
 
 export function computeReleaseVersion({ packageVersion, publishedVersions }) {
